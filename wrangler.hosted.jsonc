@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lamplit-chat",
+  "account_id": "4a7d2cc3b61181986870b57848eff910",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-09-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./frontend/build",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true
+  },
+  "vars": { "HOSTED_MODE": "true", "PLATFORM_ORIGIN": "https://app.lamplit.run" },
+  "services": [{ "binding": "PLATFORM", "service": "lamplit-platform" }],
+  "r2_buckets": [{ "binding": "COMPUTER_R2", "bucket_name": "lamplit-chat-media" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "PiSession", "class_name": "PiSession" },
+      { "name": "PiRegistry", "class_name": "PiRegistry" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PiSession"] },
+    { "tag": "v2", "new_sqlite_classes": ["PiRegistry"] }
+  ],
+  "observability": { "enabled": true }
+}

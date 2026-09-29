@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lamplit-free-test",
+  "compatibility_date": "2026-08-22",
+  "compatibility_flags": ["nodejs_compat", "experimental"],
+  "main": "src/server-test-entry.ts",
+  "vars": {
+    "AI_MODEL": "fixture-model",
+    "AI_MEMORY_MODEL": "fixture-model",
+    "MODEL_BASE_URL": "https://example.invalid/v1",
+    "MODEL_CONTEXT_WINDOW": "128000",
+    "MODEL_MAX_TOKENS": "4096"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "PiSession", "class_name": "PiSession" },
+      { "name": "PiRegistry", "class_name": "PiRegistry" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PiSession"] },
+    { "tag": "v2", "new_sqlite_classes": ["PiRegistry"] }
+  ],
+  "r2_buckets": [{ "binding": "COMPUTER_R2", "bucket_name": "photo-test-owned" }]
+}

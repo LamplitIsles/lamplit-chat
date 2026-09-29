@@ -1,0 +1,31 @@
+# Pi on Cloudflare Architecture
+
+The Worker combines Pi, Cloudflare Agents SDK, Durable Objects, Computer, and a static SvelteKit Companion frontend. `src/server.ts` routes Agent RPC and streaming WebSockets, private conversation photo reads, Jiji workspace sync, app previews, and Companion configuration. All other requests go to the Cloudflare static assets binding for `frontend/build`.
+
+## Durable state
+
+`PiRegistry` is a singleton Durable Object that indexes session metadata, search, lineage, learned memory, and relationship history. It creates and locates UUID-named sessions. Each `PiSession` Durable Object owns the conversation tree, active leaf, Pi harness, compaction settings, and its isolated `/workspace` files. Completed transcript entries and files survive object eviction. Partial stream deltas and an in-flight turn do not.
+
+The Worker uses a Cloudflare AI Gateway with a DeepSeek provider key. The account ID, Gateway token, and Jiji sync token are runtime secrets. `@cloudflare/computer` backs files, Worker Shell, JavaScript, Git, R2 mounts, and the session app preview. Worker Shell does not provide Node.js, npm, or native process execution. The `lamplit-cf.guion.io` Custom Domain must be protected by the Access application in `flick-terraform/cloudflare-access` before deployment; `workers.dev` and preview URLs are disabled so they cannot bypass Access. The separate `lamplit-keet.guion.io` domain serves only `/api/keet/events`, which requires the independent Keet ingress bearer token.
+
+## Companion boundary
+
+The browser connects to `PiRegistry` once to resolve its Companion session, then connects to that `PiSession` through `AgentClient`. A configured `COMPANION_SESSION_ID` takes priority. Otherwise it uses the browser's stored ID or finds/creates a named `霁霁` session.
+
+`getOverview()` supplies active-turn status and `getBranch()` supplies the durable transcript. `frontend/src/lib/companion/pi-projection.ts` maps settled user and assistant text into Companion's timeline with a quiet compaction marker. The controller in `frontend/src/routes/+page.svelte` shows a temporary outgoing echo while `agent.call('prompt')` runs. The browser's operation ID is passed to Pi `accept()`; after that durable commit, an `accepted` stream event carries the canonical user entry ID and clears the sending state. Branch refresh replaces the echo by entry ID, including when two prompts have identical text. Pi `drive()` then runs the model; other stream events drive only the waiting box's semantic activity. Raw reasoning, tool details, and partial assistant text stay out of chat. Completion or reconnect refreshes the durable branch, and `abort()` handles stop while `compact()` handles `/compact`. The imported CFL appearance preference applies the resolved light or dark Daisy theme to the document root.
+
+`Companion.svelte` and its domain/projection, composer, Markdown, preferences, localization, DaisyUI styles, and responsive layout were brought from Codex for Love. The old Node/Codex host is not deployed. The relationship drawer reads paged SQLite events from `PiRegistry`; its latest state is added to each Pi turn, and Pi has tools to update the state and read recent changes. Its diary tab reads dated Markdown files from the current `PiSession` workspace through read-only RPC calls, with the same 128 KiB entry limit as CFL. The imported photo picker, timeline image display, lightbox, and album are enabled for web conversation photos. Voice and telemetry remain hidden. The imported frontend source is Apache 2.0 licensed.
+
+## Conversation photos
+
+The browser accepts up to six PNG, JPEG, WebP, or GIF originals (8 MB each, 24 MB total), then makes JPEG preview and model variants. It uploads each under a stable photo ID before Pi admission. The host validates types, byte signatures, size, order, and aggregate serialized Pi message size, then sends the bounded variants as Pi native `ImageContent`. The model descriptor advertises image input. The entire message is capped at 1.5 MB, below the Durable Object SQLite 2 MB row limit. The original and preview bytes stay in the existing private `COMPUTER_R2` bucket under `conversation-photos/<session-id>/<photo-id>/`; no R2 URL is published.
+
+`conversation_photos` in each `PiSession` Durable Object reserves an upload identity before R2 writes, then marks it ready after all variants are stored. Prompt or steer admission freezes the exact ordered IDs in `conversation_photo_groups`; retries can complete an identical interrupted upload but cannot replace its bytes or add photos to an admitted group. Recovery correlates only that frozen set to the canonical Pi entry. Unaccepted uploads are excluded from the album. The current session's bounded album query reads admitted records across every branch in stable order. `getBranch()` removes native image blocks from its browser-facing message projection while leaving the durable Pi entry intact; it includes photo metadata so the timeline can request previews. The authenticated Worker routes resolve a session and photo ID through that session's ledger before reading R2. Bubbles and the grid use previews; opening the lightbox requests the original. The browser keeps uploaded references across an uncertain admission and can restore the draft from private originals if the operation is missing after reload.
+
+## Boundaries and limitations
+
+The UI opens one conversation. Other registry and tree operations still exist on the Worker API but are not presented in this slice. When a page reconnects during an active turn, it polls durable state until the turn completes; it cannot replay missed token deltas. The Worker has no application-level access control. The Jiji sync endpoint requires its own token, but the session APIs and workspace are public until the whole Worker is protected.
+
+## Verification
+
+`npm run check:frontend` checks Svelte, `npm run typecheck` checks Worker TypeScript, `npm test` runs unit and Workers tests, and `npm run build` creates the static site. `npx wrangler deploy --config wrangler.local.jsonc --secrets-file .env` deploys the Worker and site assets together.
