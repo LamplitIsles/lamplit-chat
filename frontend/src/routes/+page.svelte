@@ -35,10 +35,6 @@
   let systemDark = preferences.systemDark;
   let ready = false;
   let online = true;
-  let updateReady = false;
-  let updateRequested = false;
-  let serviceWorkerRegistration: ServiceWorkerRegistration | undefined;
-  let onDestroyCleanup: (() => void) | undefined;
   let photosEnabled = false;
   let accountSettingsHref: string | null = null;
   let hasAvatar = false;
@@ -403,23 +399,6 @@
     };
     window.addEventListener('online', onNetworkChange);
     window.addEventListener('offline', onNetworkChange);
-    if ('serviceWorker' in navigator) {
-      const onControllerChange = () => { if (updateRequested) window.location.reload(); };
-      navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);
-      void navigator.serviceWorker.ready.then((registration) => {
-        serviceWorkerRegistration = registration;
-        const checkUpdate = () => { updateReady = Boolean(registration.waiting); };
-        checkUpdate();
-        // A normal browser reload already discards the in-memory draft. Activate
-        // an update that was waiting before this page loaded, then load it once.
-        if (registration.waiting && !(document.querySelector('textarea') as HTMLTextAreaElement | null)?.value) {
-          updateRequested = true;
-          registration.waiting.postMessage('ACTIVATE_UPDATE');
-        }
-        registration.addEventListener('updatefound', () => registration.installing?.addEventListener('statechange', checkUpdate));
-      });
-      onDestroyCleanup = () => navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
-    }
     const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
     const onColorSchemeChange = (event: MediaQueryListEvent) => { systemDark = event.matches; };
     systemDark = colorScheme.matches;
@@ -438,7 +417,7 @@
       if (document.visibilityState === 'visible') void reportUserTimeZone().catch(showError);
       void pollCompanionRefresh({ ready, running, optimistic: Boolean(optimistic), promptInFlight, visible: document.visibilityState === 'visible' }, refresh)?.catch(showError);
     }, 3000);
-    return () => { disposed = true; onDestroyCleanup?.(); window.clearInterval(poll); if (reconciliationTimer !== undefined) window.clearTimeout(reconciliationTimer); document.removeEventListener('visibilitychange', onVisible); colorScheme.removeEventListener('change', onColorSchemeChange); window.removeEventListener('online', onNetworkChange); window.removeEventListener('offline', onNetworkChange); session?.close(); registry?.close(); };
+    return () => { disposed = true; window.clearInterval(poll); if (reconciliationTimer !== undefined) window.clearTimeout(reconciliationTimer); document.removeEventListener('visibilitychange', onVisible); colorScheme.removeEventListener('change', onColorSchemeChange); window.removeEventListener('online', onNetworkChange); window.removeEventListener('offline', onNetworkChange); session?.close(); registry?.close(); };
   });
 
   function setLanguage(value: CompanionLanguage) { language = value; writePreference(LANGUAGE_STORAGE_KEY, value); }
@@ -477,7 +456,6 @@
 
 <svelte:head><title>Lamplit · Companion</title></svelte:head>
 {#if !online}<div role="status" class="alert alert-warning fixed top-2 left-1/2 z-50 w-auto max-w-[90vw] -translate-x-1/2">Offline. Chat will reconnect when network returns.</div>{/if}
-{#if updateReady}<div role="status" class="alert alert-info fixed bottom-2 left-1/2 z-50 w-auto max-w-[90vw] -translate-x-1/2">Update ready. Save your draft before reloading. <button class="btn btn-sm" onclick={() => { if ((document.querySelector('textarea') as HTMLTextAreaElement | null)?.value && !window.confirm('Your draft may be lost. Reload to update?')) return; updateRequested = true; serviceWorkerRegistration?.waiting?.postMessage('ACTIVATE_UPDATE'); }}>Reload to update</button></div>{/if}
 {#if ready && !photosEnabled}<div role="status" class="alert alert-soft fixed top-2 left-1/2 z-50 w-auto max-w-[90vw] -translate-x-1/2">Photos are unavailable in this instance. Ask the owner to enable photo storage.</div>{/if}
 <div style={`--companion-wallpaper:${hasBackground ? `url('/api/ui-assets/background?v=${assetVersion}')` : 'none'}`}>
 <Companion {projection} {actions} {t} locale={language} {appearance} {activity} onLanguageChange={setLanguage} onAppearanceChange={setAppearance} {sessionId} {accountSettingsHref}

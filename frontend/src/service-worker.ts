@@ -6,16 +6,13 @@ const cacheName = `lamplit-shell-${version}`;
 const shellFiles = new Set([...build.filter((path) => /\.(?:js|css)$/.test(path)), ...files.filter((path) => ['/icon.svg', '/icon-192.png', '/icon-512.png', '/manifest.webmanifest'].includes(path))]);
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(cacheName).then((cache) => cache.addAll([...shellFiles])));
+  event.waitUntil(caches.open(cacheName).then((cache) => cache.addAll([...shellFiles])).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', (event) => {
   event.waitUntil(Promise.all([
     caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith('lamplit-shell-') && key !== cacheName).map((key) => caches.delete(key)))),
     self.clients.claim(),
   ]));
-});
-self.addEventListener('message', (event) => {
-  if (event.data === 'ACTIVATE_UPDATE') void self.skipWaiting();
 });
 self.addEventListener('fetch', (event) => {
   const request = event.request;
