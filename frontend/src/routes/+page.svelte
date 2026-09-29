@@ -410,6 +410,12 @@
         serviceWorkerRegistration = registration;
         const checkUpdate = () => { updateReady = Boolean(registration.waiting); };
         checkUpdate();
+        // A normal browser reload already discards the in-memory draft. Activate
+        // an update that was waiting before this page loaded, then load it once.
+        if (registration.waiting && !(document.querySelector('textarea') as HTMLTextAreaElement | null)?.value) {
+          updateRequested = true;
+          registration.waiting.postMessage('ACTIVATE_UPDATE');
+        }
         registration.addEventListener('updatefound', () => registration.installing?.addEventListener('statechange', checkUpdate));
       });
       onDestroyCleanup = () => navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
