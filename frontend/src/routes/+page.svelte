@@ -40,6 +40,7 @@
   let serviceWorkerRegistration: ServiceWorkerRegistration | undefined;
   let onDestroyCleanup: (() => void) | undefined;
   let photosEnabled = false;
+  let accountSettingsHref: string | null = null;
   let hasAvatar = false;
   let hasBackground = false;
   let assetVersion = Date.now();
@@ -128,8 +129,9 @@
     const configResponse = await configRequest;
     mark('lamplit-config-response');
     if (!configResponse.ok) throw new Error('Could not load companion configuration.');
-    const config = await configResponse.json() as { sessionId: string | null; photosEnabled: boolean };
+    const config = await configResponse.json() as { sessionId: string | null; photosEnabled: boolean; accountSettingsHref: string | null };
     photosEnabled = config.photosEnabled;
+    accountSettingsHref = config.accountSettingsHref;
     if (photosEnabled) void refreshAssets().catch(showError);
     let id = config.sessionId || localStorage.getItem(sessionKey);
     if (!id) {
@@ -472,7 +474,7 @@
 {#if updateReady}<div role="status" class="alert alert-info fixed bottom-2 left-1/2 z-50 w-auto max-w-[90vw] -translate-x-1/2">Update ready. Save your draft before reloading. <button class="btn btn-sm" onclick={() => { if ((document.querySelector('textarea') as HTMLTextAreaElement | null)?.value && !window.confirm('Your draft may be lost. Reload to update?')) return; updateRequested = true; serviceWorkerRegistration?.waiting?.postMessage('ACTIVATE_UPDATE'); }}>Reload to update</button></div>{/if}
 {#if ready && !photosEnabled}<div role="status" class="alert alert-soft fixed top-2 left-1/2 z-50 w-auto max-w-[90vw] -translate-x-1/2">Photos are unavailable in this instance. Ask the owner to enable photo storage.</div>{/if}
 <div style={`--companion-wallpaper:${hasBackground ? `url('/api/ui-assets/background?v=${assetVersion}')` : 'none'}`}>
-<Companion {projection} {actions} {t} locale={language} {appearance} {activity} onLanguageChange={setLanguage} onAppearanceChange={setAppearance} {sessionId}
+<Companion {projection} {actions} {t} locale={language} {appearance} {activity} onLanguageChange={setLanguage} onAppearanceChange={setAppearance} {sessionId} {accountSettingsHref}
   imageSettings={photosEnabled ? { hasAvatar, hasBackground, error: assetError, upload: (slot, event) => { void uploadAsset(slot, event); }, remove: (slot) => { void removeAsset(slot); } } : undefined}
   identity={{ companionName: 'Companion', companionAvatar: hasAvatar ? `/api/ui-assets/avatar?v=${assetVersion}` : '', userName: 'You', userAvatar: '', preferredAddress: 'you', signature: relationship.signature, mood: relationship.mood, moodLabel: moodText(), moodNote: relationship.note, affinity: relationship.affinity, affinityStage: affinityText() }}
   {history} workspaceReadiness={ready ? 'ready' : 'loading'} sessionReadiness={ready ? 'ready' : 'loading'} relationshipReadiness="ready" voiceCapability="unavailable" showRelationship={true} showDiary={true} showGallery={photosEnabled} imageLimits={photosEnabled ? imageLimits : undefined} {recoveredDraft} onHistoryOpenChange={(open) => { if (open) void refreshRelationship(); }} />

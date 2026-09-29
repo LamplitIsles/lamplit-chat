@@ -20,7 +20,7 @@ describe('Free entry Worker', () => {
       headers: { authorization: `Basic ${btoa(`owner:${password}`)}` },
     }), minimalEnv)
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ sessionId: null, photosEnabled: false })
+    expect(await response.json()).toEqual({ sessionId: null, photosEnabled: false, accountSettingsHref: null })
     expect(response.headers.get('set-cookie')).toContain('HttpOnly')
   })
 

@@ -36,7 +36,7 @@ export default {
     if (new URL(request.url).pathname === '/api/companion-config') {
       const registry = instanceId ? env.PiRegistry.getByName(instanceId) as unknown as { ensureDefaultSession(): Promise<{ id: string }> } : null
       const sessionId = registry ? (await registry.ensureDefaultSession()).id : env.COMPANION_SESSION_ID || null
-      return respond(Response.json({ sessionId, photosEnabled: Boolean(env.COMPUTER_R2) }, { headers: { 'cache-control': 'private, no-store' } }))
+      return respond(Response.json({ sessionId, photosEnabled: Boolean(env.COMPUTER_R2), accountSettingsHref: hosted ? '/settings' : null }, { headers: { 'cache-control': 'private, no-store' } }))
     }
     if (new URL(request.url).pathname.startsWith('/api/ui-assets')) {
       const url = new URL(request.url)

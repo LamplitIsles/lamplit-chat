@@ -24,6 +24,9 @@
 #dsh-companion .companion-name{font-size:1.02rem;font-weight:780;letter-spacing:-.02em}
 #dsh-companion .companion-presence{display:flex;align-items:center;gap:6px;margin-top:2px;color:color-mix(in srgb,var(--color-base-content) 64%,transparent);font-size:.73rem}
 #dsh-companion .companion-header-actions{display:flex;flex:none;align-items:center;gap:2px}
+#dsh-companion .companion-account-link{display:inline-flex;align-items:center;gap:7px;flex:none;color:var(--color-base-content);font-size:.78rem;font-weight:650;text-decoration:none;white-space:nowrap}
+#dsh-companion .companion-account-link:hover,#dsh-companion .companion-account-link:focus-visible{color:var(--color-primary)}
+@media(max-width:560px){#dsh-companion .companion-account-link{width:42px;min-width:42px;padding:0;justify-content:center}#dsh-companion .companion-account-link span{display:none}}
 #dsh-companion .companion-history-toggle{color:inherit;opacity:.64}
 #dsh-companion .companion-preferences{position:relative;flex:none}
 #dsh-companion .companion-preferences-trigger{width:44px;height:44px;color:inherit;opacity:.72}

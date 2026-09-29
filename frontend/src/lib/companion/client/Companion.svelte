@@ -173,6 +173,7 @@
   export let appearance: CompanionAppearance = "system";
   export let onAppearanceChange: (appearance: CompanionAppearance) => void = () => undefined;
   export let onLanguageChange: (language: CompanionLanguage) => void = () => undefined;
+  export let accountSettingsHref: string | null = null;
 
   const dispatch = createEventDispatcher<{ advanced: void; recovery: void }>();
   const LONG_WAIT_DELAY_MS = 12_000;
@@ -1683,7 +1684,8 @@
               ></span>{statusText} · {identity.moodLabel}
             </div>
           </div>
-          <div class="companion-preferences">
+          {#if accountSettingsHref}<a href={accountSettingsHref} class="cmp-btn cmp-btn-ghost companion-account-link" aria-label="账户与模型设置"><Settings size={17} strokeWidth={1.8} aria-hidden="true" /><span>账户设置</span></a>{/if}
+          {#if !accountSettingsHref}<div class="companion-preferences">
             <button bind:this={preferencesButton} type="button" class="cmp-btn cmp-btn-ghost cmp-btn-circle companion-preferences-trigger" aria-label={t("preferences.open")} aria-controls="companion-preferences-panel" aria-expanded={preferencesOpen} on:click={() => preferencesOpen = !preferencesOpen}><Settings size={18} strokeWidth={1.8} aria-hidden="true" /></button>
             {#if preferencesOpen}
               <section id="companion-preferences-panel" class="companion-preferences-panel" aria-label={t("preferences.open")}>
@@ -1708,7 +1710,7 @@
                 {/if}
               </section>
             {/if}
-          </div>
+          </div>{/if}
 
         </header>
 
