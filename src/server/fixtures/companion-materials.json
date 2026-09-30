@@ -1,0 +1,99 @@
+{
+  "fileCreate": {
+    "content": "Fictional continuity checkpoint."
+  },
+  "file": {
+    "name": "SOUL.md",
+    "content": "Fictional continuity checkpoint.",
+    "version": "ddab42ce59c939499ee38e37a8ba9d4f234b5c64daa77a498ac04968fe0a6818",
+    "bytes": 32
+  },
+  "fileUpdate": {
+    "content": "New fictional continuity.",
+    "expectedVersion": "ddab42ce59c939499ee38e37a8ba9d4f234b5c64daa77a498ac04968fe0a6818"
+  },
+  "fileList": {
+    "files": [
+      {
+        "name": "SOUL.md",
+        "bytes": 32
+      }
+    ]
+  },
+  "compactionCustom": {
+    "mode": "custom",
+    "content": "Fictional continuity checkpoint.",
+    "version": "ddab42ce59c939499ee38e37a8ba9d4f234b5c64daa77a498ac04968fe0a6818",
+    "bytes": 32
+  },
+  "compactionSaveFromDefault": {
+    "content": "Fictional continuity checkpoint.",
+    "expectedVersion": "default"
+  },
+  "reset": {
+    "expectedVersion": "ddab42ce59c939499ee38e37a8ba9d4f234b5c64daa77a498ac04968fe0a6818"
+  },
+  "memory": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "kind": "instruction",
+    "content": "Use the fictional nickname Lantern.",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "sourceSessionId": "22222222-2222-4222-8222-222222222222",
+    "sourceEntryId": "fictional-source-entry"
+  },
+  "memoryUpdate": {
+    "content": "Use the fictional nickname Moonflower.",
+    "expectedUpdatedAt": "2026-01-01T00:00:00.000Z"
+  },
+  "memoryDelete": {
+    "expectedUpdatedAt": "2026-01-01T00:00:00.001Z"
+  },
+  "errors": [
+    {
+      "error": {
+        "code": "invalid-data"
+      }
+    },
+    {
+      "error": {
+        "code": "resource-limit"
+      }
+    },
+    {
+      "error": {
+        "code": "not-found"
+      }
+    },
+    {
+      "error": {
+        "code": "conflict"
+      }
+    },
+    {
+      "error": {
+        "code": "busy"
+      }
+    },
+    {
+      "error": {
+        "code": "unconfigured"
+      }
+    },
+    {
+      "error": {
+        "code": "forbidden"
+      }
+    },
+    {
+      "error": {
+        "code": "method-not-allowed"
+      }
+    },
+    {
+      "error": {
+        "code": "internal-error"
+      }
+    }
+  ]
+}

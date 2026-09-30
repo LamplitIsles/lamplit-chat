@@ -1,3 +1,4 @@
+import { handleCompanionMaterials } from './server/companion-materials-api'
 import { handleHistory } from './server/history-import-api'
 import { routeAgentRequest } from 'agents'
 import { PI_AGENT_PREFIX } from './shared/pi-contract'
@@ -14,7 +15,7 @@ export default {
     if (hosted && (!env.CHAT_INTERNAL_SECRET || !instanceId || !/^[0-9a-f-]{36}$/.test(instanceId) || request.headers.get('x-lamplit-internal-secret') !== env.CHAT_INTERNAL_SECRET)) {
       return new Response('Forbidden', { status: 403, headers: { 'cache-control': 'no-store' } })
     }
-    if (hosted && request.headers.get('origin') && request.headers.get('origin') !== new URL(request.url).origin) {
+    if (hosted && !/^\/api\/companion-materials(?:\/|$)/.test(new URL(request.url).pathname) && request.headers.get('origin') && request.headers.get('origin') !== new URL(request.url).origin) {
       return new Response('Forbidden', { status: 403, headers: { 'cache-control': 'no-store' } })
     }
     const auth = hosted ? { authorized: true } : await authorize(request, env.AUTH_PASSWORD)
@@ -25,6 +26,8 @@ export default {
       headers.set('set-cookie', auth.setCookie)
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
     }
+    const materialResponse = await handleCompanionMaterials(request, env, instanceId)
+    if (materialResponse) return respond(materialResponse)
     const historyResponse = await handleHistory(request, env, instanceId)
     if (historyResponse) return respond(historyResponse)
     // Archive identifiers must never instantiate a runnable PiSession, including self-host routes.

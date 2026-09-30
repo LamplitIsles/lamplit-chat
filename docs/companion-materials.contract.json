@@ -1,0 +1,399 @@
+{
+  "namespace": "/api/companion-materials",
+  "contentType": "application/json",
+  "limits": {
+    "fileUtf8Bytes": 128000,
+    "requestUtf8Bytes": 800000,
+    "basenameCharacters": 200,
+    "rootEntries": 200,
+    "memories": 64,
+    "memoryCharacters": 500
+  },
+  "authentication": "Existing hosted trusted instance headers or selfhost AUTH_PASSWORD cookie/Basic. Server resolves Companion session; no instance/session/workspace selectors.",
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/files",
+      "response": "FileList",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/files/{name}",
+      "response": "File",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/files/{name}",
+      "request": "FileCreate",
+      "response": "File",
+      "status": 201
+    },
+    {
+      "method": "PUT",
+      "path": "/files/{name}",
+      "request": "FileUpdate",
+      "response": "File",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/memories",
+      "response": "MemoryList",
+      "status": 200
+    },
+    {
+      "method": "PUT",
+      "path": "/memories/{id}",
+      "request": "MemoryUpdate",
+      "response": "MemoryResult",
+      "status": 200
+    },
+    {
+      "method": "DELETE",
+      "path": "/memories/{id}",
+      "request": "MemoryDelete",
+      "response": "Deleted",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/compaction",
+      "response": "EffectiveCompaction",
+      "status": 200
+    },
+    {
+      "method": "PUT",
+      "path": "/compaction",
+      "request": "FileUpdate",
+      "response": "EffectiveCompaction",
+      "status": 200
+    },
+    {
+      "method": "DELETE",
+      "path": "/compaction",
+      "request": "Reset",
+      "response": "EffectiveCompaction",
+      "status": 200
+    }
+  ],
+  "errors": {
+    "invalid-data": [
+      400,
+      415
+    ],
+    "resource-limit": [
+      413
+    ],
+    "not-found": [
+      404
+    ],
+    "conflict": [
+      409
+    ],
+    "busy": [
+      409
+    ],
+    "unconfigured": [
+      409
+    ],
+    "forbidden": [
+      403
+    ],
+    "method-not-allowed": [
+      405
+    ],
+    "internal-error": [
+      500
+    ]
+  },
+  "schemas": {
+    "FileCreate": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "maxLength": 128000
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "FileUpdate": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "maxLength": 128000
+        },
+        "expectedVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      },
+      "required": [
+        "content",
+        "expectedVersion"
+      ],
+      "additionalProperties": false
+    },
+    "Reset": {
+      "type": "object",
+      "properties": {
+        "expectedVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      },
+      "required": [
+        "expectedVersion"
+      ],
+      "additionalProperties": false
+    },
+    "MemoryUpdate": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "expectedUpdatedAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      },
+      "required": [
+        "content",
+        "expectedUpdatedAt"
+      ],
+      "additionalProperties": false
+    },
+    "MemoryDelete": {
+      "type": "object",
+      "properties": {
+        "expectedUpdatedAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      },
+      "required": [
+        "expectedUpdatedAt"
+      ],
+      "additionalProperties": false
+    },
+    "File": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 128000
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128000
+        }
+      },
+      "required": [
+        "name",
+        "content",
+        "version",
+        "bytes"
+      ],
+      "additionalProperties": false
+    },
+    "FileList": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "name",
+              "bytes"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": false
+    },
+    "Memory": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "fact",
+            "preference",
+            "instruction",
+            "decision"
+          ]
+        },
+        "content": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "sourceSessionId": {
+          "type": "string"
+        },
+        "sourceEntryId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "content",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false
+    },
+    "MemoryList": {
+      "type": "object",
+      "properties": {
+        "memories": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/schemas/Memory"
+          }
+        }
+      },
+      "required": [
+        "memories"
+      ],
+      "additionalProperties": false
+    },
+    "MemoryResult": {
+      "type": "object",
+      "properties": {
+        "memory": {
+          "$ref": "#/schemas/Memory"
+        }
+      },
+      "required": [
+        "memory"
+      ],
+      "additionalProperties": false
+    },
+    "Deleted": {
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "const": true
+        }
+      },
+      "required": [
+        "deleted"
+      ],
+      "additionalProperties": false
+    },
+    "EffectiveCompaction": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": [
+            "default",
+            "custom"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 128000
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 128000
+        }
+      },
+      "required": [
+        "mode",
+        "content",
+        "version",
+        "bytes"
+      ],
+      "additionalProperties": false
+    },
+    "Error": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid-data",
+                "resource-limit",
+                "not-found",
+                "conflict",
+                "busy",
+                "unconfigured",
+                "forbidden",
+                "method-not-allowed",
+                "internal-error"
+              ]
+            }
+          },
+          "required": [
+            "code"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "filePolicy": {
+    "listReadUpdate": "Regular root files only; symlink/nonregular read or update returns invalid-data.",
+    "create": "Any same-name entry, including a dangling symlink, returns conflict.",
+    "compaction": "Nonregular COMPACTION.md rejects effective read/save/reset with invalid-data."
+  }
+}

@@ -1,3 +1,5 @@
+import { MaterialFailure, materialCheck, materialReply } from './companion-materials'
+import { MemoryUpdateSchema, MemoryDeleteSchema, type MaterialRequest, type MaterialReply } from '../shared/companion-materials'
 import { HistoryArchives, HistoryFailure } from './history-archives'
 import { safeDiagnostic, hashSourceId } from './history-import-api'
 import type { HistoryReply } from '../shared/history-import'
@@ -429,6 +431,33 @@ export class PiRegistry extends HostedAgent {
     })
   }
 
+  async materialsMemoryRequest({ action, id = '', input }: MaterialRequest): Promise<MaterialReply> {
+    return materialReply(async () => {
+      if (action === 'memory-list') {
+        const memories = (await this.listMemories()).sort((a, b) => a.createdAt > b.createdAt ? -1 : a.createdAt < b.createdAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+        return { status: 200, body: { memories } }
+      }
+      const data = action === 'memory-update' ? materialCheck(MemoryUpdateSchema, input) : materialCheck(MemoryDeleteSchema, input)
+      if (!id || id.length > 200) throw new MaterialFailure('invalid-data')
+      return this.ctx.storage.transactionSync(() => {
+        const row = this.memoryRow(id)
+        if (!row) throw new MaterialFailure('not-found', 404)
+        if (row.updated_at !== data.expectedUpdatedAt) throw new MaterialFailure('conflict', 409)
+        if (action === 'memory-delete') {
+          this.ctx.storage.sql.exec('DELETE FROM pi_registry_memories WHERE id = ?', id)
+          return { status: 200, body: { deleted: true } }
+        }
+        let content: string
+        try { content = validMemoryContent(materialCheck(MemoryUpdateSchema, input).content) } catch { throw new MaterialFailure('invalid-data') }
+        // Update only content and timestamp: provenance/kind/createdAt remain on the original row.
+        const now = nextMemoryTimestamp(row.updated_at)
+        this.ctx.storage.sql.exec('UPDATE pi_registry_memories SET content = ?, updated_at = ? WHERE id = ?', content, now, id)
+        try { this.assertMemoryBudget() } catch { throw new MaterialFailure('resource-limit', 413) }
+        return { status: 200, body: { memory: memoryFromRow(this.memoryRow(id)!) } }
+      })
+    })
+  }
+
   async listMemories(): Promise<Memory[]> {
     return this.memoryRows().map(memoryFromRow)
   }
@@ -450,7 +479,8 @@ export class PiRegistry extends HostedAgent {
     let id = input.id?.trim()
     this.ctx.storage.transactionSync(() => {
       if (id) {
-        if (!this.memoryRow(id)) throw new Error(`Memory not found: ${id}`)
+        const existing = this.memoryRow(id)
+        if (!existing) throw new Error(`Memory not found: ${id}`)
         this.ctx.storage.sql.exec(
           `UPDATE pi_registry_memories SET kind = ?, content = ?, source_session_id = ?,
            source_entry_id = ?, updated_at = ? WHERE id = ?`,
@@ -458,7 +488,7 @@ export class PiRegistry extends HostedAgent {
           content,
           input.sourceSessionId ?? null,
           input.sourceEntryId ?? null,
-          now,
+          nextMemoryTimestamp(existing.updated_at),
           id,
         )
       } else {
@@ -530,7 +560,8 @@ export class PiRegistry extends HostedAgent {
         const content = validMemoryContent(operation.content)
         const now = new Date().toISOString()
         if (operation.action === 'update') {
-          if (!this.memoryRow(operation.id)) throw new Error(`Memory not found: ${operation.id}`)
+          const existing = this.memoryRow(operation.id)
+          if (!existing) throw new Error(`Memory not found: ${operation.id}`)
           this.ctx.storage.sql.exec(
             `UPDATE pi_registry_memories SET kind = ?, content = ?, source_session_id = ?,
              source_entry_id = ?, updated_at = ? WHERE id = ? AND updated_at = ?`,
@@ -538,7 +569,7 @@ export class PiRegistry extends HostedAgent {
             content,
             input.sessionId,
             operation.sourceEntryId,
-            now,
+            nextMemoryTimestamp(existing.updated_at),
             operation.id,
             operation.expectedUpdatedAt,
           )
@@ -949,6 +980,10 @@ function messageText(message: { content?: unknown }): string {
       typeof (part as { text?: unknown }).text === 'string')
     .map((part) => part.text)
     .join('\n')
+}
+
+function nextMemoryTimestamp(previous: string): string {
+  return new Date(Math.max(Date.now(), Date.parse(previous) + 1)).toISOString()
 }
 
 function validMemoryKind(kind: MemoryKind): MemoryKind {

@@ -1,3 +1,4 @@
+import { installCompanionCompaction, defaultCompactionPrompt } from './companion-compaction'
 import { AgentHarness, type AgentHarnessTool, type CompactionSettings, type Session } from '@earendil-works/pi-agent-core'
 import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
 import { createModels, createProvider, type Model } from '@earendil-works/pi-ai'
@@ -17,6 +18,7 @@ type CreatePiHarnessOptions = {
   tools: AgentHarnessTool<undefined>[]
   memory: { getMemoryContext(): Promise<string>; getRelationshipContext(): Promise<string> }
   compaction: CompactionSettings
+  loadCompactionPrompt?: () => Promise<string>
   loadInstructions: () => Promise<string | null>
   getUserTimeZone: () => Promise<string>
 }
@@ -30,7 +32,7 @@ const DEFAULT_SYSTEM_PROMPT = [
   'Use only tools available in this Worker. Verify consequential results. Keep private information within its intended audience, and get explicit authorization before sending messages, publishing, deploying, using credentials, or making destructive changes.',
 ].join('\n\n')
 
-export async function createPiHarness({ env, session, tools, memory, compaction, loadInstructions, getUserTimeZone }: CreatePiHarnessOptions) {
+export async function createPiHarness({ env, session, tools, memory, compaction, loadInstructions, getUserTimeZone, loadCompactionPrompt = defaultCompactionPrompt }: CreatePiHarnessOptions) {
   const modelId = env.AI_MODEL || 'your-model'
   const model = directModel(env, modelId)
   const memoryModel = directModel(env, env.AI_MEMORY_MODEL || modelId)
@@ -81,6 +83,7 @@ export async function createPiHarness({ env, session, tools, memory, compaction,
     compaction,
   }, BACKGROUND_CONTEXT)
   const lane = await harness.lane('main', BACKGROUND_CONTEXT)
+  installCompanionCompaction(harness, lane, models, loadCompactionPrompt, () => Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL && env.AI_MODEL))
   const activeModel = await lane.getModel(BACKGROUND_CONTEXT)
   if (activeModel?.id !== model.id || activeModel.provider !== model.provider) {
     await lane.setModel({ provider: model.provider, modelId: model.id }, BACKGROUND_CONTEXT)

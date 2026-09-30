@@ -1,3 +1,6 @@
+import { CompanionFiles, MaterialFailure, materialReply } from './companion-materials'
+import type { MaterialRequest, MaterialReply } from '../shared/companion-materials'
+import type { PiRegistry } from './pi-registry'
 import {
   type DurableObjectStorageLike,
   Workspace,
@@ -81,6 +84,18 @@ export class PiSession extends HostedAgent {
   revokePersonalSession(tokenHash: string): void {
     this.closeSessionConnections(tokenHash)
   }
+  async materialsRequest(request: MaterialRequest): Promise<MaterialReply> {
+    return materialReply(async () => {
+      if (this.active) throw new MaterialFailure('busy', 409)
+      return this.withExclusiveOperation(async () => {
+        if (request.action.startsWith('memory-')) {
+          const registry = this.env.PiRegistry.getByName(this.instanceId() ?? PI_REGISTRY_INSTANCE) as DurableObjectStub<PiRegistry>
+          return registry.materialsMemoryRequest(request)
+        }
+        return new CompanionFiles(this.workspace).request(request)
+      })
+    })
+  }
   private active = false
   private promptOperationId?: string
   private harness?: Promise<PiHarness>
@@ -99,6 +114,12 @@ export class PiSession extends HostedAgent {
 
   async onStart(): Promise<void> {
     if (!this.sessionStorage.isInitialized()) return
+    const durableState = (await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value
+    if (!durableState?.currentOperationId) {
+      this.scheduleMemoryExtraction()
+      await this.schedulePendingDrain()
+      return
+    }
     const lane = await this.getLane()
     const recovery = await prepareOpenOperationResume(
       lane, BACKGROUND_CONTEXT,
@@ -160,7 +181,7 @@ export class PiSession extends HostedAgent {
       activeLeafId: leafId,
       lineage: metadata.lineage,
       revision: rows.at(-1)?.seq ?? 0,
-      running: Boolean((await (await this.getLane()).inspectExecution(BACKGROUND_CONTEXT)).current),
+      running: Boolean((await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value.currentOperationId),
       compaction: this.compactionSettings(),
       tree: rows.map(({ seq, entry }) => ({
         seq,
@@ -230,6 +251,7 @@ export class PiSession extends HostedAgent {
     try {
       const result = await (await this.getLane()).compact({ customInstructions: focus }, BACKGROUND_CONTEXT)
       if (!result.ok) throw result.error
+      if (result.value.compaction.status !== 'completed') throw new Error('Compaction did not complete; conversation preserved.')
       const entry = this.sessionStorage.getEntrySync(result.value.compaction.tipId ?? '')
       if (!entry || entry.type !== 'compaction') throw new Error('Compaction entry was not saved.')
       await this.flushOutboxToRegistry()
@@ -622,6 +644,7 @@ export class PiSession extends HostedAgent {
       ],
       memory: registry,
       compaction: this.compactionSettings(),
+      loadCompactionPrompt: async () => (await new CompanionFiles(this.workspace).effective()).content,
       loadInstructions: () => this.workspace.readFile(`${WORKSPACE_ROOT}/AGENTS.md`),
       getUserTimeZone: () => registry.getUserTimeZone(),
       })

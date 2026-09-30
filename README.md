@@ -101,3 +101,7 @@ The chat page updates Android browser/PWA theme-color with its resolved light/da
 The chat frontend and backend are open source at https://github.com/LamplitIsles/lamplit-chat; the public website lives at https://github.com/LamplitIsles/lamplit-site. Platform account management and the future hosted work machine are separate projects, outside this repository's open-source scope.
 
 Local `origin` remains Forgejo for development and PRs; `github` points to the public GitHub repository for additional publication of merged `main`. Synchronization is explicit; merging or deploying does not automatically push GitHub.
+
+## Companion materials
+
+Authenticated `/api/companion-materials` edits the current companion’s original root Markdown, updates/deletes existing memory with conflict checks, and reads/saves/resets the full effective COMPACTION.md prompt. Only AGENTS.md is automatically injected; it can direct the companion to read other root Markdown. Management requires no model or inference. Selfhost must configure a ready `COMPANION_SESSION_ID`. See [API contract and isolated integration guide](docs/companion-materials.md), [machine-readable contract](docs/companion-materials.contract.json), and `src/server/fixtures/companion-materials.json`. An organizing assistant is paid Phase 2.
