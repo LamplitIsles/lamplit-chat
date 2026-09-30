@@ -10,8 +10,10 @@
   export let t: CompanionTranslate = english;
   export let locale = "en";
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
+  import { Capacitor } from "@capacitor/core";
   import { Camera, CameraErrorCode } from "@capacitor/camera";
-  import ImagePlus from "lucide-svelte/icons/image-plus";
+  import Plus from "lucide-svelte/icons/plus";
+  import CameraIcon from "lucide-svelte/icons/camera";
   import Menu from "lucide-svelte/icons/menu";
   import Settings from "lucide-svelte/icons/settings";
   import Pause from "lucide-svelte/icons/pause";
@@ -174,11 +176,11 @@
   export let onAppearanceChange: (appearance: CompanionAppearance) => void = () => undefined;
   export let onLanguageChange: (language: CompanionLanguage) => void = () => undefined;
   export let accountSettingsHref: string | null = null;
+  export let networkOnline = true;
 
   const dispatch = createEventDispatcher<{ advanced: void; recovery: void }>();
   const LONG_WAIT_DELAY_MS = 12_000;
   const LONG_WAIT_ROTATION_MS = 9_000;
-  const PHOTO_LONG_PRESS_MS = 450;
   const VOICE_WAVEFORM_BAR_COUNT = 28;
   const EMPTY_VOICE_PLAYBACK = { current: 0, duration: 0, playing: false };
   const IMAGE_TILE_SIZE = 64;
@@ -194,6 +196,9 @@
   let composer = createComposerState();
   let composerInput: HTMLTextAreaElement;
   let photoLibraryInput: HTMLInputElement;
+  let photoCameraInput: HTMLInputElement;
+  let attachmentsOpen = false;
+  let attachmentsButton: HTMLButtonElement;
   let commandSuggestion: ComposerCommand | undefined;
   let stopping = false;
   let timeline: HTMLDivElement;
@@ -261,6 +266,7 @@
   let imageDimensions: Record<string, { width: number; height: number }> = {};
   let wasNearBottom = true;
   let liveAnnouncement: string | CompanionMessage = "";
+  let composerFeedback: CompanionMessage | undefined;
   let detailReturnFocus: HTMLElement | undefined;
   let lightboxReturnFocus: HTMLElement | undefined;
   let relationshipDrawer: HTMLElement;
@@ -290,8 +296,9 @@
   let deferredImageUrls = new Set<string>();
   let displayedProjection: CompanionProjection = projection;
   let submissionToken = 0;
-  let imagePickerPointer: { id: number; startedAt: number } | undefined;
-  let suppressImagePickerClick = false;
+  let voicePointer: number | undefined;
+  let voiceStarting = false;
+  let voiceInputGeneration = 0;
   let composerResizeToken = 0;
   let voiceStatus: VoiceRecordingStatus = "idle";
   const voiceCaptureAvailable = canCaptureVoice();
@@ -314,6 +321,15 @@
   let voiceSessionId: string | undefined;
   let voiceTranscriptionAbort: AbortController | undefined;
 
+  $: hasDraft = Boolean(composer.draft.trim() || imageDrafts.length);
+  $: voiceBusy = voiceStarting || voiceStatus === "recording" || voiceStatus === "stopping" || voiceStatus === "transcribing";
+  $: voiceAvailable = voiceCapability === "available" && Boolean(actions.transcribeVoice) && voiceCaptureAvailable;
+  $: unavailableVoiceText = voiceCapability === "loading"
+    ? t("voice.wait")
+    : voiceCapability !== "available" || !actions.transcribeVoice
+      ? t("voice.notEnabled")
+      : t("voice.unavailable");
+
   $: effectiveWorkspaceReadiness = workspaceReadiness;
   $: effectiveSessionReadiness = sessionReadiness;
   $: effectiveRelationshipReadiness = showRelationship ? relationshipReadiness : "ready";
@@ -323,7 +339,7 @@
       effectiveRelationshipReadiness !== "ready")
   )
     finishDetailClose(false);
-  $: statusText = projection.status === "offline"
+  $: statusText = !networkOnline || projection.status === "offline"
     ? t("status.offline")
     : projection.status === "working" ? t("status.typing") : t("status.online");
   $: imageGenerationRunning = projection.items.some(
@@ -353,6 +369,8 @@
     recoveredDraftKey = "";
     recoveredDraftToken += 1;
     composer = createComposerState();
+    attachmentsOpen = false;
+    composerFeedback = undefined;
     submissionToken += 1;
     void scheduleComposerResize();
   }
@@ -1038,7 +1056,8 @@
   }
 
   function submit(): void {
-    if (projection.canSubmit === false) return;
+    if (projection.canSubmit === false || voiceBusy) return;
+    composerFeedback = undefined;
     const restoreText = composer.draft;
     const text = restoreText.trim();
     if (text.length > MAX_MESSAGE_LENGTH) return;
@@ -1087,6 +1106,7 @@
           error instanceof Error && error.message === "compact-with-images"
             ? { key: "error.compactImages" }
             : { key: "error.restored" };
+        composerFeedback = liveAnnouncement;
       });
   }
 
@@ -1112,16 +1132,15 @@
     return "voice.failed";
   }
 
-  function voiceUnavailableText(t: CompanionTranslate): string {
-    return voiceCaptureAvailable ? t("voice.install") : t("voice.unavailable");
-  }
-
   function clearVoiceClock(): void {
     if (voiceClock !== undefined) clearInterval(voiceClock);
     voiceClock = undefined;
   }
 
   async function cancelVoiceInput(): Promise<void> {
+    voiceInputGeneration += 1;
+    voiceStarting = false;
+    voicePointer = undefined;
     clearVoiceClock();
     voiceTranscriptionAbort?.abort();
     voiceTranscriptionAbort = undefined;
@@ -1136,10 +1155,12 @@
 
   async function stopVoiceAndTranscribe(): Promise<void> {
     clearVoiceClock();
+    const generation = voiceInputGeneration;
     let recording: VoiceRecording | undefined;
     try {
       recording = await voiceController.stopAndGet();
     } catch (error) {
+      if (generation !== voiceInputGeneration || (error instanceof VoiceRecordingError && error.code === "cancelled")) return;
       voiceFailure = voiceErrorKey(error);
       liveAnnouncement = { key: voiceFailure };
       voiceElapsedMs = 0;
@@ -1148,6 +1169,7 @@
     voiceElapsedMs = 0;
     voiceFailure = "";
     if (
+      generation !== voiceInputGeneration ||
       !recording ||
       !actions.transcribeVoice ||
       !voiceController.markTranscribing()
@@ -1166,16 +1188,19 @@
       await actions.send(text, []);
       liveAnnouncement = { key: "voice.sent" };
     } catch (error) {
-      voiceFailure = voiceErrorKey(error);
-      liveAnnouncement = { key: voiceFailure };
+      if (!abort.signal.aborted && generation === voiceInputGeneration) {
+        voiceFailure = voiceErrorKey(error);
+        liveAnnouncement = { key: voiceFailure };
+      }
     } finally {
       if (voiceTranscriptionAbort === abort)
         voiceTranscriptionAbort = undefined;
-      voiceController.finishTranscribing();
+      if (generation === voiceInputGeneration) voiceController.finishTranscribing();
     }
   }
 
   async function toggleVoiceInput(): Promise<void> {
+    if (voiceStarting || composer.composing) return;
     if (projection.canSubmit === false && voiceStatus !== "recording" && voiceStatus !== "stopping") return;
     if (voiceStatus === "recording" || voiceStatus === "stopping") {
       if (voiceStatus === "recording") await stopVoiceAndTranscribe();
@@ -1192,23 +1217,54 @@
       !voiceCaptureAvailable
     ) {
       liveAnnouncement = {
-        key: voiceCaptureAvailable ? "voice.install" : "voice.unavailable",
+        key: voiceCapability !== "available" || !actions.transcribeVoice ? "voice.notEnabled" : "voice.unavailable",
       };
       return;
     }
     voiceElapsedMs = 0;
     voiceFailure = "";
     clearVoiceClock();
+    const generation = ++voiceInputGeneration;
+    voiceStarting = true;
     try {
       await voiceController.start();
+      if (generation !== voiceInputGeneration) return;
+      voiceStarting = false;
       voiceClock = setInterval(() => {
         voiceElapsedMs = voiceController.elapsedMs;
       }, 250);
     } catch (error) {
+      if (generation !== voiceInputGeneration) return;
+      voiceStarting = false;
       clearVoiceClock();
+      if (error instanceof VoiceRecordingError && error.code === "cancelled") return;
       voiceFailure = voiceErrorKey(error);
       liveAnnouncement = { key: voiceFailure };
     }
+  }
+
+  function onVoicePointerDown(event: PointerEvent): void {
+    if (event.button !== 0 || voicePointer !== undefined || voiceBusy || !voiceAvailable || projection.canSubmit === false || composer.composing) return;
+    event.preventDefault();
+    voicePointer = event.pointerId;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    void toggleVoiceInput();
+  }
+  function onVoicePointerUp(event: PointerEvent): void {
+    if (voicePointer !== event.pointerId) return;
+    voicePointer = undefined;
+    if (voiceStarting) void cancelVoiceInput();
+    else if (voiceStatus === "recording") void stopVoiceAndTranscribe();
+  }
+  function onVoicePointerCancel(event: PointerEvent): void {
+    if (voicePointer === event.pointerId) void cancelVoiceInput();
+  }
+  function onVoiceClick(event: MouseEvent): void {
+    // Pointer presses use hold/release; keyboard and assistive clicks toggle.
+    if (event.detail === 0) void toggleVoiceInput();
+  }
+  function onVoiceVisibility(): void {
+    if (document.hidden) void cancelVoiceInput();
   }
 
   async function stop(): Promise<void> {
@@ -1251,6 +1307,7 @@
     void tick().then(() => composerInput?.focus());
   }
   function onInput(event: Event): void {
+    composerFeedback = undefined;
     setDraft((event.currentTarget as HTMLTextAreaElement).value);
   }
   function onCompositionEnd(event: CompositionEvent): void {
@@ -1267,9 +1324,12 @@
     const error = imageIntakeError(imageDrafts, files, imageLimits);
     if (error) {
       liveAnnouncement = error;
+      composerFeedback = error;
       return;
     }
+    composerFeedback = undefined;
     imageDrafts = [...imageDrafts, ...createImageDrafts(files)];
+    if (files.length) attachmentsOpen = false;
   }
   function onImageInput(event: Event): void {
     const input = event.currentTarget as HTMLInputElement;
@@ -1306,8 +1366,10 @@
       });
       addImages([await imageFileFromCapturedMedia(result)]);
     } catch (error) {
-      if (!isCameraCancellation(error))
-        liveAnnouncement = { key: "camera.failed" };
+      if (!isCameraCancellation(error)) {
+        composerFeedback = { key: "camera.failed" };
+        liveAnnouncement = composerFeedback;
+      }
     }
   }
 
@@ -1315,30 +1377,16 @@
     releaseSubmissionImages([draft]);
     imageDrafts = imageDrafts.filter((candidate) => candidate !== draft);
   }
-  function onImagePickerPointerDown(event: PointerEvent): void {
-    if (event.pointerType !== "touch") return;
-    imagePickerPointer = { id: event.pointerId, startedAt: Date.now() };
-  }
-  function onImagePickerPointerUp(event: PointerEvent): void {
-    if (!imagePickerPointer || imagePickerPointer.id !== event.pointerId)
-      return;
-    const held =
-      Date.now() - imagePickerPointer.startedAt >= PHOTO_LONG_PRESS_MS;
-    imagePickerPointer = undefined;
-    if (!held) return;
-    suppressImagePickerClick = true;
-    event.preventDefault();
-    void capturePhoto();
-  }
-  function clearImagePickerPointer(): void {
-    imagePickerPointer = undefined;
-  }
   function choosePhoto(): void {
-    if (suppressImagePickerClick) {
-      suppressImagePickerClick = false;
-      return;
-    }
+    attachmentsOpen = false;
+    attachmentsButton?.focus();
     photoLibraryInput?.click();
+  }
+  function chooseCamera(): void {
+    attachmentsOpen = false;
+    attachmentsButton?.focus();
+    if (Capacitor.isNativePlatform()) void capturePhoto();
+    else photoCameraInput?.click();
   }
   function formatHistoryDate(value: string, locale: string): string {
     const date = new Date(value);
@@ -1498,6 +1546,8 @@
   }
   function onWindowKeydown(event: KeyboardEvent): void {
     if (event.key === "Escape") {
+      if (voiceBusy) { event.preventDefault(); void cancelVoiceInput(); return; }
+      if (attachmentsOpen) { event.preventDefault(); attachmentsOpen = false; attachmentsButton?.focus(); return; }
       if (preferencesOpen) { event.preventDefault(); preferencesOpen = false; preferencesButton?.focus(); return; }
       if (contextMeterOpen) {
         event.preventDefault();
@@ -1636,8 +1686,12 @@
 <svelte:window
   on:keydown={onWindowKeydown}
   on:pointerdown={onWindowPointerDown}
+  on:blur={() => void cancelVoiceInput()}
+  on:pagehide={() => void cancelVoiceInput()}
   on:popstate={onPopState}
 />
+
+<svelte:document on:visibilitychange={onVoiceVisibility} />
 
 <div
   id="dsh-companion"
@@ -1647,7 +1701,7 @@
   <div class="companion-app">
     <div class="companion-content">
       <main class="companion-main" aria-label={t("chat.label")}>
-        <header class="companion-header">
+        <header class="companion-header" class:companion-header-offline={!networkOnline}>
           <div>
             {#if showRelationship}<button
               type="button"
@@ -1676,7 +1730,7 @@
             <div class="companion-name">{identity.companionName}</div>
             <div class="companion-presence" aria-live="polite">
               <span
-                class="cmp-status {projection.status === 'offline'
+                class="cmp-status {!networkOnline || projection.status === 'offline'
                   ? 'cmp-status-error'
                   : projection.status === 'working'
                   ? 'cmp-status-warning'
@@ -1712,6 +1766,7 @@
             {/if}
           </div>{/if}
 
+          {#if !networkOnline}<p class="companion-network-notice" role="status">{t("network.offline")}</p>{/if}
         </header>
 
         {#if effectiveWorkspaceReadiness === "loading"}
@@ -2238,23 +2293,17 @@
                 tabindex="-1"
                 aria-hidden="true"
                 on:change={onImageInput}
+                on:cancel={() => attachmentsOpen = false}
               />
-              <button
-                class="cmp-btn cmp-btn-ghost cmp-btn-circle companion-attach"
-                type="button"
-                aria-label={t("image.choose")}
-                title={t("image.choose")}
-                disabled={!imageLimits}
-                on:pointerdown={onImagePickerPointerDown}
-                on:pointerup={onImagePickerPointerUp}
-                on:pointercancel={clearImagePickerPointer}
-                on:contextmenu|preventDefault
-                on:click={choosePhoto}
-                ><ImagePlus
-                  size={19}
-                  strokeWidth={2}
-                  aria-hidden="true"
-                /></button>{/if}
+              <input bind:this={photoCameraInput}
+                class="companion-image-input"
+                type="file"
+                accept={IMAGE_ACCEPT}
+                capture="environment"
+                tabindex="-1"
+                aria-hidden="true"
+                on:change={onImageInput}
+                on:cancel={() => attachmentsOpen = false} />{/if}
               <textarea
                 bind:this={composerInput}
                 class="companion-textarea"
@@ -2273,42 +2322,17 @@
                 on:compositionstart={onCompositionStart}
                 on:compositionend={onCompositionEnd}
                 on:keydown={onKeydown}></textarea>
-              {#if voiceCapability === "available"}<button
-                class="cmp-btn cmp-btn-ghost cmp-btn-circle companion-microphone"
-                class:companion-microphone-recording={voiceStatus ===
-                  "recording"}
-                class:companion-microphone-stopping={voiceStatus === "stopping"}
+              <div
+                class="companion-compose-actions">
+              <button bind:this={attachmentsButton}
+                class="cmp-btn cmp-btn-ghost cmp-btn-circle companion-attach"
+                class:companion-attach-open={attachmentsOpen}
                 type="button"
-                data-state={voiceStatus}
-                aria-label={voiceStatus === "recording"
-                  ? t("voice.stop")
-                  : voiceStatus === "transcribing"
-                    ? t("voice.transcribing")
-                    : voiceCapability === "available" && voiceCaptureAvailable
-                        ? t("voice.start")
-                        : t("voice.micUnavailable")}
-                title={voiceStatus === "recording"
-                  ? t("voice.stop")
-                  : voiceCapability === "available" && voiceCaptureAvailable
-                    ? t("voice.start")
-                    : voiceUnavailableText(t)}
-                disabled={voiceStatus === "stopping" ||
-                  voiceStatus === "transcribing" ||
-                  projection.canSubmit === false ||
-                  voiceCapability !== "available" ||
-                  !actions.transcribeVoice ||
-                  !voiceCaptureAvailable}
-                on:click={() => void toggleVoiceInput()}
-              >
-                {#if voiceStatus === "transcribing" || voiceStatus === "stopping"}<span
-                    class="cmp-loading cmp-loading-spinner cmp-loading-sm"
-                    aria-hidden="true"
-                  ></span>{:else}<Mic
-                    size={19}
-                    strokeWidth={voiceStatus === "recording" ? 2.6 : 2}
-                    aria-hidden="true"
-                  />{/if}
-              </button>{/if}
+                aria-label={t(attachmentsOpen ? "attachments.close" : "image.choose")}
+                aria-expanded={attachmentsOpen}
+                aria-controls="companion-attachments"
+                on:click={() => attachmentsOpen = !attachmentsOpen}><svelte:component this={attachmentsOpen ? X : Plus} size={22}
+                aria-hidden="true" /></button>
               {#if contextCapacity}
                 <div class="companion-context-meter-wrap">
                   <button
@@ -2372,28 +2396,41 @@
                   {/if}
                 </div>
               {/if}
-              {#if projection.running && !composer.draft.trim() && imageDrafts.length === 0}
+              {#if voiceBusy || (!hasDraft && !projection.running)}
+                <button
+                  class="cmp-btn cmp-btn-ghost cmp-btn-circle companion-microphone"
+                  type="button"
+                  data-state={voiceStatus}
+                  aria-label={t(voiceStatus === "recording" ? "voice.stop" : voiceStatus === "transcribing" ? "voice.transcribing" : voiceAvailable ? "voice.start" : "voice.micUnavailable")}
+                  title={voiceAvailable ? t("voice.hold") : unavailableVoiceText}
+                  aria-describedby={!voiceAvailable ? "companion-voice-unavailable" : undefined}
+                  disabled={voiceStatus === "stopping" || voiceStatus === "transcribing" || (!voiceBusy && (projection.canSubmit === false || !voiceAvailable || composer.composing))}
+                  on:pointerdown={onVoicePointerDown}
+                  on:pointerup={onVoicePointerUp}
+                  on:pointercancel={onVoicePointerCancel}
+                  on:click={onVoiceClick}>
+                  {#if voiceStarting || voiceStatus === "stopping" || voiceStatus === "transcribing"}<span
+                  class="cmp-loading cmp-loading-spinner cmp-loading-sm" aria-hidden="true"></span>{:else if voiceStatus === "recording"}<Square size={18} aria-hidden="true" />{:else}<Mic size={22} aria-hidden="true" />{/if}
+                </button>
+                {#if voiceBusy}<button
+                  type="button"
+                  class="cmp-btn cmp-btn-ghost cmp-btn-circle"
+                  aria-label={t("voice.cancel")}
+                  on:click={() => void cancelVoiceInput()}><X size={20} aria-hidden="true" /></button>{/if}
+              {:else if projection.running && !hasDraft}
                 <button
                   class="cmp-btn cmp-btn-primary cmp-btn-circle companion-send"
                   aria-label={t("reply.stop")}
                   on:click={() => void stop()}
-                  disabled={!actions.stop || stopping}
-                  ><Square
-                    size={15}
-                    fill="currentColor"
-                    aria-hidden="true"
-                  /></button
-                >
+                  disabled={!actions.stop || stopping}><Square size={18} fill="currentColor" aria-hidden="true" /></button>
               {:else}
                 <button
                   class="cmp-btn cmp-btn-primary cmp-btn-circle companion-send"
                   aria-label={t("message.send")}
                   on:click={submit}
-                  disabled={projection.canSubmit === false || composer.draft.trim().length > MAX_MESSAGE_LENGTH || (!composer.draft.trim() && imageDrafts.length === 0)}
-                  ><span aria-hidden="true">↑</span></button
-                >
+                  disabled={projection.canSubmit === false || composer.composing || composer.draft.trim().length > MAX_MESSAGE_LENGTH}><span aria-hidden="true">↑</span></button>
               {/if}
-              {#if projection.running && (composer.draft.trim() || imageDrafts.length > 0) && actions.stop}
+              {#if projection.running && hasDraft && !voiceBusy && actions.stop}
                 <button
                   class="cmp-btn cmp-btn-neutral cmp-btn-circle companion-stop-inline"
                   data-testid="companion-stop"
@@ -2403,7 +2440,19 @@
                   ><Square size={13} fill="currentColor" aria-hidden="true" /></button
                 >
               {/if}
+              </div>
             </div>
+            {#if attachmentsOpen}
+              <div id="companion-attachments" class="companion-attachments" aria-label={t("image.choose")}>
+                {#if imageLimits}
+                  <button type="button" class="cmp-btn companion-attachment-option" on:click={chooseCamera}><CameraIcon size={22} aria-hidden="true" />{t("image.camera")}</button>
+                  <button type="button" class="cmp-btn companion-attachment-option" on:click={choosePhoto}><Images size={22} aria-hidden="true" />{t("image.album")}</button>
+                {:else}<p role="status">{t("image.unavailable")}</p>{/if}
+              </div>
+            {/if}
+            {#if composerFeedback}
+              <div class="companion-voice-input-status companion-voice-input-error" role="alert">{t(composerFeedback.key, composerFeedback.params)}</div>
+            {/if}
             {#if composer.draft.trim().length > MAX_MESSAGE_LENGTH}
               <div class="companion-voice-input-status companion-voice-input-error" role="alert">
                 {t("message.tooLong", { limit: MAX_MESSAGE_LENGTH, count: composer.draft.trim().length })}
@@ -2416,7 +2465,9 @@
                 role="status"
                 aria-live="polite"
               >
-                {voiceStatus === "stopping"
+                {voiceStarting
+                  ? t("voice.requesting")
+                  : voiceStatus === "stopping"
                   ? t("voice.stopping")
                   : t("voice.recording", {
                       elapsed: formatVoiceElapsed(voiceElapsedMs),
@@ -2431,13 +2482,14 @@
               >
                 {t("voice.transcribingProgress")}
               </div>
-            {:else if voiceCapability === "available" && !voiceCaptureAvailable}
+            {:else if !voiceAvailable && !hasDraft && !projection.running}
               <div
                 class="companion-voice-input-status companion-voice-input-unavailable"
+                id="companion-voice-unavailable"
                 data-testid="companion-voice-unavailable-status"
                 role="status"
               >
-                {voiceUnavailableText(t)}
+                {unavailableVoiceText}
               </div>
             {:else if voiceFailure || voiceStatus === "unavailable"}
               <div

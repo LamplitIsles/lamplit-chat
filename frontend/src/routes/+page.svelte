@@ -455,10 +455,8 @@
 </script>
 
 <svelte:head><title>Lamplit · Companion</title></svelte:head>
-{#if !online}<div role="status" class="alert alert-warning fixed top-2 left-1/2 z-50 w-auto max-w-[90vw] -translate-x-1/2">Offline. Chat will reconnect when network returns.</div>{/if}
-{#if ready && !photosEnabled}<div role="status" class="alert alert-soft fixed top-2 left-1/2 z-50 w-auto max-w-[90vw] -translate-x-1/2">Photos are unavailable in this instance. Ask the owner to enable photo storage.</div>{/if}
 <div style={`--companion-wallpaper:${hasBackground ? `url('/api/ui-assets/background?v=${assetVersion}')` : 'none'}`}>
-<Companion {projection} {actions} {t} locale={language} {appearance} {activity} onLanguageChange={setLanguage} onAppearanceChange={setAppearance} {sessionId} {accountSettingsHref}
+<Companion networkOnline={online} {projection} {actions} {t} locale={language} {appearance} {activity} onLanguageChange={setLanguage} onAppearanceChange={setAppearance} {sessionId} {accountSettingsHref}
   imageSettings={photosEnabled ? { hasAvatar, hasBackground, error: assetError, upload: (slot, event) => { void uploadAsset(slot, event); }, remove: (slot) => { void removeAsset(slot); } } : undefined}
   identity={{ companionName: 'Companion', companionAvatar: hasAvatar ? `/api/ui-assets/avatar?v=${assetVersion}` : '', userName: 'You', userAvatar: '', preferredAddress: 'you', signature: relationship.signature, mood: relationship.mood, moodLabel: moodText(), moodNote: relationship.note, affinity: relationship.affinity, affinityStage: affinityText() }}
   {history} workspaceReadiness={ready ? 'ready' : 'loading'} sessionReadiness={ready ? 'ready' : 'loading'} relationshipReadiness="ready" voiceCapability="unavailable" showRelationship={true} showDiary={true} showGallery={photosEnabled} imageLimits={photosEnabled ? imageLimits : undefined} {recoveredDraft} onHistoryOpenChange={(open) => { if (open) void refreshRelationship(); }} />
