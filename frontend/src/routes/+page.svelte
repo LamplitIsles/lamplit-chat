@@ -42,6 +42,8 @@
   let online = true;
   let photosEnabled = false;
   let accountSettingsHref: string | null = null;
+  let displayNames = { companionName: '', userName: '' };
+  let namesRequest = 0;
   let hasAvatar = false;
   let hasUserAvatar = false;
   let hasBackground = false;
@@ -144,6 +146,7 @@
     const config = await configResponse.json() as { sessionId: string | null; photosEnabled: boolean; accountSettingsHref: string | null };
     photosEnabled = config.photosEnabled;
     accountSettingsHref = config.accountSettingsHref;
+    void refreshNames().catch(showError);
     if (photosEnabled) void refreshAssets().catch(showError);
     let id = config.sessionId || localStorage.getItem(sessionKey);
     if (!id) {
@@ -416,10 +419,12 @@
     checkUpdate();
     const onStorage = (event: StorageEvent) => {
       syncPreferences();
+      if (event.key === 'lamplit.display-names.revision') void refreshNames().catch(showError);
       if (event.key === 'lamplit.ui-assets.revision' && photosEnabled) void refreshAssets().catch(showError);
     };
     window.addEventListener('storage', onStorage);
-    window.addEventListener('focus', syncPreferences);
+    const onFocus = () => { syncPreferences(); void refreshNames().catch(showError); };
+    window.addEventListener('focus', onFocus);
     mark('lamplit-page-mounted');
     online = navigator.onLine;
     const onNetworkChange = () => {
@@ -442,6 +447,7 @@
       visible = document.visibilityState === 'visible';
       if (document.visibilityState === 'visible') {
         syncPreferences();
+        void refreshNames().catch(showError);
         checkUpdate();
         if (photosEnabled) void refreshAssets().catch(showError);
         mark('lamplit-foreground-start');
@@ -455,11 +461,18 @@
       if (document.visibilityState === 'visible') void reportUserTimeZone().catch(showError);
       void pollCompanionRefresh({ ready, running, optimistic: Boolean(optimistic), promptInFlight, visible: document.visibilityState === 'visible' }, refresh)?.catch(showError);
     }, 3000);
-    return () => { mounted = false; window.removeEventListener('storage', onStorage); window.removeEventListener('focus', syncPreferences); disposed = true; window.clearInterval(poll); if (reconciliationTimer !== undefined) window.clearTimeout(reconciliationTimer); document.removeEventListener('visibilitychange', onVisible); colorScheme.removeEventListener('change', onColorSchemeChange); window.removeEventListener('online', onNetworkChange); window.removeEventListener('offline', onNetworkChange); session?.close(); registry?.close(); };
+    return () => { mounted = false; window.removeEventListener('storage', onStorage); window.removeEventListener('focus', onFocus); disposed = true; window.clearInterval(poll); if (reconciliationTimer !== undefined) window.clearTimeout(reconciliationTimer); document.removeEventListener('visibilitychange', onVisible); colorScheme.removeEventListener('change', onColorSchemeChange); window.removeEventListener('online', onNetworkChange); window.removeEventListener('offline', onNetworkChange); session?.close(); registry?.close(); };
   });
 
   function setLanguage(value: CompanionLanguage) { language = value; writePreference(LANGUAGE_STORAGE_KEY, value); }
   function setAppearance(value: CompanionAppearance) { appearance = value; writePreference(APPEARANCE_STORAGE_KEY, value); }
+  async function refreshNames() {
+    const request = ++namesRequest;
+    const response = await fetch('/api/display-names', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Could not load display names.');
+    const names = await response.json() as typeof displayNames;
+    if (!disposed && request === namesRequest) displayNames = names;
+  }
   async function refreshAssets() {
     const response = await fetch('/api/ui-assets');
     if (!response.ok) throw new Error('Could not load interface images.');
@@ -504,6 +517,6 @@
 <div style={`--companion-wallpaper:${hasBackground ? `url('/api/ui-assets/background?v=${assetVersion}')` : 'none'}`}>
 <Companion bind:updateSafe networkOnline={online} {projection} {actions} {t} locale={language} {appearance} {activity} onLanguageChange={setLanguage} onAppearanceChange={setAppearance} {sessionId} {accountSettingsHref}
   imageSettings={photosEnabled ? { hasAvatar, hasUserAvatar, hasBackground, error: assetError, upload: (slot, event) => { void uploadAsset(slot, event); }, remove: (slot) => { void removeAsset(slot); } } : undefined}
-  identity={{ companionName: 'Companion', companionAvatar: hasAvatar ? `/api/ui-assets/avatar?v=${assetVersion}` : '', userName: 'You', userAvatar: hasUserAvatar ? `/api/ui-assets/user-avatar?v=${assetVersion}` : '', preferredAddress: 'you', signature: relationship.signature, mood: relationship.mood, moodLabel: moodText(), moodNote: relationship.note, affinity: relationship.affinity, affinityStage: affinityText() }}
+  identity={{ companionName: displayNames.companionName || 'Companion', companionAvatar: hasAvatar ? `/api/ui-assets/avatar?v=${assetVersion}` : '', userName: displayNames.userName || t('you'), userAvatar: hasUserAvatar ? `/api/ui-assets/user-avatar?v=${assetVersion}` : '', preferredAddress: displayNames.userName || t('you'), signature: relationship.signature, mood: relationship.mood, moodLabel: moodText(), moodNote: relationship.note, affinity: relationship.affinity, affinityStage: affinityText() }}
   {history} workspaceReadiness={ready ? 'ready' : 'loading'} sessionReadiness={ready ? 'ready' : 'loading'} relationshipReadiness="ready" voiceCapability="unavailable" showRelationship={true} showDiary={true} showGallery={photosEnabled} imageLimits={photosEnabled ? imageLimits : undefined} {recoveredDraft} onHistoryOpenChange={(open) => { if (open) void refreshRelationship(); }} />
 </div>

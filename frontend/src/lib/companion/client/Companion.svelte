@@ -1732,7 +1732,7 @@
             </div>
           </div>
           <div class="companion-header-copy">
-            <div class="companion-name">{identity.companionName}</div>
+            <div class="companion-name" title={identity.companionName}>{identity.companionName}</div>
             <div class="companion-presence" aria-live="polite">
               <span
                 class="cmp-status {!networkOnline || projection.status === 'offline'
@@ -1952,6 +1952,8 @@
                   >
                     <div
                       class="cmp-chat-image cmp-avatar cmp-avatar-placeholder message-avatar"
+                      role="img" aria-label={unit.side === "incoming" ? identity.companionName : identity.userName}
+                      title={unit.side === "incoming" ? identity.companionName : identity.userName}
                     >
                       <div
                         class="companion-avatar-crop cmp-mask cmp-mask-circle"
@@ -1963,7 +1965,7 @@
                             src={identity.userAvatar}
                             alt=""
                           />{:else}<span aria-hidden="true"
-                            >{unit.side === "incoming" ? "✦" : t("you")}</span
+                            >{unit.side === "incoming" ? "✦" : Array.from(identity.userName)[0]}</span
                           >{/if}
                       </div>
                     </div>
@@ -2182,6 +2184,8 @@
                 >
                   <div
                     class="cmp-chat-image cmp-avatar cmp-avatar-placeholder message-avatar"
+                      role="img" aria-label={identity.companionName}
+                      title={identity.companionName}
                   >
                     <div class="companion-avatar-crop cmp-mask cmp-mask-circle">
                       {#if identity.companionAvatar}<img

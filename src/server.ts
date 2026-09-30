@@ -1,6 +1,7 @@
 import { routeAgentRequest } from 'agents'
 import { PI_AGENT_PREFIX } from './shared/pi-contract'
 import { authorize, unauthorized } from './server/auth'
+import { handleDisplayNames } from './server/display-names'
 
 export { PiSession } from './server/pi-session'
 export { PiRegistry } from './server/pi-registry'
@@ -38,6 +39,7 @@ export default {
       const sessionId = registry ? (await registry.ensureDefaultSession()).id : env.COMPANION_SESSION_ID || null
       return respond(Response.json({ sessionId, photosEnabled: Boolean(env.COMPUTER_R2), accountSettingsHref: hosted ? '/settings' : null }, { headers: { 'cache-control': 'private, no-store' } }))
     }
+    if (new URL(request.url).pathname === '/api/display-names') return respond(await handleDisplayNames(request, env.COMPUTER_R2, instanceId))
     if (new URL(request.url).pathname.startsWith('/api/ui-assets')) {
       const url = new URL(request.url)
       const slot = url.pathname.split('/')[3]

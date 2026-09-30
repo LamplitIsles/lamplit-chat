@@ -193,7 +193,7 @@
 #dsh-companion .companion-voice-input-status[role="status"]{min-height:1.1em}
 #dsh-companion .companion-voice-input-unavailable{color:color-mix(in srgb,var(--color-base-content) 55%,transparent)}
 #dsh-companion .companion-voice-input-error{color:var(--color-error)}
-#dsh-companion .companion-recovery{align-self:center;justify-self:center;max-width:500px;padding:34px 24px;text-align:center}
+#dsh-companion .companion-recovery{align-self:center;justify-self:center;min-width:0;max-width:min(500px,100%);padding:34px 24px;text-align:center;overflow-wrap:anywhere}
 #dsh-companion .companion-recovery h1{margin:8px 0;font-size:1.32rem}
 #dsh-companion .companion-recovery p{opacity:.66}
 #dsh-companion .companion-mood-orb{width:86px;height:86px;margin:0 auto 17px;background:radial-gradient(circle at 34% 28%,var(--color-accent),var(--color-primary));filter:drop-shadow(0 0 10px color-mix(in srgb,var(--color-primary) 12%,transparent)) drop-shadow(0 16px 19px color-mix(in srgb,var(--color-primary) 25%,transparent))}
@@ -272,7 +272,7 @@
 #dsh-companion .companion-microphone{touch-action:none}
 #dsh-companion .companion-image-draft-remove{min-width:44px;min-height:44px;background:var(--color-neutral);color:var(--color-neutral-content)}
 #dsh-companion button:focus-visible,#dsh-companion a:focus-visible{outline:2px solid var(--color-primary);outline-offset:3px}
-#dsh-companion .companion-name{overflow-wrap:anywhere}
+#dsh-companion .companion-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #dsh-companion .companion-voice-input-unavailable{color:var(--color-secondary)}
 @media(hover:hover) and (pointer:fine){#dsh-companion .companion-attachment-option:hover{background:color-mix(in srgb,var(--color-base-100) 85%,var(--color-base-300))}}
 @media(prefers-reduced-motion:no-preference){#dsh-companion .companion-compose-actions button:active{transform:scale(.97)}}
