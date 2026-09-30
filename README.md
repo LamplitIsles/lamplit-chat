@@ -8,7 +8,9 @@ The Companion UI supports streaming chat, durable history and branching, steer a
 
 ## Chat on mobile
 
-The Companion uses a mist blue light theme and a coordinated blue grey dark theme. Theme (`light`, `dark`, or `system`) and Chinese/English preferences remain local to this browser, using the existing `her.companion.appearance` and `her.companion.language` keys. Hosted users configure those preferences in their personal space at `/settings`; daily chat opens at `/chat`. Self-hosted users use the chat's Settings control.
+The Companion uses a mist blue light theme and a coordinated blue grey dark theme. Theme (`light`, `dark`, or `system`) and Chinese/English preferences are stored locally using `her.companion.appearance` and `her.companion.language`. Hosted users configure them in the management App at `/settings`; the chat App opens at `/chat`. Both entries share the user's personal origin. The chat synchronizes preferences on storage events, focus and foreground return, without a manual refresh. Self-hosted users use the chat's Settings control.
+
+Companion and user display names are persisted through `/api/display-names` and refreshed across the two entries; avatars and backgrounds use private UI assets. These names only affect display and greetings, not the personality file or system prompt. Basic hosted chat is free with BYOK; optional development environments remain planned and are not required for import, personality or memory management.
 
 The composer has a text area above a right-aligned action row. **+** opens a bordered **Camera / Photo library** panel; **×**, Escape, choosing a source, or cancelling the chooser closes it without clearing text. Photos use the existing type, size, count, preview, removal, and upload checks. You can send images without a caption. Invalid selections and failed sends show feedback; rejected drafts and attachments remain available to retry. Chinese IME composition cannot submit, Enter sends, and Shift+Enter inserts a newline. The primary action stops an active reply when there is no new draft; with a draft, Send and a separate Stop remain available.
 
@@ -51,9 +53,9 @@ Without R2, the album and interface image controls are hidden; opening the attac
 
 ## Data portability
 
-Complete backup, restore, and migration from hosted Lamplit to a self-hosted instance are planned for Phase 2. Their interface and transfer format need a dedicated design before implementation. This release does not provide a complete migration endpoint or tool. Conversation history and files remain durable within this instance.
+Chat, memory and customization should belong to the user and remain portable. Import and complete export tools are under construction; free migration in and out is a product commitment. Phase 1 prioritizes migration and hosted mobile use; optional development assistants are Phase 2. The complete migration interface and transfer format need a dedicated design before implementation. This release does not provide a complete migration endpoint or tool. Conversation history and files remain durable within this instance.
 
-The installable PWA includes a manifest, icons, standalone launch mode, and a versioned service worker. In a mobile browser, open the authenticated site and use **Add to Home Screen** from the browser menu. The worker caches only the app's static JavaScript/CSS, icons, manifest, and the generic HTML shell after a successful authenticated load; it never caches API, history, or image responses. Offline launch shows the shell and an offline state; chat needs network access. On reconnect or foreground return, the page refreshes session state. Service worker updates activate in the background; refresh the page when you want the newest version.
+The installable PWA includes a manifest, icons, standalone launch mode, and a versioned service worker. In a mobile browser, open the authenticated site and use **Add to Home Screen** from the browser menu. The worker caches only the app's static JavaScript/CSS, icons, manifest, and the generic HTML shell after a successful authenticated load; it never caches API, history, or image responses. Offline launch shows the shell and an offline state; chat needs network access. On reconnect or foreground return, the page refreshes session state. Service worker updates activate in the background. The app checks for new versions every 60 seconds and on foreground return, then reloads when visible, online and idle. It waits while a reply, draft, attachment, recording or relevant dialog is active. Hosted mode uses Platform's shared root service worker; the self-hosted shell behavior described here belongs to this repository.
 
 ## Free-plan limits and verification
 
@@ -77,3 +79,9 @@ Hosted deployment uses the isolated `lamplit-chat-media` R2 bucket, the Platform
 The mist blue UI slice was verified with `npm run check:frontend`, `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build`, plus an isolated browser mounting the real Companion with fake send/stop/transcription actions. No live user state, email, model provider, microphone, phone, or production deployment was used. Hosted identity and the two PWA entries remain owned by Platform: host-only sessions, chat `/chat`, management `/settings`, distinct manifest identities/scopes/start URLs, and the shared root service worker's network-only private-page behavior. This UI change does not deploy either repository or force an app refresh.
 
 The chat page updates Android browser/PWA theme-color with its resolved light/dark/system theme so the system bar matches the header. The manifest uses the default mist-blue launch background. System time/battery/gesture bars remain browser-controlled; viewport-fit=cover and existing safe-area padding protect controls.
+
+## Source repositories
+
+The chat frontend and backend are open source at https://github.com/LamplitIsles/lamplit-chat; the public website lives at https://github.com/LamplitIsles/lamplit-site. Platform account management and the future hosted work machine are separate projects, outside this repository's open-source scope.
+
+Local `origin` remains Forgejo for development and PRs; `github` points to the public GitHub repository for additional publication of merged `main`. Synchronization is explicit; merging or deploying does not automatically push GitHub.
