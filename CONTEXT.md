@@ -29,7 +29,7 @@ The user's changes to their companion's interface, personality, memory preferenc
 _Avoid_: Conversation history, learned memory
 
 **Conversation archive（历史对话档案）**:
-The user's preserved past conversations, available for reading and search. An archive is distinct from the selected memories and conversation context used by the chat agent.
+The user's preserved past conversations, including imported conversations, available for reading and search by the user and companion. An archive is distinct from the selected memories and the active conversation context.
 _Avoid_: Companion memory, current model context
 
 **Companion plugin（聊天机插件）**:
@@ -99,3 +99,11 @@ _Avoid_: Canonical identity draft, new agent identity
 **Companion base prompt（陪伴基础提示词）**:
 The shared behavioral guidance for Jiji across sessions, separate from her specific identity and relationships.
 _Avoid_: Identity draft, session history
+
+**History import（聊天记录迁入）**:
+The transfer of conversations from another chat application into the user's private conversation archive. Importing history does not by itself transfer the companion's personality or establish its learned memories.
+_Avoid_: Full companion migration, memory extraction
+
+**Active conversation（当前对话）**:
+The conversation in which the user and companion exchange new messages. Its selected context is distinct from the full historical archive.
+_Avoid_: Entire history archive, companion identity

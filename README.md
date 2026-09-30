@@ -68,7 +68,7 @@ Official Cloudflare documentation checked 2026-09-29:
 
 Run local checks with `npm run check:frontend`, `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build`. On an explicitly authorized isolated Free account, verify: first session and two consecutive turns; close/reopen the browser during a turn; history and FTS query; Markdown write then read after reconnect; memory persistence; and anonymous HTTP and WebSocket rejection. Measure four timings separately: first page open, WebSocket connected, history visible, and model first response. Record network/location, cold or warm start, and sample count. Do not count model wait as page load. A Paid-account deployment does not establish Free compatibility.
 
-The root project is MIT licensed. Imported Codex for Love Companion frontend files retain Apache 2.0; see [frontend/LICENSE.codex-for-love](frontend/LICENSE.codex-for-love).
+The project, including its Companion frontend, is licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for upstream attribution and [LICENSES/pi-on-cf-MIT.txt](LICENSES/pi-on-cf-MIT.txt) for the retained original pi-on-cf notice. The imported Codex for Love license remains in [frontend/LICENSE.codex-for-love](frontend/LICENSE.codex-for-love). Third-party dependencies retain their own licenses.
 
 ## Hosted mode
 

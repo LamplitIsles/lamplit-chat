@@ -1,6 +1,7 @@
 {
   "name": "@pi-on-cf/companion",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "paraglide:generate": "paraglide-js compile --project ./project.inlang --outdir ./src/lib/paraglide --emit-ts-declarations --strategy globalVariable preferredLanguage baseLocale --silent",
