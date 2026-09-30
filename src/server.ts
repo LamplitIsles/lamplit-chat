@@ -31,7 +31,7 @@ export default {
       return new Response(null, { status: 204 })
     }
     if (hosted && new URL(request.url).pathname === '/manifest.webmanifest') {
-      return Response.json({ name: 'Lamplit Companion', short_name: 'Lamplit', start_url: '/chat', display: 'standalone', background_color: '#30274d', theme_color: '#30274d', icons: [{ src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' }, { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }] }, { headers: { 'content-type': 'application/manifest+json' } })
+      return Response.json({ name: 'Lamplit Companion', short_name: 'Lamplit', start_url: '/chat', display: 'standalone', background_color: '#f3f6f8', theme_color: '#f3f6f8', icons: [{ src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' }, { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }] }, { headers: { 'content-type': 'application/manifest+json' } })
     }
     if (new URL(request.url).pathname === '/api/companion-config') {
       const registry = instanceId ? env.PiRegistry.getByName(instanceId) as unknown as { ensureDefaultSession(): Promise<{ id: string }> } : null

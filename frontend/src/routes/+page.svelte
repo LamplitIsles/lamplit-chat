@@ -68,7 +68,10 @@
   let reconciliationAttempts = 0;
   $: t = companionTranslate(language);
   $: scheme = resolveScheme(appearance, systemDark);
-  $: if (typeof document !== 'undefined') document.documentElement.dataset.theme = scheme === 'dark' ? 'night-voyage' : 'sticker-messenger';
+  $: if (typeof document !== 'undefined') {
+    document.documentElement.dataset.theme = scheme === 'dark' ? 'night-voyage' : 'sticker-messenger';
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', scheme === 'dark' ? '#0b1220' : '#f3f6f8');
+  }
   $: projection = companionProjection(
     [...durableItems, ...(optimistic ? [...(optimistic.images ?? []), ...(optimistic.item.text ? [optimistic.item] : [])] : [])],
     running, ready, error,
