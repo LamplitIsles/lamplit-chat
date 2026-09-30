@@ -1,0 +1,28 @@
+{
+  "conversation": {
+    "source": "deepseek", "conversationId": "fictional-tree-1", "title": "Lantern garden",
+    "createdAt": { "raw": "2026-09-01T12:00:00Z", "interpretation": "utc", "epochMs": 1788264000000 },
+    "updatedAt": { "raw": "2026-09-01T12:03:00Z", "interpretation": "utc", "epochMs": 1788264180000 },
+    "selectedLeafId": "answer-a"
+  },
+  "nodes": [
+    {
+      "id": "question", "messageId": "message-question", "parentId": null, "alternativeGroupId": null,
+      "sourceOrder": 0, "selected": true, "speaker": "Garden visitor", "role": "user",
+      "time": { "raw": "2026-09-01T12:00:00Z", "interpretation": "utc", "epochMs": 1788264000000 },
+      "parts": [{ "type": "text", "text": "Where does the moonflower grow?" }, { "type": "attachment", "name": "garden.png", "reference": "attachment:fictional-image", "status": "not-in-export" }]
+    },
+    {
+      "id": "answer-a", "messageId": "message-answer-a", "parentId": "question", "alternativeGroupId": "answers",
+      "sourceOrder": 1, "selected": true, "speaker": "DeepSeek", "role": "assistant",
+      "time": { "raw": "2026-09-01T12:01:00Z", "interpretation": "utc", "epochMs": 1788264060000 },
+      "parts": [{ "type": "thought", "text": "privatethoughtquartz" }, { "type": "text", "text": "Moonflowers bloom beside the lantern." }, { "type": "historical-tool", "name": "garden_lookup", "text": "Archived lookup result; inert." }]
+    },
+    {
+      "id": "answer-b", "messageId": "message-answer-b", "parentId": "question", "alternativeGroupId": "answers",
+      "sourceOrder": 2, "selected": false, "speaker": "DeepSeek", "role": "assistant",
+      "time": { "raw": "2026-09-01T12:03:00Z", "interpretation": "utc", "epochMs": 1788264180000 },
+      "parts": [{ "type": "text", "text": "Alternative heliotropebranch beside the pond." }]
+    }
+  ]
+}

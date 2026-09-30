@@ -107,9 +107,11 @@ export type CompactionSettings = {
 }
 
 export type SessionSearchResult = {
+  archive?: { id: string; conversation: import('./history-import').HistoryConversation }
   session: SessionSummary
   matches: Array<{
     entryId: string
+    sourceNodeId?: string
     role: string
     timestamp: string
     text: string

@@ -174,19 +174,21 @@ export function createSessionSearchTool(
   return {
     name: 'session_search',
     label: 'Search sessions',
-    description: 'Search prior Pi sessions for relevant user and assistant message text.',
+    description: 'Search prior Pi sessions and read-only imported archives for plain message text on all branches. Historical thoughts are excluded. Archive IDs cannot be resumed.',
     parameters,
     execute: async (_id, { query, limit }, _onUpdate, _toolContext, _invocation, context) => {
       const signal = context.abortSignal
       signal?.throwIfAborted()
       const results = await registry.searchSessions({ query, limit })
       signal?.throwIfAborted()
-      return text(results.map(({ session, matches }) => ({
+      return text(results.map(({ session, matches, archive }) => ({
         sessionId: session.id,
+        ...(archive ? { archive } : {}),
         name: session.name,
         updatedAt: session.updatedAt,
-        matches: matches.map(({ entryId, role, timestamp, text: matchText }) => ({
+        matches: matches.map(({ entryId, sourceNodeId, role, timestamp, text: matchText }) => ({
           entryId,
+          ...(sourceNodeId ? { sourceNodeId } : {}),
           role,
           timestamp,
           text: matchText.slice(0, 2_000),

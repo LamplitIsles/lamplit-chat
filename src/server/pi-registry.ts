@@ -1,3 +1,6 @@
+import { HistoryArchives, HistoryFailure } from './history-archives'
+import { safeDiagnostic, hashSourceId } from './history-import-api'
+import type { HistoryReply } from '../shared/history-import'
 import { hostedCallable, HostedAgent } from './hosted-agent'
 import type {
   ApplyMemoryExtractionInput,
@@ -34,6 +37,7 @@ type SessionRow = {
 }
 
 type SearchRow = SessionRow & {
+  archive_metadata: string | null
   entry_id: string
   role: string
   timestamp: string
@@ -89,6 +93,7 @@ function relationshipRecord(row: RelationshipRow): RelationshipRecord {
 }
 
 export class PiRegistry extends HostedAgent {
+  private history: HistoryArchives
   private defaultSessionPromise?: Promise<SessionSummary>
 
   async revokePersonalSession(tokenHash: string): Promise<void> {
@@ -190,6 +195,50 @@ export class PiRegistry extends HostedAgent {
         state TEXT NOT NULL
       );
     `)
+    this.history = new HistoryArchives(this.ctx.storage, (id, node, seq) => {
+      const text = node.parts.filter(part => part.type === 'text').map(part => part.text).join('\n')
+      this.upsertSearchEntry(id, node.id, seq, node.role, node.time.raw, text)
+    })
+  }
+
+  // Internal RPC only. HTTP authenticates and selects this registry; no browser-callable import RPC.
+  async historyRequest(action: string, params: { id?: string; input?: unknown; after?: string | number; limit?: number }): Promise<HistoryReply> {
+    const started = Date.now()
+    try {
+      const id = params.id ?? ''
+      let body: unknown
+      switch (action) {
+        case 'settings': body = this.history.settings(); break
+        case 'start': body = this.history.start(params.input); break
+        case 'append': body = await this.history.append(id, params.input); break
+        case 'commit': body = this.history.commit(id, params.input); break
+        case 'status': body = this.history.getStatus(id); break
+        case 'cancel': this.history.cancel(id); body = { cancelled: true }; break
+        case 'list': body = this.history.list(String(params.after ?? ''), params.limit ?? 20); break
+        case 'read': body = this.history.read(id, Number(params.after ?? 0), params.limit ?? 20); break
+        case 'diagnostics': {
+          const event = await safeDiagnostic(params.input, crypto.randomUUID())
+          const issueId = event.issueId
+          if (!this.history.diagnosticAllowed()) throw new HistoryFailure('rate-limit', 429)
+          console.info(JSON.stringify(event))
+          body = { issueId }; break
+        }
+        default: throw new HistoryFailure('not-found', 404)
+      }
+      return { status: 200, body }
+    } catch (error) {
+      const failure = error instanceof HistoryFailure ? error : new HistoryFailure('internal-error', 500)
+      const issueId = crypto.randomUUID()
+      if (this.history.diagnosticAllowed()) {
+        const sourceNodeIdHash = failure.sourceNodeId ? await hashSourceId(failure.sourceNodeId) : undefined
+        console.info(JSON.stringify({ event: 'history-import', issueId, stage: action, code: failure.code, ...this.history.failureContext(params.id ?? ''), elapsedMs: Date.now() - started, ...(sourceNodeIdHash ? { sourceNodeIdHash } : {}) }))
+      }
+      return { status: failure.status, body: { error: { code: failure.code, stage: action, issueId, ...(failure.sourceNodeId ? { sourceNodeId: failure.sourceNodeId } : {}) } } }
+    }
+  }
+
+  async historyFailure(event: { issueId: string; stage: string; code: string }): Promise<void> {
+    if (this.history.diagnosticAllowed()) console.info(JSON.stringify({ event: 'history-import', issueId: event.issueId, stage: event.stage, code: event.code }))
   }
 
   @hostedCallable()
@@ -293,7 +342,7 @@ export class PiRegistry extends HostedAgent {
     const limit = boundedLimit(input.limit)
     const query = input.query?.trim()
     if (query) {
-      const matches = await this.searchSessions({ ...input, limit })
+      const matches = this.search({ ...input, limit }, false)
       const matchedIds = new Set(matches.map(({ session }) => session.id))
       const nameRows = this.ctx.storage.sql.exec<SessionRow>(
         `SELECT * FROM pi_registry_sessions
@@ -319,12 +368,16 @@ export class PiRegistry extends HostedAgent {
 
   @hostedCallable()
   async searchSessions(input: SessionListInput): Promise<SessionSearchResult[]> {
+    return this.search(input, true)
+  }
+
+  private search(input: SessionListInput, includeArchives: boolean): SessionSearchResult[] {
     const query = input.query?.trim()
     if (!query) return []
     const limit = boundedLimit(input.limit)
     const rows = query.startsWith('re:')
-      ? this.regexSearch(query.slice(3).trim(), input.namedOnly === true)
-      : this.ftsSearch(ftsQuery(query), limit, input.namedOnly === true)
+      ? this.regexSearch(query.slice(3).trim(), input.namedOnly === true, includeArchives)
+      : this.ftsSearch(ftsQuery(query), limit, input.namedOnly === true, includeArchives)
     const grouped = groupSearchRows(rows, limit)
     if (input.sort === 'recent') grouped.sort((a, b) => b.session.updatedAt.localeCompare(a.session.updatedAt))
     return grouped
@@ -731,22 +784,27 @@ export class PiRegistry extends HostedAgent {
     )
   }
 
-  private ftsSearch(query: string, sessionLimit: number, namedOnly: boolean): SearchRow[] {
+  private ftsSearch(query: string, sessionLimit: number, namedOnly: boolean, includeArchives: boolean): SearchRow[] {
     return this.ctx.storage.sql.exec<SearchRow>(
       `SELECT s.*, f.entry_id, f.role, f.timestamp, e.text
        FROM pi_registry_search_fts AS f
        JOIN pi_registry_search_entries AS e ON e.session_id = f.session_id AND e.entry_id = f.entry_id
-       JOIN pi_registry_sessions AS s ON s.id = f.session_id
-       WHERE pi_registry_search_fts MATCH ? AND s.status = 'ready' AND (? = 0 OR s.name IS NOT NULL)
+       JOIN (SELECT *, NULL AS archive_metadata FROM pi_registry_sessions
+         UNION ALL SELECT id, json_extract(metadata,'$.title') AS name, 'ready' AS status,
+         json_extract(metadata,'$.createdAt.raw') AS created_at, json_extract(metadata,'$.updatedAt.raw') AS updated_at,
+         node_count AS message_count, json_extract(metadata,'$.selectedLeafId') AS active_leaf_id,
+         'new' AS lineage_type, NULL AS parent_session_id, NULL AS source_entry_id, metadata AS archive_metadata FROM history_archives) AS s ON s.id = f.session_id
+       WHERE pi_registry_search_fts MATCH ? AND s.status = 'ready' AND (? = 0 OR s.name IS NOT NULL) AND (? = 1 OR s.archive_metadata IS NULL)
        ORDER BY bm25(pi_registry_search_fts), s.updated_at DESC
        LIMIT ?`,
       query,
       namedOnly ? 1 : 0,
+      includeArchives ? 1 : 0,
       Math.min(MAX_FTS_ROWS, sessionLimit * 20),
     ).toArray()
   }
 
-  private regexSearch(pattern: string, namedOnly: boolean): SearchRow[] {
+  private regexSearch(pattern: string, namedOnly: boolean, includeArchives: boolean): SearchRow[] {
     if (!pattern || pattern.length > MAX_REGEX_LENGTH) throw new Error(`Regex must be 1-${MAX_REGEX_LENGTH} characters.`)
     if (/\\[1-9]|\([^)]*[+*{][^)]*\)[+*{]/.test(pattern)) throw new Error('Regex contains an unsafe nested quantifier or backreference.')
     let regex: RegExp
@@ -758,10 +816,15 @@ export class PiRegistry extends HostedAgent {
     const candidates = this.ctx.storage.sql.exec<SearchRow>(
       `SELECT s.*, e.entry_id, e.role, e.timestamp, e.text
        FROM pi_registry_search_entries AS e
-       JOIN pi_registry_sessions AS s ON s.id = e.session_id
-       WHERE s.status = 'ready' AND (? = 0 OR s.name IS NOT NULL)
+       JOIN (SELECT *, NULL AS archive_metadata FROM pi_registry_sessions
+         UNION ALL SELECT id, json_extract(metadata,'$.title') AS name, 'ready' AS status,
+         json_extract(metadata,'$.createdAt.raw') AS created_at, json_extract(metadata,'$.updatedAt.raw') AS updated_at,
+         node_count AS message_count, json_extract(metadata,'$.selectedLeafId') AS active_leaf_id,
+         'new' AS lineage_type, NULL AS parent_session_id, NULL AS source_entry_id, metadata AS archive_metadata FROM history_archives) AS s ON s.id = e.session_id
+       WHERE s.status = 'ready' AND (? = 0 OR s.name IS NOT NULL) AND (? = 1 OR s.archive_metadata IS NULL)
        ORDER BY e.timestamp DESC LIMIT ?`,
       namedOnly ? 1 : 0,
+      includeArchives ? 1 : 0,
       MAX_FTS_ROWS,
     ).toArray()
     return candidates.filter(({ text }) => regex.test(text.slice(0, MAX_REGEX_TEXT)))
@@ -849,11 +912,11 @@ function groupSearchRows(rows: SearchRow[], limit: number): SessionSearchResult[
     let result = grouped.get(row.id)
     if (!result) {
       if (grouped.size >= limit) continue
-      result = { session: summaryFromRow(row), matches: [] }
+      result = { session: summaryFromRow(row), matches: [], ...(row.archive_metadata ? { archive: { id: row.id, conversation: JSON.parse(row.archive_metadata) } } : {}) }
       grouped.set(row.id, result)
     }
     if (result.matches.length < 10) {
-      result.matches.push({ entryId: row.entry_id, role: row.role, timestamp: row.timestamp, text: row.text })
+      result.matches.push({ entryId: row.entry_id, role: row.role, timestamp: row.timestamp, text: row.text, ...(row.archive_metadata ? { sourceNodeId: row.entry_id } : {}) })
     }
   }
   return [...grouped.values()]

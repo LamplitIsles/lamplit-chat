@@ -1,0 +1,83 @@
+# History import backend contract (Spec #2903)
+
+This backend accepts normalized **conversation data**, not ZIPs or SQLite files. It stores read-only archives and existing FTS entries atomically in the same PiRegistry SQLite. No PiSession is created, no provider or historical tool is invoked, and the current main session and context stay unchanged. Pi version: **0.99.1**. Source format conversion belongs to platform; these fictional fixtures do not claim compatibility with every source-app version.
+
+## Authentication and routing
+
+All routes use existing personal-deployment `AUTH_PASSWORD` Basic/cookie authentication, or hosted trusted service headers `x-lamplit-internal-secret` and `x-lamplit-instance`. The platform must authenticate its user and set those headers server-side. Browser input cannot choose an instance. Each hosted instance has its own registry; personal deployments use `singleton`. Mutations reject a present Origin different from the request origin. A server-side proxy may omit Origin. All responses use `private, no-store` and JSON responses use `nosniff`. Archive IDs start with `archive-` and never appear in runnable session ownership rows or normal session lists (including filtered lists).
+
+## Machine contract and data
+
+`src/shared/history-import.ts` exports JSON Schema objects, inferred request types, read types, status/error types and `HISTORY_LIMITS`. `src/server/fixtures/history-deepseek.json` and `history-rikka.json` contain fictional normalized conversations and nodes. Requests have no unrecognized fields. Unknown part types, credentials, settings, arbitrary Pi Entries, workspace files, and assistant data on DeepSeek are rejected.
+
+A conversation has `source: "rikka" | "deepseek"`, stable `conversationId`, `title`, `createdAt`, `updatedAt`, and nullable `selectedLeafId`. Rikka additionally requires `assistant: {id, name}`. DeepSeek must omit it. Identity uses `(source, assistant.id or null, conversationId)`, never filename, display name, or ZIP hash.
+
+A node has stable `id` and `messageId`, nullable `parentId` and `alternativeGroupId`, integer `sourceOrder`, boolean `selected`, original `speaker`, role (`user`, `assistant`, `system`, `tool`), `time`, and ordered `parts`. An alternative is its own stable node; preserve all alternatives with their shared group ID, parent and source order. Parent references may cross batches; commit checks the complete old-plus-new graph for missing parents/cycles and requires selectedLeafId to identify a leaf. Parts are `{type:"text",text}`, `{type:"thought",text}`, `{type:"attachment",name,reference,status:"not-restored"|"not-in-export"}`, or `{type:"historical-tool",name,text}`. Tool traces are inert text, with no call IDs, arguments to execute, or runnable tool messages.
+
+Times are `{raw, interpretation, epochMs?}`. `utc` requires an ISO time ending in Z and an epochMs matching Date.parse(raw); `offset` requires an explicit offset (or Z) and matching epochMs. `local-unknown` preserves an ISO local datetime **without** inventing an offset or epochMs. Rikka LocalDateTime is represented this way unless the parser has explicit source timezone evidence. Raw times remain authoritative archive material, separate from runtime Pi timestamps.
+
+## Endpoints
+
+Every successful operation returns HTTP 200 JSON. Every failure returns `{error:{code,stage,issueId,sourceNodeId?}}`; sourceNodeId is only an authenticated conflict/limit/graph locator, never logged raw. `issueId` is a UUID. There are no free-form exception messages.
+
+| Method and path | Request | Response |
+| --- | --- | --- |
+| GET `/api/history-import` | None | `{rikkaAssistantId:string|null}` |
+| POST `/api/history-import` | `{conversation}` | Import status |
+| GET `/api/history-import/:importId` | None | Import status |
+| POST `/api/history-import/:importId/append` | `{batch,nodes}` | Import status |
+| POST `/api/history-import/:importId/commit` | `{batches}` | Committed import status |
+| DELETE `/api/history-import/:importId` | None | `{cancelled:true}` (staging only) |
+| POST `/api/history-import/diagnostics` | Diagnostic event below | `{issueId}` |
+| GET `/api/history-archives?limit=20&cursor=...` | None | `{archives:[{id,conversation,messageCount}],nextCursor?}` |
+| GET `/api/history-archives/:archiveId?limit=20&cursor=...` | None | `{id,conversation,messageCount,nodes,nextCursor?}` |
+
+Import status: `{importId,archiveId,state:"staging"|"committed",nextBatch,nodeCount,bytes,expiresAt,added?}`. Expiration is a Unix epoch in milliseconds, fixed at 24 hours after start. `added` is new committed nodes; zero means deduplicated. `archiveId` is provisional until commit because another upload may commit the same conversation first. Treat the committed archiveId as authoritative.
+
+Read the fixed Rikka role with GET `/api/history-import` before source selection (null means unbound). Begin one conversation; send batches 0, 1, ... with up to 100 nodes each; commit with `batches` equal to nextBatch. Commit requires at least one node. Before commit no new content is readable or searchable. Use GET status to recover after interruption. Repeating start with the same source identity and structurally identical conversation metadata returns the existing unfinished import status, including importId, nextBatch and the original expiry, before checking the pending cap. This recovers a lost start response without allocating another slot. Different metadata for that unfinished identity returns 409 conflict without changing it; cancel the recovered import before starting a changed export. Reuse preserves staged nodes and batch fingerprints: retransmit identical numbered batches, or resume at nextBatch with the same batch plan; different chunking/content at a recorded batch conflicts. Committed receipts are not reused by start; a subsequent export creates a new stage. Repeating an identical append batch is idempotent; changed reuse is a conflict. Commit retries are idempotent until status expiry. Receipts expire after 24 hours; after that restart/retransmit, relying on source dedupe. Cancel/expiry removes only feature-owned staging, never committed archives. Cleanup is lazy on the next start, with no queue or alarms. At most four pending conversations can be staged; cancel abandoned imports before starting more.
+
+Re-export: start a new import with the same source identity. Existing node content (including speaker, role, time, parent, message identity, sourceOrder, group and parts) is immutable. Changed content fails the entire conversation commit with 409 conflict; old content and index survive. New nodes/branches append. Title, assistant display name, conversation display times, selectedLeafId and node.selected may update. Omitted old nodes remain; send nodes whose selection changed. Successful conversations remain when another conversation fails. Compatible concurrent starts for the same source share one unfinished stage and committed receipt.
+
+The first successful Rikka commit atomically binds `assistant.id`. Preview, start, append, cancellation and failures do not bind it. Later commits require that same ID; renaming is allowed. Another ID fails with `role-mismatch`. A missing ID is invalid data; platform reports `role-missing` when the bound role is absent from its export. DeepSeek appends independently.
+
+Archive list cursor is the last archive ID, ordered lexically; node cursor is the last committed insertion sequence, a nonnegative integer. Omit cursor for the first page. nextCursor is omitted at the end. Nodes include original fields plus `message:{role,content}`: text and thinking parts compatible with Pi-readable transcript content. Attachment/tool descriptions are projected as text for reading; no executable calls are generated. Search indexes **only source parts of type text**, on every committed branch, excluding thoughts and attachment/tool descriptions. Existing `session_search` returns `archive:{id,conversation}` and each match's `sourceNodeId`, in addition to existing session/match fields. Use archive endpoints to read; the legacy session-shaped search envelope does not grant runtime ownership. Render returned strings as escaped text, including links/references; do not inject HTML or fetch remote attachments.
+
+## Limits and failure codes
+
+All byte counts are UTF-8. JSON is read from the request stream with an enforced cap **before JSON parsing**; Content-Length is only an early rejection hint. No truncation occurs.
+
+| Boundary | Limit |
+| --- | ---: |
+| Normalized request body | 1,000,000 bytes |
+| Serialized source node | 256,000 bytes |
+| Nodes per append | 100 |
+| Distinct committed nodes per conversation | 10,000 |
+| Serialized nodes per conversation, old plus new | 64,000,000 bytes |
+| Pending conversations per registry | 4 |
+| Total pending normalized nodes per registry | 128,000,000 bytes |
+| Staging/commit retry receipt lifetime | 24 hours |
+| Read page | 1–20 items |
+| Diagnostic request | 4,096 bytes |
+| Diagnostic logs/events per registry minute | 10 |
+
+Parts are limited to 100 per node, IDs/labels to 200 characters (nonempty IDs with no controls), attachment references to 2,000, and raw time to 100. Exact schema bounds are exported. These are normalized limits; the backend **does not verify** platform's 30,000,000-byte original ZIP limit. A long conversation can exceed one request and use many batches. Large single nodes fail rather than being split or truncated by the server. The 256 KB source-node cap leaves substantial headroom below Cloudflare's documented 2 MB SQLite row/string/BLOB limit, including duplicated immutable content and indexing. The isolated Worker test accepts exactly 256,000 serialized bytes, commits and reads it unchanged, and rejects byte 256,001; another test commits six 240 KB nodes across two bounded requests (>1.44 MB). Aggregate quota tests use test-owned metadata fixtures rather than allocating 128 MB. These checks establish API and SQL behavior locally, not Android parser memory or Cloudflare production CPU measurements. Request/page/aggregate limits bound parse, commit and graph-validation work in the 128 MB Worker runtime. Commit iterates SQL cursors and retains only node-parent IDs, rather than loading a whole conversation into an array. These are intentionally finite first-version limits; provider costs are zero for import.
+
+Codes: `invalid-data` 400 (415 for non-JSON), `resource-limit` 413, `not-found` 404 (also expired/other-owner IDs), `role-mismatch` 409, `conflict` 409, `invalid-graph` 400, `batch-order` 409, `rate-limit` 429, `internal-error` 500, `forbidden` 403, `method-not-allowed` 405. Existing auth can return 401/403 before the JSON handler. Failure leaves the import staging intact for status/cancel/restart and never changes old archive content. Batching errors may be retried with a corrected batch; immutable conflicts require correction at source or explicit frontend reporting.
+
+## Diagnostics and privacy
+
+Diagnostic input requires source, stage (`preflight`, `parse`, `normalize`, `upload`, `commit`) and code (`invalid-format`, `unsupported-part`, `resource-limit`, `role-missing`, `interrupted`, `invalid-data`, `conflict`, `role-mismatch`, `invalid-graph`, `batch-order`, `internal-error`). Optional fields: issueId (a prior backend error UUID), filename (120 chars), member (`conversations.json`, `rikka_hub.db`, `settings.json`), location (structural object below), originalBytes, expandedBytes, elapsedMs, succeeded, failed, sourceId. Numbers have schema bounds. These are client-reported metrics, not verified source bytes.
+
+`location` is either `{kind:"json",path:[...]}` or `{kind:"db",table,column,row?,path?}`. Paths contain 1–12 segments, each a whitelisted field name, literal `"*"` replacing a dynamic mapping key, or an integer position 0–1,000,000,000. Numeric positions and DB `row` are zero-based source array/query ordinals, never source IDs. Allowed field segments: `id`, `title`, `inserted_at`, `updated_at`, `mapping`, `parent`, `children`, `message`, `model`, `fragments`, `type`, `content`, `results`, `url`, `files`, `file_id`, `file_name`, `file_size`, `role`, `parts`, `annotations`, `createdAt`, `finishedAt`, `modelId`, `usage`, `translation`. These are field **names only**, never their values. DB table/column pairs are `message_node` with `id`, `conversation_id`, `node_index`, `messages`, `select_index`; or `ConversationEntity` with `id`, `assistant_id`, `title`, `nodes`, `create_at`, `update_at`. Other tables/columns, arbitrary keys/IDs/path strings and unknown properties fail `invalid-data`; there are no obsolete member/location aliases.
+
+Examples: DeepSeek `conversations.json` location `{kind:"json",path:[0,"mapping","*","message","fragments",2,"type"]}` locates conversation 0, fragment 2 without logging its mapping ID. Rikka `rikka_hub.db` location `{kind:"db",table:"message_node",column:"messages",row:4,path:[1,"parts",2,"type"]}` locates row 4, alternative 1, part 2 inside the serialized messages column. `settings.json` may identify a preflight failure without logging any settings fields or values. Fictional runtime examples are in `src/server/fixtures/history-diagnostics.json`. Real Rikka member/table/column spellings were checked against first-party tag 2.5.5 `DatabaseBackup.kt` and `MessageNodeEntity.kt` (commit `6c903feba7e6b65f518b320a88ae29efebae77c4`); DeepSeek structure follows the evidence recorded in #2894.
+
+Diagnostics emit project structured JSON logs with issueId. Source IDs are SHA-256 hashed. ZIP filenames are normalized with NFKC, path components and Unicode control/format and default-ignorable characters are stripped, and only a bounded basename with an initial Unicode letter/number followed by Unicode letters/numbers/marks plus spaces, dots, underscores and hyphens ending in `.zip` is retained. Harmless `聊天备份.zip`, `हिन्दी.zip`, `தமிழ்.zip` and `عَرَبِي.zip` survive. Invalid or secret-shaped basenames are omitted; protections run after normalization/stripping so fullwidth or invisible-obfuscated key prefixes cannot bypass them. No Android absolute path is available. Unknown fields (including body, thought, persona, settings, stack, exception parameters or credentials) reject the event. Server failures log controlled code/stage/issue ID, elapsedMs, and source/nodeCount/normalized bytes when a staged conversation is known. Error node IDs are hashed before logging. Rate limits include server failure logs; an issue ID is still returned when logging is suppressed. No raw ZIP, source settings or remote attachments are persisted or fetched.
+
+## Isolated local integration
+
+Run `npm ci`, then `npm run test:worker -- src/server/history-import.worker.test.ts`. Tests use fictional credentials, fictional source fixtures and test-owned Miniflare SQLite/R2 state. They do not read real exports, `.env`, `.dev.vars`, installed user config or production services. No provider is called. `wrangler.test.jsonc` points model endpoints to example.invalid and contains no remote bindings.
+
+For platform integration run `node scripts/history-import-local.mjs` from this checkout. It starts http://127.0.0.1:8899 using the existing test entry/config and a fresh temporary persistence directory (printed at startup); stopping the process removes only that directory. It disables `.env` loading and places its own empty `.dev.vars` beside its temporary config. Personal-deployment Basic auth uses username `fixture` and password `fixture-password-long-enough`. For platform Service Binding proxy integration, run `node scripts/history-import-local.mjs --hosted` instead; send server-only `x-lamplit-internal-secret: fixture-history-internal-secret` and a fictional UUID `x-lamplit-instance`. Do not route production users or real exports to this fixture service. An instance UUID must be derived by the local platform's authenticated test-user seam, never browser input.
+
+Post `{conversation:fixture.conversation}` to start, `{batch:0,nodes:fixture.nodes}` to append, `{batches:1}` to commit, then read the returned archiveId. For model-free search use the existing registry RPC `searchSessions({query:"moonflower"})` or the isolated Worker test's `createSessionSearchTool` invocation; do not prompt a provider. No new public user-search endpoint is introduced. The platform should consume the schema/types and fixtures from this branch and proxy only the documented routes. Exercise only the history routes and existing search seam. Keep backend and platform PRs open until Android cross-repo acceptance. Merging does not deploy; deployment is separately authorized.

@@ -12,3 +12,12 @@ argument. Compare stdout with the committed JSON. The generator checks the core
 version and uses its `prepareStorageCommit` and `validateCommittedWrites` APIs.
 The runtime test consumes only the committed JSON; no old package, temporary
 installation, credentials or user data is required to run it.
+
+
+## Fictional history-import fixtures
+
+`history-deepseek.json` and `history-rikka.json` are hand-written, fictional **normalized** API fixtures for Spec #2903, not real source exports or copied source implementations. They cover a message tree, selected/unselected alternatives, ordered text/thought/attachment/inert-tool parts, original speakers, explicit UTC time and timezone-unknown LocalDateTime. They contain no user data, credentials, remote attachment fetches, source app settings or persona. The backend accepts only normalized data; platform independently implements source parsing from first-party format documentation.
+
+Use each file's `conversation` as the start request and `nodes` as append batch 0; commit with `{batches:1}`. Full contract and isolated test-service setup: [docs/history-import.md](../../../docs/history-import.md).
+
+`history-diagnostics.json` contains fictional diagnostic events using real export member spellings, wildcarded DeepSeek fragment paths, Rikka `message_node.messages` alternative/part positions, a conversation table/column locator, and a harmless Unicode ZIP basename. No source mapping IDs, content values or settings secrets are logged.

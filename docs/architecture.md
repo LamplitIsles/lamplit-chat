@@ -8,6 +8,10 @@ The Worker combines Pi, Cloudflare Agents SDK, Durable Objects, Computer, and a 
 
 The Worker uses a Cloudflare AI Gateway with a DeepSeek provider key. The account ID, Gateway token, and Jiji sync token are runtime secrets. `@cloudflare/computer` backs files, Worker Shell, JavaScript, Git, R2 mounts, and the session app preview. Worker Shell does not provide Node.js, npm, or native process execution. The `lamplit-cf.guion.io` Custom Domain must be protected by the Access application in `flick-terraform/cloudflare-access` before deployment; `workers.dev` and preview URLs are disabled so they cannot bypass Access. The separate `lamplit-keet.guion.io` domain serves only `/api/keet/events`, which requires the independent Keet ingress bearer token.
 
+## Imported conversation archives
+
+The registry also owns source-keyed `history_archives`, immutable nodes and bounded per-conversation staging. Archives never enter `pi_registry_sessions` or PiSession ownership. A synchronous SQLite transaction commits nodes, source-role binding and existing FTS entries together; there is no cross-DO protocol or harness execution. Search joins committed archives alongside runtime sessions and reports archive/source-node metadata; normal session lists exclude archives. [History import contract](history-import.md) defines authentication, schemas, limits, retry and diagnostic privacy.
+
 ## Companion boundary
 
 The browser connects to `PiRegistry` once to resolve its Companion session, then connects to that `PiSession` through `AgentClient`. A configured `COMPANION_SESSION_ID` takes priority. Otherwise it uses the browser's stored ID or finds/creates a named `霁霁` session.
@@ -34,7 +38,7 @@ The browser accepts up to six PNG, JPEG, WebP, or GIF originals (8 MB each, 24 M
 
 ## Boundaries and limitations
 
-The UI opens one conversation. Other registry and tree operations still exist on the Worker API but are not presented in this slice. When a page reconnects during an active turn, it polls durable state until the turn completes; it cannot replay missed token deltas. The Worker has no application-level access control. The Jiji sync endpoint requires its own token, but the session APIs and workspace are public until the whole Worker is protected.
+The UI opens one conversation. Other registry and tree operations still exist on the Worker API but are not presented in this slice. When a page reconnects during an active turn, it polls durable state until the turn completes; it cannot replay missed token deltas. Personal-deployment HTTP/WebSocket entry requires AUTH_PASSWORD authentication; hosted entry requires trusted platform instance/secret headers and instance-scoped session ownership. Read-only archive IDs cannot enter runnable-session routes.
 
 ## Verification
 
