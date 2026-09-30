@@ -6,6 +6,14 @@ A single-user, self-hosted Pi companion on Cloudflare Workers and SQLite-backed 
 
 The Companion UI supports streaming chat, durable history and branching, steer and reconnect recovery, a relationship profile, learned memory, FTS5 session search, and a Markdown workspace in each session. The agent can read, write, edit, list, find, and search workspace files. It cannot run generated JavaScript or shell, use Git, build/deploy apps, or preview apps. Workspace files use the `@cloudflare/computer` SQLite file API inside the session DO; no Loader is needed. The file tools enforce `/workspace` paths, a 128 KB per-file limit, and bounded search results. Model memory extraction uses the configured model API key.
 
+The chat core pins `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` to
+**0.99.1**. Offline compatibility checks load synthetic 0.87.1 committed writes
+into test-owned Durable Object SQLite, append a message and reconstruct storage;
+a fake OpenAI-compatible response exercises the existing harness's prompt,
+timezone, tool declarations, image projection and reply persistence. This upgrade
+adds no MCP, codemode, Bash, image generation or import capability. It does not
+establish production provider performance or deploy either edition.
+
 ## Chat on mobile
 
 The Companion uses a mist blue light theme and a coordinated blue grey dark theme. Theme (`light`, `dark`, or `system`) and Chinese/English preferences are stored locally using `her.companion.appearance` and `her.companion.language`. Hosted users configure them in the management App at `/settings`; the chat App opens at `/chat`. Both entries share the user's personal origin. The chat synchronizes preferences on storage events, focus and foreground return, without a manual refresh. Self-hosted users use the chat's Settings control.
