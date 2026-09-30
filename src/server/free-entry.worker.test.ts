@@ -26,18 +26,21 @@ describe('Free entry Worker', () => {
 
   it('protects interface images and persists uploaded bytes with R2 metadata', async () => {
     const workerEnv = new Proxy(env, { get: (target, key) => key === 'AUTH_PASSWORD' ? password : Reflect.get(target, key) }) as Env
-    const url = 'https://example.test/api/ui-assets/avatar'
-    const authorization = `Basic ${btoa(`owner:${password}`)}`
-    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
-    expect((await worker.fetch(new Request(url), workerEnv)).status).toBe(401)
-    const uploaded = await worker.fetch(new Request(url, { method: 'PUT', headers: { authorization, 'content-type': 'image/jpeg', origin: 'https://example.test' }, body: bytes }), workerEnv)
-    expect(uploaded.status).toBe(200)
-    const image = await worker.fetch(new Request(url, { headers: { authorization } }), workerEnv)
-    expect(image.status).toBe(200)
-    expect(new Uint8Array(await image.arrayBuffer())).toEqual(bytes)
-    expect((await worker.fetch(new Request('https://example.test/api/ui-assets', { headers: { authorization } }), workerEnv)).status).toBe(200)
-    const removed = await worker.fetch(new Request(url, { method: 'DELETE', headers: { authorization, origin: 'https://example.test' } }), workerEnv)
-    expect(removed.status).toBe(204)
-    expect((await worker.fetch(new Request(url, { headers: { authorization } }), workerEnv)).status).toBe(404)
+    for (const slot of ['avatar', 'user-avatar', 'background']) {
+      const url = `https://example.test/api/ui-assets/${slot}`
+      const authorization = `Basic ${btoa(`owner:${password}`)}`
+      const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
+      expect((await worker.fetch(new Request(url), workerEnv)).status).toBe(401)
+      const uploaded = await worker.fetch(new Request(url, { method: 'PUT', headers: { authorization, 'content-type': 'image/jpeg', origin: 'https://example.test' }, body: bytes }), workerEnv)
+      expect(uploaded.status).toBe(200)
+      const image = await worker.fetch(new Request(url, { headers: { authorization } }), workerEnv)
+      expect(image.status).toBe(200)
+      expect(new Uint8Array(await image.arrayBuffer())).toEqual(bytes)
+      const listing = await worker.fetch(new Request('https://example.test/api/ui-assets', { headers: { authorization } }), workerEnv)
+      expect(await listing.json()).toEqual({ assets: [{ slot, mediaType: 'image/jpeg' }] })
+      const removed = await worker.fetch(new Request(url, { method: 'DELETE', headers: { authorization, origin: 'https://example.test' } }), workerEnv)
+      expect(removed.status).toBe(204)
+      expect((await worker.fetch(new Request(url, { headers: { authorization } }), workerEnv)).status).toBe(404)
+    }
   })
 })

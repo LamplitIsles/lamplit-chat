@@ -159,10 +159,11 @@
   export let showGallery = true;
   export let imageSettings: {
     hasAvatar: boolean;
+    hasUserAvatar: boolean;
     hasBackground: boolean;
     error: string;
-    upload: (slot: 'avatar' | 'background', event: Event) => void;
-    remove: (slot: 'avatar' | 'background') => void;
+    upload: (slot: 'avatar' | 'user-avatar' | 'background', event: Event) => void;
+    remove: (slot: 'avatar' | 'user-avatar' | 'background') => void;
   } | undefined;
   export let continuity: CompanionContinuityView = {};
   export let recoveredDraft: CompanionRecoveredDraft | undefined;
@@ -177,6 +178,7 @@
   export let onLanguageChange: (language: CompanionLanguage) => void = () => undefined;
   export let accountSettingsHref: string | null = null;
   export let networkOnline = true;
+  export let updateSafe = false;
 
   const dispatch = createEventDispatcher<{ advanced: void; recovery: void }>();
   const LONG_WAIT_DELAY_MS = 12_000;
@@ -296,6 +298,7 @@
   let deferredImageUrls = new Set<string>();
   let displayedProjection: CompanionProjection = projection;
   let submissionToken = 0;
+  let pendingSubmissions = 0;
   let voicePointer: number | undefined;
   let voiceStarting = false;
   let voiceInputGeneration = 0;
@@ -321,6 +324,7 @@
   let voiceSessionId: string | undefined;
   let voiceTranscriptionAbort: AbortController | undefined;
 
+  $: updateSafe = !pendingSubmissions && !composer.draft.length && !composer.composing && !imageDrafts.length && !voiceBusy && !projection.running && !detailOpen && !preferencesOpen && !lightbox && !attachmentsOpen;
   $: hasDraft = Boolean(composer.draft.trim() || imageDrafts.length);
   $: voiceBusy = voiceStarting || voiceStatus === "recording" || voiceStatus === "stopping" || voiceStatus === "transcribing";
   $: voiceAvailable = voiceCapability === "available" && Boolean(actions.transcribeVoice) && voiceCaptureAvailable;
@@ -1062,6 +1066,7 @@
     const text = restoreText.trim();
     if (text.length > MAX_MESSAGE_LENGTH) return;
     if ((!text && imageDrafts.length === 0) || composer.composing) return;
+    pendingSubmissions++;
     const submittedDrafts = [...imageDrafts];
     const originSessionId = sessionId;
     composer = {
@@ -1107,7 +1112,7 @@
             ? { key: "error.compactImages" }
             : { key: "error.restored" };
         composerFeedback = liveAnnouncement;
-      });
+      }).finally(() => { pendingSubmissions--; });
   }
 
   function formatVoiceElapsed(value: number): string {
@@ -1757,6 +1762,8 @@
                   <fieldset><legend>Images</legend>
                     <label>Companion avatar<input class="file-input file-input-xs w-full" type="file" accept="image/png,image/jpeg,image/webp,image/gif" on:change={(event) => imageSettings?.upload('avatar', event)} /></label>
                     {#if imageSettings.hasAvatar}<button type="button" class="btn btn-ghost btn-xs" on:click={() => imageSettings?.remove('avatar')}>Remove avatar</button>{/if}
+                    <label>{locale === 'zh' ? '我的头像' : 'My avatar'}<input class="file-input file-input-xs w-full" type="file" accept="image/png,image/jpeg,image/webp,image/gif" on:change={(event) => imageSettings?.upload('user-avatar', event)} /></label>
+                    {#if imageSettings.hasUserAvatar}<button type="button" class="btn btn-ghost btn-xs" on:click={() => imageSettings?.remove('user-avatar')}>{locale === 'zh' ? '移除我的头像' : 'Remove my avatar'}</button>{/if}
                     <label>Chat background<input class="file-input file-input-xs w-full" type="file" accept="image/png,image/jpeg,image/webp,image/gif" on:change={(event) => imageSettings?.upload('background', event)} /></label>
                     {#if imageSettings.hasBackground}<button type="button" class="btn btn-ghost btn-xs" on:click={() => imageSettings?.remove('background')}>Remove background</button>{/if}
                     {#if imageSettings.error}<p role="alert" class="text-error text-sm">{imageSettings.error}</p>{/if}

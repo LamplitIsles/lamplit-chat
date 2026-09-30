@@ -105,17 +105,6 @@ export class PiRegistry extends HostedAgent {
     try { return await this.defaultSessionPromise }
     finally { this.defaultSessionPromise = undefined }
   }
-  listUiAssets(): Array<{ slot: 'avatar' | 'background'; mediaType: string }> {
-    return this.ctx.storage.sql.exec<{ slot: 'avatar' | 'background'; media_type: string }>('SELECT slot, media_type FROM pi_registry_ui_assets').toArray().map((row) => ({ slot: row.slot, mediaType: row.media_type }))
-  }
-
-  setUiAsset(slot: 'avatar' | 'background', mediaType: string): void {
-    this.ctx.storage.sql.exec('INSERT INTO pi_registry_ui_assets(slot, media_type) VALUES (?, ?) ON CONFLICT(slot) DO UPDATE SET media_type = excluded.media_type', slot, mediaType)
-  }
-
-  deleteUiAsset(slot: 'avatar' | 'background'): void {
-    this.ctx.storage.sql.exec('DELETE FROM pi_registry_ui_assets WHERE slot = ?', slot)
-  }
   @hostedCallable()
   async reportUserTimeZone(timeZone: string): Promise<string> {
     const valid = typeof timeZone === 'string' && validUserTimeZone(timeZone)
@@ -143,7 +132,6 @@ export class PiRegistry extends HostedAgent {
         parent_session_id TEXT,
         source_entry_id TEXT
       );
-      CREATE TABLE IF NOT EXISTS pi_registry_ui_assets (slot TEXT PRIMARY KEY CHECK (slot IN ('avatar', 'background')), media_type TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS pi_registry_sessions_updated
         ON pi_registry_sessions(updated_at DESC);
       CREATE INDEX IF NOT EXISTS pi_registry_sessions_parent

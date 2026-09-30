@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { updated } from '$app/stores';
   import { AgentClient } from 'agents/client';
   import Companion from '$lib/companion/client/Companion.svelte';
   import { companionTranslate } from '$lib/companion/client/locale';
@@ -34,16 +35,22 @@
   let appearance: CompanionAppearance = preferences.appearance;
   let systemDark = preferences.systemDark;
   let ready = false;
+  let updateSafe = false;
+  let mounted = false;
+  let visible = false;
+  let reloading = false;
   let online = true;
   let photosEnabled = false;
   let accountSettingsHref: string | null = null;
   let hasAvatar = false;
+  let hasUserAvatar = false;
   let hasBackground = false;
   let assetVersion = Date.now();
   let assetError = '';
   let running = false;
   let promptInFlight = false;
   let uploading = false;
+  let assetOperations = 0;
   let compacting = false;
   let error = '';
   let sessionId = '';
@@ -66,10 +73,16 @@
   let reconciliationTimer: number | undefined;
   let reconciliationInFlight = false;
   let reconciliationAttempts = 0;
+  $: if (mounted && $updated && updateSafe && !running && !promptInFlight && !uploading && !assetOperations && !compacting && online && !reloading && visible) {
+    reloading = true;
+    location.reload();
+  }
   $: t = companionTranslate(language);
   $: scheme = resolveScheme(appearance, systemDark);
   $: if (typeof document !== 'undefined') {
     document.documentElement.dataset.theme = scheme === 'dark' ? 'night-voyage' : 'sticker-messenger';
+    document.documentElement.style.colorScheme = scheme === 'dark' ? 'only dark' : 'only light';
+    document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', scheme === 'dark' ? 'only dark' : 'only light');
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', scheme === 'dark' ? '#0b1220' : '#f3f6f8');
   }
   $: projection = companionProjection(
@@ -390,12 +403,30 @@
   };
 
   onMount(() => {
+    mounted = true;
+    visible = document.visibilityState === 'visible';
+    const syncPreferences = () => {
+      const current = initialPreferences();
+      appearance = current.appearance;
+      language = current.language;
+      systemDark = current.systemDark;
+    };
+    const checkUpdate = () => { if (navigator.onLine) void updated.check().catch(() => {}); };
+    syncPreferences();
+    checkUpdate();
+    const onStorage = (event: StorageEvent) => {
+      syncPreferences();
+      if (event.key === 'lamplit.ui-assets.revision' && photosEnabled) void refreshAssets().catch(showError);
+    };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('focus', syncPreferences);
     mark('lamplit-page-mounted');
     online = navigator.onLine;
     const onNetworkChange = () => {
       online = navigator.onLine;
       mark(online ? 'lamplit-network-online' : 'lamplit-network-offline');
       if (online) {
+        checkUpdate();
         if (session) { void refresh().then(() => mark('lamplit-network-ready')).catch(showError); scheduleReconciliation(0); }
         else void connect().catch(showError);
       }
@@ -408,7 +439,11 @@
     colorScheme.addEventListener('change', onColorSchemeChange);
     void connect().catch(showError);
     const onVisible = () => {
+      visible = document.visibilityState === 'visible';
       if (document.visibilityState === 'visible') {
+        syncPreferences();
+        checkUpdate();
+        if (photosEnabled) void refreshAssets().catch(showError);
         mark('lamplit-foreground-start');
         void reportUserTimeZone(true).catch(showError);
         void refresh().then(() => mark('lamplit-foreground-ready')).catch(showError);
@@ -420,7 +455,7 @@
       if (document.visibilityState === 'visible') void reportUserTimeZone().catch(showError);
       void pollCompanionRefresh({ ready, running, optimistic: Boolean(optimistic), promptInFlight, visible: document.visibilityState === 'visible' }, refresh)?.catch(showError);
     }, 3000);
-    return () => { disposed = true; window.clearInterval(poll); if (reconciliationTimer !== undefined) window.clearTimeout(reconciliationTimer); document.removeEventListener('visibilitychange', onVisible); colorScheme.removeEventListener('change', onColorSchemeChange); window.removeEventListener('online', onNetworkChange); window.removeEventListener('offline', onNetworkChange); session?.close(); registry?.close(); };
+    return () => { mounted = false; window.removeEventListener('storage', onStorage); window.removeEventListener('focus', syncPreferences); disposed = true; window.clearInterval(poll); if (reconciliationTimer !== undefined) window.clearTimeout(reconciliationTimer); document.removeEventListener('visibilitychange', onVisible); colorScheme.removeEventListener('change', onColorSchemeChange); window.removeEventListener('online', onNetworkChange); window.removeEventListener('offline', onNetworkChange); session?.close(); registry?.close(); };
   });
 
   function setLanguage(value: CompanionLanguage) { language = value; writePreference(LANGUAGE_STORAGE_KEY, value); }
@@ -430,25 +465,33 @@
     if (!response.ok) throw new Error('Could not load interface images.');
     const data = await response.json() as { assets: Array<{ slot: string }> };
     hasAvatar = data.assets.some((asset) => asset.slot === 'avatar');
+    hasUserAvatar = data.assets.some((asset) => asset.slot === 'user-avatar');
     hasBackground = data.assets.some((asset) => asset.slot === 'background');
     assetVersion = Date.now();
   }
-  async function uploadAsset(slot: 'avatar' | 'background', event: Event) {
+  async function uploadAsset(slot: 'avatar' | 'user-avatar' | 'background', event: Event) {
     const input = event.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
+    assetOperations++;
     try {
       if (file.size > 8_000_000) throw new Error('Image exceeds 8 MB.');
       const response = await fetch(`/api/ui-assets/${slot}`, { method: 'PUT', headers: { 'content-type': file.type }, body: file });
       if (!response.ok) throw new Error(await response.text());
       await refreshAssets(); assetError = '';
+      try { localStorage.setItem('lamplit.ui-assets.revision', String(Date.now())); } catch {}
     } catch (cause) { assetError = cause instanceof Error ? cause.message : 'Upload failed.'; }
-    input.value = '';
+    finally { input.value = ''; assetOperations--; }
   }
-  async function removeAsset(slot: 'avatar' | 'background') {
-    const response = await fetch(`/api/ui-assets/${slot}`, { method: 'DELETE' });
-    if (!response.ok) { assetError = await response.text(); return; }
-    await refreshAssets(); assetError = '';
+  async function removeAsset(slot: 'avatar' | 'user-avatar' | 'background') {
+    assetOperations++;
+    try {
+      const response = await fetch(`/api/ui-assets/${slot}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error(await response.text());
+      await refreshAssets(); assetError = '';
+      try { localStorage.setItem('lamplit.ui-assets.revision', String(Date.now())); } catch {}
+    } catch (cause) { assetError = cause instanceof Error ? cause.message : 'Removal failed.'; }
+    finally { assetOperations--; }
   }
   function moodText(): string { return t(`mood.${relationship.mood}` as Parameters<typeof t>[0]); }
   function affinityText(): string {
@@ -459,8 +502,8 @@
 
 <svelte:head><title>Lamplit · Companion</title></svelte:head>
 <div style={`--companion-wallpaper:${hasBackground ? `url('/api/ui-assets/background?v=${assetVersion}')` : 'none'}`}>
-<Companion networkOnline={online} {projection} {actions} {t} locale={language} {appearance} {activity} onLanguageChange={setLanguage} onAppearanceChange={setAppearance} {sessionId} {accountSettingsHref}
-  imageSettings={photosEnabled ? { hasAvatar, hasBackground, error: assetError, upload: (slot, event) => { void uploadAsset(slot, event); }, remove: (slot) => { void removeAsset(slot); } } : undefined}
-  identity={{ companionName: 'Companion', companionAvatar: hasAvatar ? `/api/ui-assets/avatar?v=${assetVersion}` : '', userName: 'You', userAvatar: '', preferredAddress: 'you', signature: relationship.signature, mood: relationship.mood, moodLabel: moodText(), moodNote: relationship.note, affinity: relationship.affinity, affinityStage: affinityText() }}
+<Companion bind:updateSafe networkOnline={online} {projection} {actions} {t} locale={language} {appearance} {activity} onLanguageChange={setLanguage} onAppearanceChange={setAppearance} {sessionId} {accountSettingsHref}
+  imageSettings={photosEnabled ? { hasAvatar, hasUserAvatar, hasBackground, error: assetError, upload: (slot, event) => { void uploadAsset(slot, event); }, remove: (slot) => { void removeAsset(slot); } } : undefined}
+  identity={{ companionName: 'Companion', companionAvatar: hasAvatar ? `/api/ui-assets/avatar?v=${assetVersion}` : '', userName: 'You', userAvatar: hasUserAvatar ? `/api/ui-assets/user-avatar?v=${assetVersion}` : '', preferredAddress: 'you', signature: relationship.signature, mood: relationship.mood, moodLabel: moodText(), moodNote: relationship.note, affinity: relationship.affinity, affinityStage: affinityText() }}
   {history} workspaceReadiness={ready ? 'ready' : 'loading'} sessionReadiness={ready ? 'ready' : 'loading'} relationshipReadiness="ready" voiceCapability="unavailable" showRelationship={true} showDiary={true} showGallery={photosEnabled} imageLimits={photosEnabled ? imageLimits : undefined} {recoveredDraft} onHistoryOpenChange={(open) => { if (open) void refreshRelationship(); }} />
 </div>

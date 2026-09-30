@@ -41,27 +41,25 @@ export default {
     if (new URL(request.url).pathname.startsWith('/api/ui-assets')) {
       const url = new URL(request.url)
       const slot = url.pathname.split('/')[3]
-      const registry = env.PiRegistry.getByName(instanceId ?? 'singleton') as unknown as {
-        listUiAssets(): Promise<Array<{ slot: 'avatar' | 'background'; mediaType: string }>>
-        setUiAsset(slot: 'avatar' | 'background', mediaType: string): Promise<void>
-        deleteUiAsset(slot: 'avatar' | 'background'): Promise<void>
+      const slots = ['avatar', 'user-avatar', 'background'] as const
+      const bucket = env.COMPUTER_R2
+      const prefix = `${instanceId ? `instances/${instanceId}/` : ''}ui-assets/`
+      if (url.pathname === '/api/ui-assets' && request.method === 'GET') {
+        const objects = bucket ? await Promise.all(slots.map((name) => bucket.head(`${prefix}${name}`))) : []
+        return respond(Response.json({ assets: objects.flatMap((object, index) => object ? [{ slot: slots[index], mediaType: object.httpMetadata?.contentType }] : []) }))
       }
-      if (url.pathname === '/api/ui-assets' && request.method === 'GET') return respond(Response.json({ assets: await registry.listUiAssets() }))
-      if (slot !== 'avatar' && slot !== 'background') return new Response('Not found', { status: 404 })
+      if (!slots.some((name) => name === slot)) return new Response('Not found', { status: 404 })
       if (!env.COMPUTER_R2) return new Response('Image storage is unavailable', { status: 404 })
-      const key = `${instanceId ? `instances/${instanceId}/` : ''}ui-assets/${slot}`
+      const key = `${prefix}${slot}`
       if (request.method === 'GET') {
-        const asset = (await registry.listUiAssets()).find((item) => item.slot === slot)
-        if (!asset) return new Response('Not found', { status: 404 })
         const object = await env.COMPUTER_R2.get(key)
         if (!object) return new Response('Image object is missing', { status: 404 })
-        return respond(new Response(object.body, { headers: { 'content-type': asset.mediaType, 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff' } }))
+        return respond(new Response(object.body, { headers: { 'content-type': object.httpMetadata?.contentType ?? 'application/octet-stream', 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff' } }))
       }
       if (request.method === 'PUT' || request.method === 'DELETE') {
         if (request.headers.get('origin') && request.headers.get('origin') !== url.origin) return new Response('Forbidden', { status: 403 })
         if (request.method === 'DELETE') {
           await env.COMPUTER_R2.delete(key)
-          await registry.deleteUiAsset(slot)
           return respond(new Response(null, { status: 204 }))
         }
         const mediaType = request.headers.get('content-type')?.split(';')[0]
@@ -70,7 +68,6 @@ export default {
         const bytes = new Uint8Array(await request.arrayBuffer())
         if (bytes.byteLength > 8_000_000 || !validImageBytes(bytes, mediaType)) return new Response('Invalid image', { status: 400 })
         await env.COMPUTER_R2.put(key, bytes, { httpMetadata: { contentType: mediaType } })
-        await registry.setUiAsset(slot, mediaType)
         return respond(Response.json({ slot, mediaType }))
       }
       return new Response('Method not allowed', { status: 405 })
