@@ -22,6 +22,7 @@ export async function handleCompanionMaterials(request: Request, env: Env, insta
       if (request.method === 'GET') action = id ? 'file-read' : 'file-list'
       else if (id && request.method === 'POST') action = 'file-create'
       else if (id && request.method === 'PUT') action = 'file-update'
+      else if (id && request.method === 'DELETE') action = 'file-delete'
       else throw new MaterialFailure('method-not-allowed', 405)
     } else if (resource === 'memories') {
       if (!id && request.method === 'GET') action = 'memory-list'

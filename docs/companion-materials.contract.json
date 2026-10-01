@@ -38,6 +38,13 @@
       "status": 200
     },
     {
+      "method": "DELETE",
+      "path": "/files/{name}",
+      "request": "Reset",
+      "response": "Deleted",
+      "status": 200
+    },
+    {
       "method": "GET",
       "path": "/memories",
       "response": "MemoryList",

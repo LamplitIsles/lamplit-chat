@@ -48,6 +48,22 @@ it('edits actual root originals without a configured model, preserves empty file
   } finally { modelFetch.mockRestore() }
 })
 
+it('deletes root documents only at the read version, preserving other files and compaction default', async () => {
+  const file = await json<MaterialFile>(request('files/SOUL.md', 'POST', { content: 'Test-owned personality' }))
+  const agents = await json<MaterialFile>(request('files/AGENTS.md', 'POST', { content: 'Keep this document' }))
+  expect((await request('files/SOUL.md', 'DELETE', {})).status).toBe(400)
+  expect((await request('files/SOUL.md', 'DELETE', { expectedVersion: 'stale' })).status).toBe(409)
+  expect(await json(request('files/SOUL.md'))).toEqual(file)
+  expect((await request('files/SOUL.md', 'DELETE', { expectedVersion: file.version }, 'https://foreign.invalid')).status).toBe(403)
+  expect(await json(request('files/SOUL.md', 'DELETE', { expectedVersion: file.version }))).toEqual({ deleted: true })
+  expect((await request('files/SOUL.md')).status).toBe(404)
+  expect((await request('files/SOUL.md', 'DELETE', { expectedVersion: file.version })).status).toBe(404)
+  expect(await json(request('files/AGENTS.md'))).toEqual(agents)
+  const compaction = await json<EffectiveCompaction>(request('compaction', 'PUT', { content: 'Test-owned summary instruction', expectedVersion: 'default' }))
+  expect(await json(request('files/COMPACTION.md', 'DELETE', { expectedVersion: compaction.version }))).toEqual({ deleted: true })
+  expect(await json<EffectiveCompaction>(request('compaction'))).toMatchObject({ mode: 'default', version: 'default' })
+})
+
 it('rejects traversal, oversized UTF8/JSON, foreign owner/origin, arbitrary selectors, and missing selfhost configuration', async () => {
   for (const name of ['a%2Fb.md', 'a%5Cb.md', '%00.md', 'directory', '%2E%2E%2Fsecret.md']) expect((await request(`files/${name}`, 'POST', { content: 'fiction' })).status).toBe(400)
   const max = '灯'.repeat(42_666) + 'ab'

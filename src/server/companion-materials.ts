@@ -71,6 +71,14 @@ export class CompanionFiles {
       return { status: 200, body: await this.effective() }
     }
     const name = action === 'compaction-save' ? 'COMPACTION.md' : rootBasename(id)
+    if (action === 'file-delete') {
+      const { expectedVersion } = materialCheck(ResetSchema, input)
+      const current = await this.read(name)
+      if (!current) throw new MaterialFailure('not-found', 404)
+      if (current.version !== expectedVersion) throw new MaterialFailure('conflict', 409)
+      await this.workspace.rm(this.path(name))
+      return { status: 200, body: { deleted: true } }
+    }
     const data = action === 'file-create' ? materialCheck(FileCreateSchema, input) : materialCheck(FileUpdateSchema, input)
     validFileContent(name, data.content)
     if (action === 'file-create') {

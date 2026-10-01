@@ -17,5 +17,5 @@ export type EffectiveCompaction = { mode: 'default' | 'custom'; content: string;
 export type MaterialErrorCode = 'invalid-data' | 'resource-limit' | 'not-found' | 'conflict' | 'busy' | 'unconfigured' | 'forbidden' | 'method-not-allowed' | 'internal-error'
 export type MaterialBody = MaterialFile | EffectiveCompaction | { files: Array<{ name: string; bytes: number }> } | { memories: Memory[] } | { memory: Memory } | { deleted: true } | { error: { code: MaterialErrorCode } }
 export type MaterialReply = { status: number; body: MaterialBody }
-export type MaterialAction = 'file-list' | 'file-read' | 'file-create' | 'file-update' | 'memory-list' | 'memory-update' | 'memory-delete' | 'compaction-read' | 'compaction-save' | 'compaction-reset'
+export type MaterialAction = 'file-list' | 'file-read' | 'file-create' | 'file-update' | 'file-delete' | 'memory-list' | 'memory-update' | 'memory-delete' | 'compaction-read' | 'compaction-save' | 'compaction-reset'
 export type MaterialRequest = { action: MaterialAction; id?: string; input?: unknown }
