@@ -282,3 +282,42 @@
 
 #dsh-companion .cmp-btn.companion-voice-hold{background:transparent;border:0;box-shadow:none;width:100%;min-height:40px;font-size:16px;font-weight:600;touch-action:none;user-select:none;border-radius:12px;white-space:normal;color:var(--color-base-content)}
 #dsh-companion .companion-voice-hint{order:-1;margin-right:auto;font-size:12px;color:var(--color-secondary)}
+
+/* Timed wakes share the native drawer and semantic theme palette. */
+#dsh-companion .companion-history-drawer{background:var(--color-base-100)}
+#dsh-companion .companion-history-controls{align-items:center;justify-content:space-between;padding:44px 24px 22px}
+#dsh-companion .companion-history-controls h2{margin:0;font-size:20px;font-weight:550}
+#dsh-companion .companion-history-controls .cmp-btn{width:44px;height:44px;background:var(--color-base-200);border-radius:12px;color:var(--color-primary)}
+#dsh-companion .companion-diary-tabs{grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);padding:0 24px 16px;gap:4px}
+#dsh-companion .companion-diary-tabs [role="tab"]{display:flex;flex-direction:column;width:100%;height:58px;border:0;box-shadow:none;border-radius:10px;gap:7px;font-size:12px;font-weight:500;padding:8px 2px;color:var(--color-primary);background:transparent}
+#dsh-companion .companion-diary-tabs [aria-selected="true"]{background:var(--color-base-300)}
+#dsh-companion .companion-diary-tabs [role="tab"]:not([aria-selected="true"]):hover{background:transparent}
+#dsh-companion .companion-wakes{padding-top:26px}
+#dsh-companion .companion-wakes h2{margin:0;font-size:20px;font-weight:550}
+#dsh-companion .wake-intro{margin:20px 0 32px;color:color-mix(in srgb,var(--color-base-content) 65%,transparent);font-size:14px;line-height:1.7}
+#dsh-companion .wake-section{margin:0 0 24px;font-size:14px;font-weight:500;color:color-mix(in srgb,var(--color-base-content) 65%,transparent)}
+#dsh-companion .wake-row{display:grid;grid-template-columns:74px minmax(0,1fr) 28px;gap:12px;padding:0 0 22px;margin-bottom:22px;border-bottom:1px solid var(--cmp-line);align-items:start}
+#dsh-companion .wake-time{display:flex;flex-direction:column;gap:6px;font-size:13px;color:color-mix(in srgb,var(--color-base-content) 65%,transparent)}
+#dsh-companion .wake-time time{font-size:22px;font-weight:550;color:var(--color-base-content);font-variant-numeric:tabular-nums}
+#dsh-companion .wake-content h3,#dsh-companion .wake-source-content h3{font-size:16px;font-weight:550;letter-spacing:normal;text-transform:none;margin:0 0 6px;overflow-wrap:anywhere}
+#dsh-companion .wake-repeat{font-size:13px;color:color-mix(in srgb,var(--color-base-content) 65%,transparent);margin:0 0 9px;line-height:1.5;overflow-wrap:anywhere}
+#dsh-companion .wake-reminder{color:var(--color-secondary);font-size:14px;line-height:1.7;margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere}
+#dsh-companion .wake-reminder.wake-expanded{display:block;overflow:visible}
+#dsh-companion .wake-expand{width:44px;min-width:44px;margin-left:-8px;margin-top:22px;border:0;box-shadow:none;background:transparent;color:var(--color-primary)}
+#dsh-companion .wake-empty{padding-top:20px;color:color-mix(in srgb,var(--color-base-content) 65%,transparent)}
+#dsh-companion .wake-empty>svg{color:var(--color-primary);margin-bottom:24px}
+#dsh-companion .wake-empty h3{font-size:20px;font-weight:550;letter-spacing:normal;text-transform:none;color:var(--color-base-content);margin:0 0 14px}
+#dsh-companion .wake-empty p{max-width:260px;font-size:14px;line-height:1.8;margin:0}
+#dsh-companion .wake-empty blockquote{max-width:270px;margin:48px 0 0;padding:0 20px;font-size:14px;line-height:1.8;color:var(--color-base-content)}
+#dsh-companion .wake-retry{width:100%;height:48px;margin-top:40px;background:var(--color-base-300);color:var(--color-primary);font-weight:500}
+#dsh-companion .wake-skeleton{display:grid;grid-template-columns:74px 1fr;gap:12px;padding:0 0 40px;margin-bottom:32px;border-bottom:1px solid var(--cmp-line)}
+#dsh-companion .wake-skeleton:first-of-type{margin-top:54px;padding-bottom:39px;margin-bottom:33px}
+#dsh-companion .wake-skeleton .cmp-skeleton{background-image:none;height:14px;margin-bottom:14px;animation:none;border-radius:5px}
+#dsh-companion .wake-skeleton-time .cmp-skeleton:first-child{width:48px;height:10px;margin-bottom:18px}
+#dsh-companion .wake-skeleton-time .cmp-skeleton:last-child{width:68px;height:18px}
+#dsh-companion .wake-skeleton>div:last-child .cmp-skeleton:first-child{width:75%}
+#dsh-companion .companion-wake-source{margin:12px 8px 20px;color:var(--color-primary)}
+#dsh-companion .wake-source-toggle{display:flex;width:100%;min-height:48px;justify-content:start;gap:10px;padding:12px 14px;border-radius:10px;background:var(--color-base-300);font-size:14px;font-weight:500;color:inherit;white-space:normal;text-align:left}
+#dsh-companion .wake-source-toggle>span{flex:1}
+#dsh-companion .wake-source-content{margin-top:7px;padding:16px 14px;border-radius:10px;background:var(--color-base-300);color:var(--color-base-content)}
+#dsh-companion .wake-source-content p{margin:0;font-size:14px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}

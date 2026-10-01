@@ -1,3 +1,4 @@
+import { WAKE_CUSTOM_TYPE } from '../shared/timed-wake'
 import { PLATFORM_FEEDBACK_AUTHORIZATION } from './platform-feedback-tool'
 import { installCompanionCompaction, defaultCompactionPrompt } from './companion-compaction'
 import { AgentHarness, type AgentHarnessTool, type CompactionSettings, type Session } from '@earendil-works/pi-agent-core'
@@ -22,6 +23,7 @@ type CreatePiHarnessOptions = {
   loadCompactionPrompt?: () => Promise<string>
   loadInstructions: () => Promise<string | null>
   getUserTimeZone: () => Promise<string>
+  awaitWakeSchedules?: () => Promise<void>
 }
 
 // Adapted for this Worker from the companion principles in codex-for-love.
@@ -33,7 +35,7 @@ const DEFAULT_SYSTEM_PROMPT = [
   'Use only tools available in this Worker. Verify consequential results. Keep private information within its intended audience, and get explicit authorization before sending messages, publishing, deploying, using credentials, or making destructive changes.',
 ].join('\n\n')
 
-export async function createPiHarness({ env, session, tools, memory, compaction, loadInstructions, getUserTimeZone, loadCompactionPrompt = defaultCompactionPrompt }: CreatePiHarnessOptions) {
+export async function createPiHarness({ env, session, tools, memory, compaction, loadInstructions, getUserTimeZone, awaitWakeSchedules, loadCompactionPrompt = defaultCompactionPrompt }: CreatePiHarnessOptions) {
   const modelId = env.AI_MODEL || 'your-model'
   const model = directModel(env, modelId)
   const memoryModel = directModel(env, env.AI_MEMORY_MODEL || modelId)
@@ -80,7 +82,10 @@ export async function createPiHarness({ env, session, tools, memory, compaction,
       return [buildPiSystemPrompt(memoryContext, env.PI_SYSTEM_PROMPT, instructions, relationshipContext), tools.some(tool => tool.name === 'submit_platform_feedback') ? PLATFORM_FEEDBACK_AUTHORIZATION : ''].filter(Boolean).join('\n\n')
     },
     thinkingLevel: 'medium',
-    toProviderMessages: async (messages) => projectTurnTime(messages, await getUserTimeZone()),
+    toProviderMessages: async (messages) => {
+      if (messages.some(message => message.role === 'custom' && message.customType === WAKE_CUSTOM_TYPE)) await awaitWakeSchedules?.()
+      return projectTurnTime(messages, await getUserTimeZone())
+    },
     compaction,
   }, BACKGROUND_CONTEXT)
   const lane = await harness.lane('main', BACKGROUND_CONTEXT)

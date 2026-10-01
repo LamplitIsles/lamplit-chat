@@ -63,7 +63,7 @@ describe('durable sessions', () => {
       const drain = vi.spyOn(internals, 'schedulePendingDrain').mockResolvedValue()
       try {
         await instance.onStart()
-        expect(resume).toHaveBeenCalledTimes(1)
+        await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(1))
         expect(internals.active).toBe(true)
         expect(internals.promptOperationId).toBe(operationId)
         await expect(instance.compact()).rejects.toThrow('Pi is currently running.')

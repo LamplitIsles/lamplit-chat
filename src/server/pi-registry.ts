@@ -124,6 +124,10 @@ export class PiRegistry extends HostedAgent {
     return (await this.ctx.storage.get<string>('userTimeZone')) ?? DEFAULT_USER_TIME_ZONE
   }
 
+  async getReportedTimeZone(): Promise<string | undefined> {
+    return this.ctx.storage.get<string>('userTimeZone')
+  }
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.ctx.storage.sql.exec(`

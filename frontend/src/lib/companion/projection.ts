@@ -64,7 +64,12 @@ export interface TimelineNotice {
 /** A quiet, durable completion marker for automatic conversation organization. */
 export interface TimelineContinuityRecord extends ContinuityRecord {}
 
+export interface TimelineWake {
+  id: string; messageKey: string; kind: 'wake'; side: 'incoming'; time?: number; source: import('../../../../src/shared/timed-wake').WakeSource;
+}
+
 export type TimelineItem =
+  | TimelineWake
   | TimelineText
   | TimelineImage
   | TimelineVoice

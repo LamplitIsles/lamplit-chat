@@ -84,6 +84,7 @@ export type StoredSessionEntry = {
   targetId?: string | null
   label?: string
   name?: string
+  wakeSource?: import('./timed-wake').WakeSource
   photos?: ConversationPhoto[]
 }
 
@@ -204,6 +205,7 @@ export interface PiSessionContract {
   abort(): Promise<void>
   listFiles(): Promise<WorkspaceFile[]>
   readWorkspaceFile(path: string): Promise<WorkspaceFileContent>
+  listTimedWakes(): Promise<import('./timed-wake').TimedWake[]>
   listDiary(): Promise<string[]>
   readDiary(name: string): Promise<DiaryEntry | null>
   prompt(input: { operationId: string; prompt: string; photoIds?: string[] }): Promise<void>

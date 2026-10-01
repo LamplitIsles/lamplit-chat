@@ -4,7 +4,7 @@ This repository is the canonical chat core for the self-hosted Free edition and 
 
 A single-user, self-hosted Pi companion on Cloudflare Workers and SQLite-backed Durable Objects. The default deployment needs no Workers Paid subscription, Worker Loader, Containers, R2, AI Gateway, work machine, Forgejo, or hosted Lamplit account. Bring an OpenAI-compatible model API key. **This branch is a new-instance configuration; it does not migrate the author's production service.**
 
-The Companion UI supports streaming chat, durable history and branching, steer and reconnect recovery, a relationship profile, learned memory, FTS5 session search, and a Markdown workspace in each session. The agent can read, write, edit, list, find, and search workspace files. It cannot run generated JavaScript or shell, use Git, build/deploy apps, or preview apps. Workspace files use the `@cloudflare/computer` SQLite file API inside the session DO; no Loader is needed. The file tools enforce `/workspace` paths, a 128 KB per-file limit, and bounded search results. Model memory extraction uses the configured model API key.
+The Companion UI supports streaming chat, durable history and branching, steer and reconnect recovery, a relationship profile, read-only timed-wake arrangements and reminder sources, learned memory, FTS5 session search, and a Markdown workspace in each session. The agent can read, write, edit, list, find, and search workspace files. It cannot run generated JavaScript or shell, use Git, build/deploy apps, or preview apps. Workspace files use the `@cloudflare/computer` SQLite file API inside the session DO; no Loader is needed. The file tools enforce `/workspace` paths, a 128 KB per-file limit, and bounded search results. Model memory extraction uses the configured model API key.
 
 The chat core pins `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` to
 **0.99.1**. Offline compatibility checks load synthetic 0.87.1 committed writes
@@ -66,6 +66,19 @@ Without R2, the album and interface image controls are hidden; opening the attac
 Chat, memory and customization should belong to the user and remain portable. Import and complete export tools are under construction; free migration in and out is a product commitment. Phase 1 prioritizes migration and hosted mobile use; optional development assistants are Phase 2. The complete migration interface and transfer format need a dedicated design before implementation. This release does not provide a complete migration endpoint or tool. Conversation history and files remain durable within this instance.
 
 The installable PWA includes a manifest, icons, standalone launch mode, and a versioned service worker. In a mobile browser, open the authenticated site and use **Add to Home Screen** from the browser menu. The worker caches only the app's static JavaScript/CSS, icons, manifest, and the generic HTML shell after a successful authenticated load; it never caches API, history, or image responses. Offline launch shows the shell and an offline state; chat needs network access. On reconnect or foreground return, the page refreshes session state. Service worker updates activate in the background. The app checks for new versions every 60 seconds and on foreground return, then reloads when visible, online and idle. It waits while a reply, draft, attachment, recording or relevant dialog is active. Hosted mode uses Platform's shared root service worker; the self-hosted shell behavior described here belongs to this repository.
+
+## Timed wakes
+
+Your companion can create, list, replace and cancel one-time, fixed-interval,
+daily or weekly reminders in the original chat. View upcoming arrangements in
+the fourth home-drawer tab; long text and trigger sources expand inline. Due
+work continues with the browser closed and waits after the current answer.
+Occurrences over 60 seconds late at public admission start are skipped without catchup; already
+accepted work follows Pi's durable recovery. Daily/weekly arrangements save an
+explicit IANA timezone. There are no added system push notifications; model
+usage uses your existing key and may incur charges.
+
+See [timed-wake behavior, DST rules, operator notes and isolated verification](docs/timed-wake.md).
 
 ## Free-plan limits and verification
 

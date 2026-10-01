@@ -117,6 +117,7 @@
     }
   }
 
+  let wakeRefreshKey = 0;
   async function refresh(settledAfterSeq?: number) {
     if (!session) return;
     const current = ++requestId;
@@ -131,6 +132,7 @@
     const visibleEntries = visibleBranchEntries(branch.entries, stillRunning && !compacting, optimistic);
     durableItems = projectPromptBranch(visibleEntries, optimistic, optimisticAfterSeq, sessionId);
     lastRevision = branch.revision;
+    wakeRefreshKey += 1;
     if (hasDurablePrompt(visibleEntries, optimistic)) { if (optimistic?.steering) localStorage.removeItem(steerKey); localStorage.removeItem(photoKey); optimistic = undefined; }
     running = stillRunning;
     ready = true;
@@ -420,6 +422,7 @@
       }
     },
     retryHistory() { history = { ...history, status: 'loading' }; void refreshRelationship(); },
+    async listTimedWakes() { return session ? session.stub.listTimedWakes() : []; },
     async listDiary() { return session ? session.stub.listDiary() : []; },
     async readDiary(name) { return session ? session.stub.readDiary(name) : null; },
   };
@@ -537,7 +540,7 @@
 
 <svelte:head><title>Lamplit · Companion</title></svelte:head>
 <div style={`--companion-wallpaper:${hasBackground ? `url('/api/ui-assets/background?v=${assetVersion}')` : 'none'}`}>
-<Companion bind:updateSafe networkOnline={online} {projection} {actions} {t} locale={language} {appearance} {activity} onLanguageChange={setLanguage} onAppearanceChange={setAppearance} {sessionId} {accountSettingsHref}
+<Companion {wakeRefreshKey} bind:updateSafe networkOnline={online} {projection} {actions} {t} locale={language} {appearance} {activity} onLanguageChange={setLanguage} onAppearanceChange={setAppearance} {sessionId} {accountSettingsHref}
   imageSettings={photosEnabled ? { hasAvatar, hasUserAvatar, hasBackground, error: assetError, upload: (slot, event) => { void uploadAsset(slot, event); }, remove: (slot) => { void removeAsset(slot); } } : undefined}
   identity={{ companionName: displayNames.companionName || 'Companion', companionAvatar: hasAvatar ? `/api/ui-assets/avatar?v=${assetVersion}` : '', userName: displayNames.userName || t('you'), userAvatar: hasUserAvatar ? `/api/ui-assets/user-avatar?v=${assetVersion}` : '', preferredAddress: displayNames.userName || t('you'), signature: relationship.signature, mood: relationship.mood, moodLabel: moodText(), moodNote: relationship.note, affinity: relationship.affinity, affinityStage: affinityText() }}
   {history} workspaceReadiness={ready ? 'ready' : 'loading'} sessionReadiness={ready ? 'ready' : 'loading'} relationshipReadiness="ready" {voiceCapability} showRelationship={true} showDiary={true} showGallery={photosEnabled} imageLimits={photosEnabled ? imageLimits : undefined} {recoveredDraft} onHistoryOpenChange={(open) => { if (open) void refreshRelationship(); }} />

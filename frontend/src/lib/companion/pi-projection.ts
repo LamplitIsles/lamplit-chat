@@ -56,7 +56,7 @@ export function visibleBranchEntries(entries: readonly StoredSessionEntry[], run
   }
   let latestUser = -1;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
-    if (entries[index]?.message?.role === 'user') { latestUser = index; break; }
+    if (entries[index]?.message?.role === 'user' || entries[index]?.wakeSource) { latestUser = index; break; }
   }
   return latestUser < 0 ? entries : entries.slice(0, latestUser + 1);
 }
@@ -75,6 +75,10 @@ export function branchItems(entries: readonly StoredSessionEntry[], sessionId = 
   for (const entry of entries) {
     if (entry.type === 'compaction') {
       items.push({ id: entry.id, messageKey: entry.id, kind: 'continuity', side: 'incoming', tone: 'success', compactionId: entry.id, text: '', anchorSeq: entry.seq, time: Date.parse(entry.timestamp) });
+      continue;
+    }
+    if (entry.wakeSource) {
+      items.push({ id: entry.id, messageKey: entry.id, kind: 'wake', side: 'incoming', source: entry.wakeSource, time: Date.parse(entry.timestamp) });
       continue;
     }
     const message = entry.message;

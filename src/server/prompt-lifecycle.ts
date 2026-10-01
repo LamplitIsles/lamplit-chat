@@ -1,3 +1,4 @@
+import { WAKE_CUSTOM_TYPE } from '../shared/timed-wake'
 import type { AgentLane } from '@earendil-works/pi-agent-core'
 import type { Context } from '@earendil-works/pi-agent-core/harness/context'
 import type { Entry, OperationMeta } from '@earendil-works/pi-agent-core/harness/session'
@@ -71,7 +72,11 @@ export async function prepareOpenOperationResume(
   if (meta?.operationId !== current.id || meta.intent.kind !== current.kind) {
     throw new Error(`Open Pi operation ${current.id} is missing matching metadata.`)
   }
-  const browserPrompt = meta.intent.kind === 'run' && meta.intent.promptEntryIds.length > 0
+  const autonomous = meta.intent.kind === 'run' && meta.intent.promptEntryIds.every(id => {
+    const entry = readEntry(id)
+    return entry?.type === 'message' && entry.message.role === 'custom' && entry.message.customType === WAKE_CUSTOM_TYPE
+  })
+  const browserPrompt = meta.intent.kind === 'run' && meta.intent.promptEntryIds.length > 0 && !autonomous
   if (browserPrompt) {
     const submission = getSubmission(current.id)
     if (!submission) throw new Error(`Open browser prompt ${current.id} has no host submission ledger.`)

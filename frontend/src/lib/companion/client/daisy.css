@@ -1,5 +1,7 @@
 @import "tailwindcss/utilities.css" source(none);
 @source "./Companion.svelte";
+@source "./WakeDrawer.svelte";
+@source "./WakeSource.svelte";
 @source not inline("hidden");
 
 @plugin "daisyui" {

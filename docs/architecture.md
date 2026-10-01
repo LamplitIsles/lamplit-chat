@@ -1,12 +1,27 @@
 # Pi on Cloudflare Architecture
 
-The Worker combines Pi, Cloudflare Agents SDK, Durable Objects, Computer, and a static SvelteKit Companion frontend. `src/server.ts` routes Agent RPC and streaming WebSockets, private conversation photo reads, Jiji workspace sync, app previews, and Companion configuration. All other requests go to the Cloudflare static assets binding for `frontend/build`.
+The Worker combines Pi, Cloudflare Agents SDK, SQLite-backed Durable Objects,
+Computer's workspace file API, and a static SvelteKit Companion frontend.
+`src/server.ts` routes authenticated Agent RPC/WebSockets, private photos,
+Companion materials, history archives/import and bounded web tools. Static
+requests use the assets binding. Hosted and independent self-host deployments
+share the same product code; Platform supplies hosted identity and BYOK settings.
 
 ## Durable state
 
-`PiRegistry` is a singleton Durable Object that indexes session metadata, search, lineage, learned memory, and relationship history. It creates and locates UUID-named sessions. Each `PiSession` Durable Object owns the conversation tree, active leaf, Pi harness, compaction settings, and its isolated `/workspace` files. Completed transcript entries and files survive object eviction. Partial stream deltas and an in-flight turn do not.
+`PiRegistry` indexes session metadata, search, lineage, learned memory and
+relationship history. Hosted registry/session names include the instance scope.
+Each `PiSession` owns its conversation tree, active leaf, durable Pi lane/inbox,
+compaction settings and isolated `/workspace` files. Completed entries, queued
+input and admitted operations survive eviction; transient browser stream deltas
+are not replayed. Recovery resumes accepted operations using their durable source
+identity. Browser submissions use the submission ledger; autonomous custom
+reminders use their occurrence receipts.
 
-The Worker uses a Cloudflare AI Gateway with a DeepSeek provider key. The account ID, Gateway token, and Jiji sync token are runtime secrets. `@cloudflare/computer` backs files, Worker Shell, JavaScript, Git, R2 mounts, and the session app preview. Worker Shell does not provide Node.js, npm, or native process execution. The `lamplit-cf.guion.io` Custom Domain must be protected by the Access application in `flick-terraform/cloudflare-access` before deployment; `workers.dev` and preview URLs are disabled so they cannot bypass Access. The separate `lamplit-keet.guion.io` domain serves only `/api/keet/events`, which requires the independent Keet ingress bearer token.
+The configured OpenAI-compatible model uses the existing BYOK key. The default
+self-hosted edition requires neither Platform nor AI Gateway, Loader, containers,
+shell or Git. Computer supplies bounded file reads/writes inside SQLite; optional
+conversation photos use private R2. See README for the deployment/auth contract.
 
 ## Imported conversation archives
 
@@ -19,6 +34,24 @@ The browser connects to `PiRegistry` once to resolve its Companion session, then
 `getOverview()` supplies active-turn status and `getBranch()` supplies the durable transcript. `frontend/src/lib/companion/pi-projection.ts` maps settled user and assistant text into Companion's timeline with a quiet compaction marker. The controller in `frontend/src/routes/+page.svelte` shows a temporary outgoing echo while `agent.call('prompt')` runs. The browser's operation ID is passed to Pi `accept()`; after that durable commit, an `accepted` stream event carries the canonical user entry ID and clears the sending state. Branch refresh replaces the echo by entry ID, including when two prompts have identical text. Pi `drive()` then runs the model; other stream events drive only the waiting box's semantic activity. Raw reasoning, tool details, and partial assistant text stay out of chat. Completion or reconnect refreshes the durable branch, and `abort()` handles stop while `compact()` handles `/compact`. The imported CFL appearance preference applies the resolved light or dark Daisy theme to the document root.
 
 `Companion.svelte` and its domain/projection, composer, Markdown, preferences, localization, DaisyUI styles, and responsive layout were brought from Codex for Love. The old Node/Codex host is not deployed. The relationship drawer reads paged SQLite events from `PiRegistry`; its latest state is added to each Pi turn, and Pi has tools to update the state and read recent changes. Its diary tab reads dated Markdown files from the current `PiSession` workspace through read-only RPC calls, with the same 128 KiB entry limit as CFL. The imported photo picker, timeline image display, lightbox, and album are enabled for web conversation photos. The empty composer exposes a voice mode backed by authenticated Worker transcription, with capability refreshed by the root route. Telemetry remains hidden. The imported frontend source is Apache 2.0 licensed.
+
+## Timed wakes
+
+Machine-only `timed_wake` tools manage arrangements in their current PiSession;
+only list reading is browser-callable. Croner computes daily/weekly timezone
+instants without timers. Agents SDK schedules the next Date callback, preserving
+its existing alarm and pending drain. SQLite commits source/occurrence receipt,
+Pi followUp input and next-occurrence advancement together. Current answers
+finish before queued reminders run. Startup reconciliation is tracked background
+work and completes before resumed model execution. Provider-message projection
+with wake sources and idle drain await serialized schedule reconciliation, so internally consumed
+followUps cannot generate before future registration. The 60-second eligibility
+check occurs immediately before public followUp admission; an in-window call
+may finish committing after the cutoff. The drawer reads current
+arrangements on open, session changes and normal reconnect/poll refresh. Custom
+message snapshots project to an inline companion source, rather than a human
+bubble. [Timed-wake contract](timed-wake.md) specifies cutoff, quotas, DST,
+recovery and synthetic workerd/browser acceptance.
 
 ## Mobile composer and appearance
 
@@ -44,4 +77,4 @@ The UI opens one conversation. Other registry and tree operations still exist on
 
 ## Verification
 
-`npm run check:frontend` checks Svelte, `npm run typecheck` checks Worker TypeScript, `npm test` runs unit and Workers tests, and `npm run build` creates the static site. `npx wrangler deploy --config wrangler.local.jsonc --secrets-file .env` deploys the Worker and site assets together.
+`npm run check:frontend` checks Svelte, `npm run typecheck` checks Worker TypeScript, `npm test` runs unit and Workers tests, and `npm run build` creates the static site. `npm run deploy` builds and deploys the self-hosted Worker; hosted deployment uses `wrangler.hosted.jsonc` after the same frontend build. No deployment is performed by local verification.

@@ -1,4 +1,6 @@
-import { branchTip, setValue, type Entry, type SessionMetadata } from '@earendil-works/pi-agent-core/harness/session'
+import { WAKE_CUSTOM_TYPE, occurrenceKey, type TimedWake, type WakeSource } from '../shared/timed-wake'
+import { nextWake } from './timed-wake'
+import { branchTip, setValue, pendingEntry, type CommittedWrite, type Entry, type PendingEntry, type SessionMetadata } from '@earendil-works/pi-agent-core/harness/session'
 import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
 import type { ConversationPhoto, ConversationPhotoPage, SessionIndexEvent, SessionLineage } from '../shared/pi-contract'
 import { PiV4Storage } from './pi-v4-storage'
@@ -35,6 +37,7 @@ export class PiSessionStorage extends PiV4Storage {
   constructor(private readonly durable: DurableObjectStorage) {
     super(durable)
     durable.sql.exec(`
+      CREATE TABLE IF NOT EXISTS timed_wake_receipts (occurrence TEXT PRIMARY KEY, entry_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS pi_session_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS pi_session_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS pi_prompt_submissions (
@@ -59,6 +62,31 @@ export class PiSessionStorage extends PiV4Storage {
       CREATE TABLE IF NOT EXISTS conversation_photo_groups (operation_id TEXT PRIMARY KEY, photo_ids TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS conversation_photos_album ON conversation_photos(entry_id, created_at, id);
     `)
+  }
+
+  timedWakes(): TimedWake[] { return this.getSetting<TimedWake[]>('timedWakes') ?? [] }
+  wakeReceipt(source: WakeSource): string | undefined {
+    return this.durable.sql.exec<{ entry_id: string }>('SELECT entry_id FROM timed_wake_receipts WHERE occurrence = ?', occurrenceKey(source)).toArray()[0]?.entry_id
+  }
+  advanceWake(wake: TimedWake, now: number): void {
+    const wakes = this.timedWakes().filter(item => item.id !== wake.id)
+    if (wake.plan.type !== 'once') wakes.push({ ...wake, nextAt: nextWake(wake.plan, Math.max(now, Date.parse(wake.nextAt))) })
+    this.setSetting('timedWakes', wakes)
+  }
+  // The acceptance identity and next occurrence commit with Pi's durable inbox.
+  protected override beforeCommit(writes: CommittedWrite[]): void {
+    const address = pendingEntry('')
+    for (const write of writes) {
+      if (write.kind !== 'value' || write.op !== 'set' || write.namespace !== address.namespace || !write.key.startsWith(address.key)) continue
+      const pending = write.value as PendingEntry
+      if (pending.type !== 'message' || pending.payload.role !== 'custom' || pending.payload.customType !== WAKE_CUSTOM_TYPE) continue
+      const source = pending.payload.details as WakeSource
+      if (this.wakeReceipt(source)) throw new Error('Wake occurrence already accepted.')
+      const wake = this.timedWakes().find(item => item.id === source.wakeId && item.revision === source.revision && item.nextAt === source.scheduledAt)
+      if (!wake) throw new Error('Wake occurrence is obsolete.')
+      this.durable.sql.exec('INSERT INTO timed_wake_receipts(occurrence, entry_id) VALUES (?, ?)', occurrenceKey(source), write.key.slice(address.key.length))
+      this.advanceWake(wake, Date.now())
+    }
   }
 
   initialize(metadata: PiSessionMetadata): boolean {

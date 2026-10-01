@@ -1,4 +1,9 @@
 <script lang="ts">
+  import AlarmClock from 'lucide-svelte/icons/alarm-clock';
+  import Calendar from 'lucide-svelte/icons/calendar';
+  import WakeDrawer from './WakeDrawer.svelte';
+  import WakeSource from './WakeSource.svelte';
+  export let wakeRefreshKey = 0;
   import { MAX_MESSAGE_LENGTH } from "../../message-input.ts";
   import { normalizeVoiceTranscription } from "./voice-input.js";
   import {
@@ -27,7 +32,6 @@
   import X from "lucide-svelte/icons/x";
   import Images from "lucide-svelte/icons/images";
   import Heart from "lucide-svelte/icons/heart";
-  import BookOpen from "lucide-svelte/icons/book-open";
   import { createVirtualizer } from "@tanstack/svelte-virtual";
   import { galleryRows, type GalleryGrouping, type GalleryImage } from "./gallery.js";
   import {
@@ -122,7 +126,8 @@
     ) => Promise<CompanionVoiceTranscription>;
     loadEarlierHistory?: () => Promise<void>;
     retryHistory?: () => void;
-    listDiary?: () => Promise<string[]>;
+    listTimedWakes?: () => Promise<import('../../../../../src/shared/timed-wake').TimedWake[]>;
+  listDiary?: () => Promise<string[]>;
     readDiary?: (name: string) => Promise<{ name: string; text: string } | { tooLarge: true } | null>;
   }
 
@@ -212,7 +217,7 @@
   let detailOpen = false;
   let preferencesOpen = false;
   let preferencesButton: HTMLButtonElement;
-  let drawerTab: "history" | "diary" | "images" = "history";
+  let drawerTab: "history" | "diary" | "images" | "wakes" = "history";
   let galleryImages: GalleryImage[] = [];
   let gallerySessionId: string | undefined;
   let galleryGrouping: GalleryGrouping = "week";
@@ -1987,6 +1992,8 @@
                   >
                     {t("compact.record")}
                   </div>
+                {:else if first?.kind === "wake"}
+                  <WakeSource source={first.source} {t} {locale} />
                 {:else if first?.kind === "notice"}
                   <div
                     class="companion-recovery"
@@ -2608,7 +2615,7 @@
       aria-label={t("relationship.named", { name: identity.companionName })}
       data-testid="companion-relationship-drawer"
     >
-      <div class="companion-history-controls">
+      <div class="companion-history-controls"><h2>{t("drawer.home", { name: identity.companionName })}</h2>
         <button
           type="button"
           class="cmp-btn cmp-btn-ghost cmp-btn-circle cmp-btn-sm"
@@ -2627,7 +2634,7 @@
           class="cmp-btn cmp-btn-ghost cmp-btn-sm cmp-btn-circle"
           class:cmp-btn-active={drawerTab === "history"}
           aria-label={t("drawer.history")}
-          on:click={() => drawerTab = "history"}><Heart size={16} aria-hidden="true" /></button
+          on:click={() => drawerTab = "history"}><Heart size={20} aria-hidden="true" /><span>{t("drawer.history")}</span></button
         >
         {#if showDiary}<button
           type="button"
@@ -2638,17 +2645,20 @@
           class="cmp-btn cmp-btn-ghost cmp-btn-sm cmp-btn-circle"
           class:cmp-btn-active={drawerTab === "diary"}
           aria-label={t("drawer.diary")}
-          on:click={() => void openDiary()}><BookOpen size={16} aria-hidden="true" /></button
+          on:click={() => void openDiary()}><Calendar size={20} aria-hidden="true" /><span>{t("drawer.diary")}</span></button
         >{/if}
-        {#if showGallery}<button type="button" role="tab" id="companion-images-tab" aria-controls="companion-drawer-panel" aria-selected={drawerTab === "images"} aria-label={t("drawer.images")} class="cmp-btn cmp-btn-ghost cmp-btn-sm cmp-btn-circle" class:cmp-btn-active={drawerTab === "images"} on:click={() => void openGallery()}><Images size={16} aria-hidden="true" /></button>{/if}
+        {#if showGallery}<button type="button" role="tab" id="companion-images-tab" aria-controls="companion-drawer-panel" aria-selected={drawerTab === "images"} aria-label={t("drawer.images")} class="cmp-btn cmp-btn-ghost cmp-btn-sm cmp-btn-circle" class:cmp-btn-active={drawerTab === "images"} on:click={() => void openGallery()}><Images size={20} aria-hidden="true" /><span>{t("drawer.images")}</span></button>{/if}
+        <button type="button" role="tab" id="companion-wakes-tab" aria-controls="companion-drawer-panel" aria-selected={drawerTab === "wakes"} class="cmp-btn cmp-btn-ghost cmp-btn-sm" class:cmp-btn-active={drawerTab === "wakes"} on:click={() => drawerTab = "wakes"}><AlarmClock size={20} aria-hidden="true" /><span>{t("drawer.wakes")}</span></button>
       </div>
       <div
         id="companion-drawer-panel"
         class="companion-history-scroll"
         role="tabpanel"
-        aria-labelledby={drawerTab === "history" ? "companion-history-tab" : drawerTab === "diary" ? "companion-diary-tab" : "companion-images-tab"}
+        aria-labelledby={drawerTab === "history" ? "companion-history-tab" : drawerTab === "diary" ? "companion-diary-tab" : drawerTab === "images" ? "companion-images-tab" : "companion-wakes-tab"}
       >
-        {#if drawerTab === "images"}
+        {#if drawerTab === "wakes"}
+          <WakeDrawer {t} {locale} {sessionId} refreshKey={wakeRefreshKey} load={actions.listTimedWakes} />
+        {:else if drawerTab === "images"}
           <section class="companion-gallery" aria-label={t("drawer.images")}>
             {#if galleryError}<div class="companion-history-state" role="alert"><p>{t("gallery.failed")}</p><button type="button" class="cmp-btn cmp-btn-ghost cmp-btn-sm" on:click={() => void openGallery(true)}>{t("retry")}</button></div>
             {:else if galleryLoading && !galleryImages.length}<p class="companion-history-state" role="status">{t("loading")}</p>

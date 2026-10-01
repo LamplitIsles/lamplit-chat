@@ -1,3 +1,6 @@
+import { createWakeTools } from './timed-wake-tools'
+import { makeWake } from './timed-wake'
+import { WAKE_CUSTOM_TYPE, type WakeSource, type TimedWake, type WakeInput } from '../shared/timed-wake'
 import { createPlatformFeedbackTools } from './platform-feedback-tool'
 import { createWebTools, searchSettings } from './web-tools'
 import { CompanionFiles, MaterialFailure, materialReply } from './companion-materials'
@@ -70,6 +73,7 @@ const PHOTO_ROW_BUDGET = 1_500_000
 
 type MemoryRegistry = {
   getUserTimeZone(): Promise<string>
+  getReportedTimeZone(): Promise<string | undefined>
   searchSessions(input: { query: string; limit?: number }): Promise<import('../shared/pi-contract').SessionSearchResult[]>
   getMemoryContext(): Promise<string>
   getRelationshipContext(): Promise<string>
@@ -98,6 +102,12 @@ export class PiSession extends HostedAgent {
       })
     })
   }
+  private wakeMutation: Promise<unknown> = Promise.resolve()
+  private serializeWake<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.wakeMutation.then(work)
+    this.wakeMutation = next.catch(() => {})
+    return next
+  }
   private active = false
   private promptOperationId?: string
   private harness?: Promise<PiHarness>
@@ -115,39 +125,47 @@ export class PiSession extends HostedAgent {
   }) as ComputerWorkspace
 
   async onStart(): Promise<void> {
-    if (!this.sessionStorage.isInitialized()) return
-    const durableState = (await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value
+    if (!this.sessionStorage.isInitialized() || this.active) return
+    this.ctx.waitUntil(this.serializeWake(() => this.ensureWakeSchedules()))
+    const durableState = this.sessionStorage.getValueSync(laneState('main'))?.value
     if (!durableState?.currentOperationId) {
       this.scheduleMemoryExtraction()
-      await this.schedulePendingDrain()
+      this.ctx.waitUntil(this.schedulePendingDrain())
       return
     }
-    const lane = await this.getLane()
-    const recovery = await prepareOpenOperationResume(
-      lane, BACKGROUND_CONTEXT,
-      (id) => this.sessionStorage.getPromptSubmission(id),
-      async (id) => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
-      (id) => this.sessionStorage.getEntrySync(id),
-      (id, entryId) => this.sessionStorage.acceptPromptSubmission(id, entryId),
-    )
-    if (recovery) {
-      this.active = true
-      if (recovery.browserPrompt) this.promptOperationId = recovery.operationId
-      this.ctx.waitUntil((async () => {
-        try {
-          const resumed = await lane.resume(BACKGROUND_CONTEXT)
-          if (!resumed.ok) throw resumed.error
-          await this.flushOutboxToRegistry()
-        } finally {
-          this.active = false
-          this.promptOperationId = undefined
-          this.scheduleMemoryExtraction()
-          await this.schedulePendingDrain()
-        }
-      })())
-    } else {
-      this.scheduleMemoryExtraction()
-      await this.schedulePendingDrain()
+    this.active = true
+    try {
+      const lane = await this.getLane()
+      const recovery = await prepareOpenOperationResume(
+        lane, BACKGROUND_CONTEXT,
+        (id) => this.sessionStorage.getPromptSubmission(id),
+        async (id) => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
+        (id) => this.sessionStorage.getEntrySync(id),
+        (id, entryId) => this.sessionStorage.acceptPromptSubmission(id, entryId),
+      )
+      if (recovery) {
+        if (recovery.browserPrompt) this.promptOperationId = recovery.operationId
+        this.ctx.waitUntil((async () => {
+          try {
+            await this.wakeMutation
+            const resumed = await lane.resume(BACKGROUND_CONTEXT)
+            if (!resumed.ok) throw resumed.error
+            await this.flushOutboxToRegistry()
+          } finally {
+            this.active = false
+            this.promptOperationId = undefined
+            this.scheduleMemoryExtraction()
+            await this.schedulePendingDrain()
+          }
+        })())
+      } else {
+        this.active = false
+        this.scheduleMemoryExtraction()
+        this.ctx.waitUntil(this.schedulePendingDrain())
+      }
+    } catch (error) {
+      this.active = false
+      throw error
     }
   }
 
@@ -326,14 +344,92 @@ export class PiSession extends HostedAgent {
     return { state: 'uncertain', submissionId }
   }
 
+  @hostedCallable()
+  async listTimedWakes(): Promise<TimedWake[]> {
+    await this.waitUntilInitialized()
+    return this.sessionStorage.timedWakes().sort((a, b) => a.nextAt.localeCompare(b.nextAt))
+  }
+
+  // Machine tools only: deliberately not browser-callable.
+  async saveTimedWake(input: WakeInput, id?: string): Promise<TimedWake> {
+    return this.serializeWake(() => this.saveWake(input, id))
+  }
+  private async saveWake(input: WakeInput, id?: string): Promise<TimedWake> {
+    await this.waitUntilInitialized()
+    const wakes = this.sessionStorage.timedWakes()
+    const previous = id ? wakes.find(wake => wake.id === id) : undefined
+    if (id && !previous) throw new Error('Active wake not found.')
+    if (!id && wakes.length >= 32) throw new Error('At most 32 active wakes per session.')
+    const wake = makeWake(input, Date.now(), id)
+    this.sessionStorage.setSetting('timedWakes', [...wakes.filter(item => item.id !== id), wake])
+    await this.ensureWakeSchedules()
+    return wake
+  }
+
+  async cancelTimedWake(id: string): Promise<boolean> {
+    return this.serializeWake(() => this.cancelWake(id))
+  }
+  private async cancelWake(id: string): Promise<boolean> {
+    const wakes = this.sessionStorage.timedWakes()
+    const found = wakes.some(wake => wake.id === id)
+    this.sessionStorage.setSetting('timedWakes', wakes.filter(wake => wake.id !== id))
+    await this.ensureWakeSchedules()
+    return found
+  }
+
+  private async ensureWakeSchedules(): Promise<void> {
+    const wakes = this.sessionStorage.timedWakes()
+    for (const schedule of await this.listSchedules()) {
+      if (schedule.callback !== 'acceptTimedWake') continue
+      const source = schedule.payload as WakeSource
+      if (!wakes.some(wake => wake.id === source.wakeId && wake.revision === source.revision && wake.nextAt === source.scheduledAt)) await this.cancelSchedule(schedule.id)
+    }
+    for (const wake of wakes) {
+      const source: WakeSource = { wakeId: wake.id, revision: wake.revision, scheduledAt: wake.nextAt, title: wake.title, reminder: wake.reminder }
+      await this.schedule(new Date(Math.ceil(Date.parse(wake.nextAt) / 1000) * 1000), 'acceptTimedWake', source, { idempotent: true })
+    }
+  }
+
+  async acceptTimedWake(source: WakeSource): Promise<void> {
+    return this.serializeWake(() => this.acceptWake(source))
+  }
+  private async acceptWake(source: WakeSource): Promise<void> {
+    if (this.sessionStorage.wakeReceipt(source)) { await this.ensureWakeSchedules(); await this.schedulePendingDrain(); return }
+    const lane = await this.getLane()
+    // Eligibility is checked at public admission start, after all lane acquisition waits.
+    if (this.sessionStorage.wakeReceipt(source)) { await this.ensureWakeSchedules(); await this.schedulePendingDrain(); return }
+    const wake = this.sessionStorage.timedWakes().find(item => item.id === source.wakeId && item.revision === source.revision && item.nextAt === source.scheduledAt)
+    if (!wake) return
+    if (Date.now() < Date.parse(wake.nextAt)) return
+    if (Date.now() - Date.parse(wake.nextAt) > 60_000) {
+      this.sessionStorage.advanceWake(wake, Date.now())
+    } else {
+      try {
+        const queued = await lane.followUp({ role: 'custom', customType: WAKE_CUSTOM_TYPE, display: true,
+          content: `[Your self-set reminder, scheduled ${source.scheduledAt}] ${source.title}\n${source.reminder}`, details: source, timestamp: Date.now() }, undefined, BACKGROUND_CONTEXT)
+        if (!queued.ok) throw queued.error
+      } catch (error) {
+        if (!this.sessionStorage.wakeReceipt(source)) throw error
+      }
+    }
+    // Future repeats are reliably registered before any current model execution.
+    await this.ensureWakeSchedules()
+    await this.schedulePendingDrain()
+  }
+
+  private async awaitWakeSchedules(): Promise<void> {
+    await this.serializeWake(() => this.ensureWakeSchedules())
+  }
+
   async drainPendingWork(): Promise<void> {
     if (this.active || !this.sessionStorage.isInitialized()) return
     this.active = true
     try {
+      await this.awaitWakeSchedules()
       const lane = await this.getLane()
       if (!(await lane.inspectExecution(BACKGROUND_CONTEXT)).current) {
         const state = (await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value
-        if (state?.inbox.some((item) => item.kind === 'steer')) {
+        if (state?.inbox.some((item) => item.kind === 'steer' || item.kind === 'followUp')) {
           const operationId = crypto.randomUUID()
           const admission = await lane.accept({ kind: 'prompt', operationId, prompt: '' }, BACKGROUND_CONTEXT)
           if (!admission.ok) throw admission.error
@@ -351,7 +447,7 @@ export class PiSession extends HostedAgent {
 
   private async schedulePendingDrain(): Promise<void> {
     const state = (await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value
-    if (state?.inbox.some((item) => item.kind === 'steer')) {
+    if (state?.inbox.some((item) => item.kind === 'steer' || item.kind === 'followUp')) {
       await this.schedule(1, 'drainPendingWork', undefined, { idempotent: true })
     }
   }
@@ -643,6 +739,7 @@ export class PiSession extends HostedAgent {
         createSessionSearchTool(registry),
         createMemoryTool(registry, this.sessionStorage.getMetadataSync().id),
         ...createRelationshipTools(registry),
+        ...createWakeTools(this, () => registry.getReportedTimeZone()),
         ...createWebTools(this.env, this.instanceId()),
         ...createPlatformFeedbackTools(this.env, this.instanceId(), this.sessionStorage.getMetadataSync().id),
       ],
@@ -651,6 +748,7 @@ export class PiSession extends HostedAgent {
       loadCompactionPrompt: async () => (await new CompanionFiles(this.workspace).effective()).content,
       loadInstructions: () => this.workspace.readFile(`${WORKSPACE_ROOT}/AGENTS.md`),
       getUserTimeZone: () => registry.getUserTimeZone(),
+      awaitWakeSchedules: () => this.awaitWakeSchedules(),
       })
     })
     const harness = await this.harness
@@ -856,6 +954,7 @@ function storedEntry(seq: number, entry: Entry): StoredSessionEntry {
     type: entry.type,
     timestamp: new Date(entry.timestamp).toISOString(),
     message: entry.type === 'message' ? browserMessage(entry.message) : undefined,
+    wakeSource: entry.type === 'message' && entry.message.role === 'custom' && entry.message.customType === WAKE_CUSTOM_TYPE ? entry.message.details as WakeSource : undefined,
     summary: entry.type === 'compaction' || entry.type === 'branch_summary' ? entry.summary : undefined,
   }
 }

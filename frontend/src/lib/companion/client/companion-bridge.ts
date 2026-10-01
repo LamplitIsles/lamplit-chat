@@ -44,6 +44,7 @@ export interface CompanionActions {
   ) => Promise<CompanionVoiceTranscription>;
   loadEarlierHistory?: () => Promise<void>;
   retryHistory?: () => void;
+  listTimedWakes?: () => Promise<import('../../../../../src/shared/timed-wake').TimedWake[]>;
   listDiary?: () => Promise<string[]>;
   readDiary?: (name: string) => Promise<{ name: string; text: string } | { tooLarge: true } | null>;
 }

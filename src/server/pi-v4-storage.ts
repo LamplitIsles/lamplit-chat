@@ -78,6 +78,7 @@ export class PiV4Storage implements Storage {
       hasEntryId: (id) => this.entries.has(id),
     })
     this.storage.transactionSync(() => {
+      this.beforeCommit(prepared.writes)
       for (const write of prepared.writes) {
         this.storage.sql.exec('INSERT INTO pi_v4_writes(seq, data) VALUES (?, ?)', write.seq, JSON.stringify(write))
       }
@@ -85,6 +86,8 @@ export class PiV4Storage implements Storage {
     for (const write of prepared.writes) this.apply(write)
     return { ...prepared.result, stats: this.getStatsSync() }
   }
+
+  protected beforeCommit(_writes: CommittedWrite[]): void {}
 
   reset(): void {
     this.storage.sql.exec('DELETE FROM pi_v4_writes')
