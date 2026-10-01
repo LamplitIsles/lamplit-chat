@@ -8,7 +8,8 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const directory = mkdtempSync(join(tmpdir(), 'lamplit-voice-'))
 const platformService = process.argv.find(arg => arg.startsWith('--platform-service='))?.split('=')[1]
 const config = JSON.parse(readFileSync(join(repo, 'wrangler.test.jsonc'), 'utf8'))
-config.name = 'lamplit-chat-voice-fixture'
+const port = process.env.VOICE_FIXTURE_PORT || '8898'
+config.name = process.env.VOICE_FIXTURE_NAME || 'lamplit-chat-voice-fixture'
 config.vars = { ...config.vars, MODEL_API_KEY: 'fixture-key', AUTH_PASSWORD: 'fixture-password-long-enough', HOSTED_MODE: 'true', CHAT_INTERNAL_SECRET: 'fixture-voice-internal-secret' }
 if (platformService) config.services = [{ binding: 'PLATFORM', service: platformService }]
 config.main = join(directory, 'entry.ts')
@@ -44,8 +45,8 @@ export default { async fetch(request, env) {
 const configPath = join(directory, 'wrangler.jsonc')
 writeFileSync(configPath, JSON.stringify(config))
 writeFileSync(join(directory, '.dev.vars'), '')
-console.log(`Voice fixture: http://127.0.0.1:8898; temporary state: ${directory}`)
-const child = spawn(join(repo, 'node_modules/.bin/wrangler'), ['dev', '--config', configPath, '--local', '--ip', '127.0.0.1', '--port', '8898', '--persist-to', join(directory, 'state'), '--show-interactive-dev-session=false'], { cwd: directory, stdio: 'inherit', env: { PATH: process.env.PATH, TMPDIR: directory, XDG_CONFIG_HOME: join(directory, 'config'), XDG_CACHE_HOME: join(directory, 'cache'), XDG_DATA_HOME: join(directory, 'data'), WRANGLER_LOG_PATH: join(directory, 'logs'), WRANGLER_SEND_METRICS: 'false', CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: 'false' } })
+console.log(`Voice fixture: http://127.0.0.1:${port}; temporary state: ${directory}`)
+const child = spawn(join(repo, 'node_modules/.bin/wrangler'), ['dev', '--config', configPath, '--local', '--ip', '127.0.0.1', '--port', port, '--inspector-port', process.env.VOICE_INSPECTOR_PORT || '0', '--persist-to', join(directory, 'state'), '--show-interactive-dev-session=false'], { cwd: directory, stdio: 'inherit', env: { ...(process.env.VOICE_REGISTRY_PATH ? { WRANGLER_REGISTRY_PATH: process.env.VOICE_REGISTRY_PATH } : {}), PATH: process.env.PATH, TMPDIR: directory, XDG_CONFIG_HOME: join(directory, 'config'), XDG_CACHE_HOME: join(directory, 'cache'), XDG_DATA_HOME: join(directory, 'data'), WRANGLER_LOG_PATH: join(directory, 'logs'), WRANGLER_SEND_METRICS: 'false', CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: 'false' } })
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal))
 child.on('exit', code => { rmSync(directory, { recursive: true, force: true }); process.exitCode = code ?? 0 })
 child.on('error', error => { console.error(error.message); rmSync(directory, { recursive: true, force: true }); process.exitCode = 1 })

@@ -115,3 +115,7 @@ _Avoid_: Webpage reading, conversation archive search
 **Webpage reading（网页读取）**:
 The companion's ability to obtain readable content from a specific public webpage address, including an address supplied by the user. It is distinct from discovering addresses through network search.
 _Avoid_: Web search, browser operation, reading private account content
+
+**Voice input（语音输入）**:
+Dictation that contributes editable text to the user's unsent chat draft, including further speech added to an existing draft. The user decides when to send the resulting message.
+_Avoid_: Voice message, automatic message sending, voice call

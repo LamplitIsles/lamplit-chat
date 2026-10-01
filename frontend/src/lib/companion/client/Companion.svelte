@@ -27,7 +27,6 @@
   import Pause from "lucide-svelte/icons/pause";
   import Play from "lucide-svelte/icons/play";
   import Square from "lucide-svelte/icons/square";
-  import Keyboard from "lucide-svelte/icons/keyboard";
   import Mic from "lucide-svelte/icons/mic";
   import X from "lucide-svelte/icons/x";
   import Images from "lucide-svelte/icons/images";
@@ -308,16 +307,15 @@
   let displayedProjection: CompanionProjection = projection;
   let submissionToken = 0;
   let pendingSubmissions = 0;
-  let voicePointer: number | undefined;
-  let voiceMode = false;
   let voiceCancelled = false;
   let voiceLimitReached = false;
   let voiceSubmitted = false;
-  let voiceDraftReady = false;
-  let voiceStartY = 0;
-  let voiceKey: string | undefined;
   let draftRevision = 0;
   let voiceDraftRevision = 0;
+  let voiceDraftSnapshot = "";
+  let voiceButton: HTMLButtonElement | undefined;
+  let voiceSelectionStart = 0;
+  let voiceSelectionEnd = 0;
   let voiceStarting = false;
   let voiceInputGeneration = 0;
   let composerResizeToken = 0;
@@ -348,8 +346,7 @@
   $: hasDraft = Boolean(composer.draft.trim() || imageDrafts.length);
   $: voiceBusy = voiceStarting || voiceStatus === "recording" || voiceStatus === "stopping" || voiceStatus === "transcribing";
   $: voiceAvailable = voiceCapability === "available" && Boolean(actions.transcribeVoice) && voiceCaptureAvailable;
-  $: if (!voiceAvailable && voiceMode) {
-    voiceMode = false;
+  $: if (!voiceAvailable && voiceBusy) {
     void cancelVoiceInput();
   }
   $: unavailableVoiceText = voiceCapability === "loading"
@@ -404,8 +401,6 @@
   }
   $: if (sessionId !== voiceSessionId) {
     voiceSessionId = sessionId;
-    voiceDraftReady = false;
-    voiceMode = false;
     void cancelVoiceInput();
   }
   $: if (
@@ -1088,7 +1083,6 @@
   function submit(): void {
     if (projection.canSubmit === false || voiceBusy) return;
     composerFeedback = undefined;
-    voiceDraftReady = false;
     const restoreText = composer.draft;
     const text = restoreText.trim();
     if (text.length > MAX_MESSAGE_LENGTH) return;
@@ -1172,8 +1166,6 @@
   async function cancelVoiceInput(): Promise<void> {
     voiceInputGeneration += 1;
     voiceStarting = false;
-    voicePointer = undefined;
-    voiceKey = undefined;
     voiceCancelled = true;
     clearVoiceClock();
     voiceTranscriptionAbort?.abort();
@@ -1220,18 +1212,19 @@
         abort.signal,
       );
       if (abort.signal.aborted || generation !== voiceInputGeneration || sessionId !== originSessionId) return;
-      if (draftRevision !== voiceDraftRevision || composer.draft.length) {
-        voiceMode = false;
+      if (draftRevision !== voiceDraftRevision || composer.draft !== voiceDraftSnapshot) {
         voiceFailure = "voice.discarded";
         liveAnnouncement = { key: "voice.discarded" };
         return;
       }
       const { text } = normalizeVoiceTranscription(transcription);
-      setDraft(text);
-      voiceDraftReady = true;
-      voiceMode = false;
+      const cursor = voiceSelectionStart + text.length;
+      setDraft(composer.draft.slice(0, voiceSelectionStart) + text + composer.draft.slice(voiceSelectionEnd));
       liveAnnouncement = { key: "voice.draftReady" };
-      void tick().then(() => composerInput?.focus());
+      void tick().then(() => {
+        composerInput?.focus();
+        composerInput?.setSelectionRange(cursor, cursor);
+      });
     } catch (error) {
       if (!abort.signal.aborted && generation === voiceInputGeneration) {
         voiceFailure = voiceErrorKey(error);
@@ -1245,7 +1238,7 @@
   }
 
   async function startVoiceInput(): Promise<void> {
-    if (composer.draft.length || projection.running || voiceStarting || voiceStatus === "recording" || voiceStatus === "stopping" || voiceStatus === "transcribing" || composer.composing || projection.canSubmit === false) return;
+    if (projection.running || voiceStarting || voiceStatus === "recording" || voiceStatus === "stopping" || voiceStatus === "transcribing" || composer.composing || projection.canSubmit === false) return;
     if (voiceCapability === "loading") {
       liveAnnouncement = { key: "voice.wait" };
       return;
@@ -1265,8 +1258,10 @@
     voiceCancelled = false;
     voiceLimitReached = false;
     voiceSubmitted = false;
-    voiceDraftReady = false;
     voiceDraftRevision = draftRevision;
+    voiceDraftSnapshot = composer.draft;
+    voiceSelectionStart = composerInput?.selectionStart ?? composer.draft.length;
+    voiceSelectionEnd = composerInput?.selectionEnd ?? voiceSelectionStart;
     clearVoiceClock();
     const generation = ++voiceInputGeneration;
     voiceStarting = true;
@@ -1274,6 +1269,9 @@
       await voiceController.start();
       if (generation !== voiceInputGeneration) return;
       voiceStarting = false;
+      await tick();
+      if (generation !== voiceInputGeneration) return;
+      voiceButton?.focus({ preventScroll: true });
       voiceClock = setInterval(() => {
         voiceElapsedMs = voiceController.elapsedMs;
       }, 250);
@@ -1287,52 +1285,11 @@
     }
   }
 
-  function onVoicePointerDown(event: PointerEvent): void {
-    if (event.button !== 0 || voicePointer !== undefined || voiceBusy || !voiceAvailable || projection.canSubmit === false || composer.composing) return;
-    event.preventDefault();
-    voicePointer = event.pointerId;
-    voiceStartY = event.clientY;
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    void startVoiceInput();
+  function toggleVoiceInput(): void {
+    if (voiceStatus === "recording") void stopVoiceAndTranscribe();
+    else if (!voiceBusy) void startVoiceInput();
   }
-  function onVoicePointerUp(event: PointerEvent): void {
-    if (voicePointer !== event.pointerId) return;
-    voicePointer = undefined;
-    if (voiceStarting) void cancelVoiceInput();
-    else if (voiceStatus === "recording") void stopVoiceAndTranscribe();
-  }
-  function onVoicePointerCancel(event: PointerEvent): void {
-    if (voicePointer === event.pointerId) void cancelVoiceInput();
-  }
-  function onVoicePointerMove(event: PointerEvent): void {
-    if (voicePointer === event.pointerId && voiceStartY - event.clientY >= 60) void cancelVoiceInput();
-  }
-  function onVoiceKeyDown(event: KeyboardEvent): void {
-    if (![" ", "Enter"].includes(event.key)) return;
-    event.preventDefault();
-    if (event.repeat || voiceKey || voiceBusy) return;
-    voiceKey = event.key;
-    void startVoiceInput();
-  }
-  function onVoiceKeyUp(event: KeyboardEvent): void {
-    if (event.key !== voiceKey) return;
-    event.preventDefault();
-    voiceKey = undefined;
-    if (voiceStarting) void cancelVoiceInput();
-    else if (voiceStatus === "recording") void stopVoiceAndTranscribe();
-  }
-  function switchVoiceMode(): void {
-    if (composer.draft.length || projection.running || projection.canSubmit === false) return;
-    if (!voiceAvailable) { liveAnnouncement = { key: voiceCapability === "loading" ? "voice.wait" : "voice.notEnabled" }; return; }
-    voiceCancelled = false;
-    voiceFailure = "";
-    voiceMode = true;
-  }
-  function switchTextMode(): void {
-    void cancelVoiceInput();
-    voiceMode = false;
-    void tick().then(() => composerInput?.focus());
-  }
+
   function onVoiceVisibility(): void {
     if (document.hidden) void cancelVoiceInput();
   }
@@ -1352,6 +1309,7 @@
   function onKeydown(event: KeyboardEvent): void {
     if (
       commandSuggestion &&
+      !voiceBusy &&
       (event.key === "Tab" || event.key === "Enter") &&
       !event.shiftKey &&
       !event.isComposing &&
@@ -1373,7 +1331,7 @@
     void scheduleComposerResize();
   }
   function acceptCommandSuggestion(): void {
-    if (!commandSuggestion) return;
+    if (!commandSuggestion || voiceBusy) return;
     setDraft(commandSuggestion.command);
     void tick().then(() => composerInput?.focus());
   }
@@ -2299,6 +2257,7 @@
                   type="button"
                   role="option"
                   aria-selected="true"
+                  disabled={voiceBusy}
                   on:click={acceptCommandSuggestion}
                 >
                   <span class="companion-command-name"
@@ -2385,18 +2344,6 @@
                 aria-hidden="true"
                 on:change={onImageInput}
                 on:cancel={() => attachmentsOpen = false} />{/if}
-              {#if voiceMode}
-                <button type="button" class="cmp-btn cmp-btn-ghost companion-voice-hold"
-                  data-testid="voice-hold" data-state={voiceStatus}
-                  disabled={!voiceBusy && (!voiceAvailable || projection.canSubmit === false || projection.running)}
-                  on:pointerdown={onVoicePointerDown} on:pointermove={onVoicePointerMove}
-                  on:pointerup={onVoicePointerUp} on:pointercancel={onVoicePointerCancel}
-                  on:keydown={onVoiceKeyDown} on:keyup={onVoiceKeyUp}
-                  on:blur={() => { if (voiceKey) void cancelVoiceInput(); }}
-                  aria-label={t(voiceStatus === "transcribing" ? "voice.transcribing" : "voice.holdButton")}>
-                  {voiceStarting ? t("voice.requesting") : voiceStatus === "recording" ? t("voice.recording", { elapsed: formatVoiceElapsed(voiceElapsedMs) }) : voiceStatus === "stopping" || voiceStatus === "transcribing" ? t("voice.transcribing") : voiceFailure ? t("voice.retry") : voiceCancelled ? t("voice.cancelledIdle") : t("voice.holdButton")}
-                </button>
-              {:else}
               <textarea
                 bind:this={composerInput}
                 class="companion-textarea"
@@ -2409,13 +2356,13 @@
                   name: identity.companionName,
                 })}
                 rows="1"
+                readonly={voiceBusy}
                 value={composer.draft}
                 on:input={onInput}
                 on:paste={onPaste}
                 on:compositionstart={onCompositionStart}
                 on:compositionend={onCompositionEnd}
                 on:keydown={onKeydown}></textarea>
-              {/if}
               <div
                 class="companion-compose-actions">
               <button bind:this={attachmentsButton}
@@ -2427,10 +2374,10 @@
                 aria-controls="companion-attachments"
                 on:click={() => attachmentsOpen = !attachmentsOpen}><svelte:component this={attachmentsOpen ? X : Plus} size={22}
                 aria-hidden="true" /></button>
-              {#if voiceMode}<span class="companion-voice-hint">{t(voiceStatus === "transcribing" || voiceStatus === "stopping" ? "voice.draftHint" : voiceFailure ? "voice.retryHint" : voiceCancelled ? voiceSubmitted ? "voice.cancelSubmitted" : "voice.cancelUnsubmitted" : "voice.releaseHint")}</span>
-              {:else if voiceDraftReady}<span class="companion-voice-hint">{t("voice.editHint")}</span>
-              {:else if !hasDraft && !projection.running && voiceAvailable}<span class="companion-voice-hint">{t("voice.switchHint")}</span>{/if}
-              {#if contextCapacity && !voiceMode}
+              {#if voiceBusy}<span class="companion-voice-hint">{t(voiceStatus === "recording" ? "voice.recordingShort" : voiceStarting ? "voice.requesting" : "voice.transcribing", { elapsed: formatVoiceElapsed(voiceElapsedMs) })}</span>
+              {:else if voiceCancelled}<span class="companion-voice-hint">{t(voiceSubmitted ? "voice.cancelSubmitted" : "voice.cancelUnsubmitted")}</span>
+              {/if}
+              {#if contextCapacity && !voiceBusy}
                 <div class="companion-context-meter-wrap">
                   <button
                     bind:this={contextMeterButton}
@@ -2493,28 +2440,34 @@
                   {/if}
                 </div>
               {/if}
-              {#if voiceMode}
-                <button type="button" class="cmp-btn cmp-btn-ghost cmp-btn-circle" aria-label={t(voiceBusy ? "voice.cancel" : "voice.textMode")}
-                  on:click={() => voiceBusy ? void cancelVoiceInput() : switchTextMode()}>
-                  {#if voiceBusy}<X size={22} aria-hidden="true" />{:else}<Keyboard size={22} aria-hidden="true" />{/if}
-                </button>
-              {:else if !hasDraft && !projection.running}
+              {#if voiceBusy}
+                <button type="button" class="cmp-btn cmp-btn-ghost cmp-btn-circle" aria-label={t("voice.cancel")}
+                  on:click={() => void cancelVoiceInput()}><X size={22} aria-hidden="true" /></button>
+              {/if}
+              {#if !projection.running}
                 <button class="cmp-btn cmp-btn-ghost cmp-btn-circle companion-microphone" type="button"
-                  aria-label={t("voice.switchMode")} title={voiceAvailable ? t("voice.switchMode") : unavailableVoiceText}
-                  disabled={projection.canSubmit === false || composer.composing}
-                  on:click={switchVoiceMode}><Mic size={22} aria-hidden="true" /></button>
-              {:else if projection.running && !hasDraft}
+                  bind:this={voiceButton}
+                  data-testid="voice-record" data-state={voiceStatus}
+                  aria-label={t(voiceStatus === "recording" ? "voice.stop" : "voice.start")}
+                  title={voiceAvailable ? t(voiceStatus === "recording" ? "voice.stop" : "voice.start") : unavailableVoiceText}
+                  disabled={voiceStarting || voiceStatus === "stopping" || voiceStatus === "transcribing" || projection.canSubmit === false || composer.composing}
+                  on:keydown={(event) => { if (event.repeat) event.preventDefault(); }}
+                  on:click={toggleVoiceInput}>
+                  {#if voiceStatus === "recording"}<Square size={18} fill="currentColor" aria-hidden="true" />{:else}<Mic size={22} aria-hidden="true" />{/if}
+                </button>
+              {/if}
+              {#if projection.running && !hasDraft}
                 <button
                   class="cmp-btn cmp-btn-primary cmp-btn-circle companion-send"
                   aria-label={t("reply.stop")}
                   on:click={() => void stop()}
                   disabled={!actions.stop || stopping}><Square size={18} fill="currentColor" aria-hidden="true" /></button>
-              {:else}
+              {:else if hasDraft}
                 <button
                   class="cmp-btn cmp-btn-primary cmp-btn-circle companion-send"
                   aria-label={t("message.send")}
                   on:click={submit}
-                  disabled={projection.canSubmit === false || composer.composing || composer.draft.trim().length > MAX_MESSAGE_LENGTH}><ArrowUp size={22} aria-hidden="true" /></button>
+                  disabled={voiceBusy || projection.canSubmit === false || composer.composing || composer.draft.trim().length > MAX_MESSAGE_LENGTH}><ArrowUp size={22} aria-hidden="true" /></button>
               {/if}
               {#if projection.running && hasDraft && !voiceBusy && actions.stop}
                 <button
@@ -2545,31 +2498,7 @@
                 {t("message.tooLong", { limit: MAX_MESSAGE_LENGTH, count: composer.draft.trim().length })}
               </div>
             {/if}
-            {#if !voiceMode && (voiceStatus === "recording" || voiceStatus === "stopping")}
-              <div
-                class="companion-voice-input-status"
-                data-testid="companion-voice-recording-status"
-                role="status"
-                aria-live="polite"
-              >
-                {voiceStarting
-                  ? t("voice.requesting")
-                  : voiceStatus === "stopping"
-                  ? t("voice.stopping")
-                  : t("voice.recording", {
-                      elapsed: formatVoiceElapsed(voiceElapsedMs),
-                    })}
-              </div>
-            {:else if !voiceMode && voiceStatus === "transcribing"}
-              <div
-                class="companion-voice-input-status"
-                data-testid="companion-voice-transcribing-status"
-                role="status"
-                aria-live="polite"
-              >
-                {t("voice.transcribingProgress")}
-              </div>
-            {:else if !voiceAvailable && !hasDraft && !projection.running}
+            {#if !voiceAvailable && !hasDraft && !projection.running}
               <div
                 class="companion-voice-input-status companion-voice-input-unavailable"
                 id="companion-voice-unavailable"
