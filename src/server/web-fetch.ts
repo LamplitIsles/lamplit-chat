@@ -43,7 +43,7 @@ async function publicURL(value: string, signal: AbortSignal, resolve: NonNullabl
   url.hash = ''
   return url
 }
-export async function fetchPage(value: string, signal?: AbortSignal, network: PageNetwork = {}) {
+async function readPage<T>(value: string, signal: AbortSignal | undefined, network: PageNetwork, consume: (page: { text: string; url: string; mediaType: string; inputTruncated: boolean; inputBytes: number }, signal: AbortSignal) => T) {
   const resolve = network.resolve ?? resolvePublic
   const fetcher = network.fetch ?? fetch
   return boundedRequest(async (_url, init) => {
@@ -75,6 +75,11 @@ export async function fetchPage(value: string, signal?: AbortSignal, network: Pa
     const inputTruncated = bytes.byteLength > PAGE_MAX_BYTES
     const text = new TextDecoder().decode(bytes.subarray(0, PAGE_MAX_BYTES))
     const url = response.headers.get('x-lamplit-final-url')!
+    return consume({ text, url, mediaType, inputTruncated, inputBytes: Math.min(bytes.byteLength, PAGE_MAX_BYTES) }, requestSignal)
+  })
+}
+export async function fetchPage(value: string, signal?: AbortSignal, network: PageNetwork = {}) {
+  return readPage(value, signal, network, ({ text, url, mediaType, inputTruncated, inputBytes }, requestSignal) => {
     let content = text
     let title = ''
     let parseTimeMs = 0
@@ -108,6 +113,33 @@ export async function fetchPage(value: string, signal?: AbortSignal, network: Pa
     }
     requestSignal.throwIfAborted()
     if (!content.trim()) throw new WebError('body_unavailable', 'Readable webpage body unavailable')
-    return { url, title: title.slice(0, PAGE_MAX_TITLE_CHARACTERS), content: content.slice(0, PAGE_MAX_CHARACTERS), truncated: inputTruncated || content.length > PAGE_MAX_CHARACTERS || title.length > PAGE_MAX_TITLE_CHARACTERS, inputBytes: Math.min(bytes.byteLength, PAGE_MAX_BYTES), parseTimeMs }
+    return { url, title: title.slice(0, PAGE_MAX_TITLE_CHARACTERS), content: content.slice(0, PAGE_MAX_CHARACTERS), truncated: inputTruncated || content.length > PAGE_MAX_CHARACTERS || title.length > PAGE_MAX_TITLE_CHARACTERS, inputBytes, parseTimeMs }
+  })
+}
+
+// Anchor extraction follows guionai/web (Apache-2.0); transport is shared with web_fetch.
+export async function fetchLinks(value: string, limit = 100, signal?: AbortSignal, network: PageNetwork = {}) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new WebError('invalid_limit', 'Link limit must be an integer from 1 through 100')
+  return readPage(value, signal, network, ({ text, url, mediaType, inputTruncated }, requestSignal) => {
+    if (mediaType !== 'text/html' && mediaType !== 'application/xhtml+xml') throw new WebError('unsupported_content', 'Listing links requires an HTML page')
+    const { document } = parseHTML(text)
+    let base = url
+    try { base = new URL(document.querySelector('base[href]')?.getAttribute('href') || url, url).href } catch { /* Use the final page URL for malformed bases. */ }
+    const links: Array<{ text: string; url: string }> = []
+    const seen = new Set<string>()
+    let truncated = inputTruncated
+    for (const anchor of document.querySelectorAll('a[href]')) {
+      const href = anchor.getAttribute('href')?.trim()
+      if (!href) continue
+      let destination: URL
+      try { destination = new URL(href, base) } catch { continue }
+      if (!['http:', 'https:'].includes(destination.protocol) || destination.username || destination.password || destination.href.length > 4000 || seen.has(destination.href)) continue
+      seen.add(destination.href)
+      if (links.length >= limit) { truncated = true; break }
+      const label = anchor.textContent?.trim() || anchor.getAttribute('aria-label') || anchor.getAttribute('title') || ''
+      links.push({ text: label.replace(/\s+/g, ' ').trim().slice(0, 500), url: destination.href })
+    }
+    requestSignal.throwIfAborted()
+    return { url, links, truncated }
   })
 }

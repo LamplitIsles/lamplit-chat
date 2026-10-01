@@ -6,7 +6,7 @@ import { env } from 'cloudflare:workers'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import worker from '../server'
 import { executeSearch, searchSettings, createWebTools, type SearchEnvironment } from './web-tools'
-import { fetchPage, PAGE_MAX_BYTES, PAGE_MAX_CHARACTERS, PAGE_MAX_TITLE_CHARACTERS } from './web-fetch'
+import { fetchPage, fetchLinks, PAGE_MAX_BYTES, PAGE_MAX_CHARACTERS, PAGE_MAX_TITLE_CHARACTERS } from './web-fetch'
 import { search } from './web-search-providers'
 import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
 
@@ -59,6 +59,7 @@ describe('web tools in the Worker executor', () => {
       await lane.prompt('Read the fictional public page', undefined, BACKGROUND_CONTEXT)
       expect(requests[2].tools.map(tool => tool.function.name)).not.toContain('web_search')
       expect(requests[2].tools.map(tool => tool.function.name)).toContain('web_fetch')
+      expect(requests[2].tools.map(tool => tool.function.name)).toContain('web_links')
       expect(JSON.stringify(requests[3].messages.filter(message => message.role === 'tool'))).toContain('Fixture public page')
     })
     expect(providerCalls).toBe(1)
@@ -220,5 +221,49 @@ describe('public page reading in actual Worker runtime', () => {
     await expect(fetchPage('https://public.example/', undefined, { fetch: redirect, resolve: resolver })).rejects.toThrow('public')
     expect(redirect).toHaveBeenCalledTimes(1)
     await expect(fetchPage('https://public.example/', undefined, { resolve: resolver, fetch: async () => new Response(null, { status: 302, headers: { location: '/' } }) })).rejects.toThrow('redirect limit')
+  })
+})
+
+
+describe('web_links in Worker runtime', () => {
+  const html = (body: string) => new Response(body, { headers: { 'content-type': 'text/html' } })
+  it('lists original DOM anchors in order, resolves bases, deduplicates and bounds output', async () => {
+    const body = '<base href="/docs/"><nav><a href="one"> First  link </a></nav><a href="one">Duplicate</a><a href="two" aria-label="Second"></a><a href="mailto:test@example.com">mail</a><a href="javascript:alert(1)">script</a><a href="https://user:pass@public.example/">secret</a><a href="three">' + 'x'.repeat(600) + '</a>'
+    const options = { resolve: resolver, fetch: async () => html(body) }
+    const result = await fetchLinks('https://public.example/page', 2, undefined, options)
+    expect(result).toEqual({ url: 'https://public.example/page', links: [{ text: 'First link', url: 'https://public.example/docs/one' }, { text: 'Second', url: 'https://public.example/docs/two' }], truncated: true })
+    const all = await fetchLinks('https://public.example/page', 100, undefined, options)
+    expect(all.links).toHaveLength(3)
+    expect(all.links[2].text).toHaveLength(500)
+    expect(all.truncated).toBe(false)
+    expect(await fetchLinks('https://public.example/', 100, undefined, { ...options, fetch: async () => html('<p>No links</p>') })).toEqual({ url: 'https://public.example/', links: [], truncated: false })
+    const large = await fetchLinks('https://public.example/', 100, undefined, { ...options, fetch: async () => html('x'.repeat(PAGE_MAX_BYTES + 20)) })
+    expect(large.truncated).toBe(true)
+  })
+  it('shares private-address rejection, redirect validation, cancellation and timeout', async () => {
+    const fetcher = vi.fn(async () => html('unexpected'))
+    await expect(fetchLinks('http://127.0.0.1/', 100, undefined, { fetch: fetcher })).rejects.toMatchObject({ code: 'invalid_url' })
+    await expect(fetchLinks('https://public.example/', 100, undefined, { resolve: async () => ['10.0.0.1'], fetch: fetcher })).rejects.toMatchObject({ code: 'invalid_url' })
+    expect(fetcher).not.toHaveBeenCalled()
+    await expect(fetchLinks('https://public.example/', 100, undefined, { resolve: resolver, fetch: async () => new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/' } }) })).rejects.toMatchObject({ code: 'invalid_url' })
+    await expect(fetchLinks('https://public.example/', 0, undefined, { fetch: fetcher })).rejects.toMatchObject({ code: 'invalid_limit' })
+    await expect(fetchLinks('https://public.example/', 100, undefined, { resolve: resolver, fetch: async () => markdown('plain') })).rejects.toMatchObject({ code: 'unsupported_content' })
+    const controller = new AbortController(); controller.abort()
+    await expect(fetchLinks('https://public.example/', 100, controller.signal, { fetch: fetcher })).rejects.toThrow('aborted')
+    await expect(fetchLinks('https://public.example/', 100, undefined, { timeoutMs: 5, resolve: async () => new Promise(() => {}) })).rejects.toThrow('timed out')
+  })
+  it('executes with search disabled in both hosting modes without reading platform settings', async () => {
+    const platform = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      new Request(url, init)
+      expect(init?.credentials).toBe('omit')
+      expect(new Headers(init?.headers).has('cookie')).toBe(false)
+      return html('<a href="/next">Next</a>')
+    })
+    for (const settings of [{}, { HOSTED_MODE: 'true', PLATFORM: { fetch: platform } }]) {
+      const tool = createWebTools(settings, null).find(tool => tool.name === 'web_links')!
+      expect(toolValue(await tool.execute('links', { url: 'https://93.184.216.34/' }, () => {}, undefined, undefined!, BACKGROUND_CONTEXT))).toEqual({ url: 'https://93.184.216.34/', links: [{ text: 'Next', url: 'https://93.184.216.34/next' }], truncated: false })
+    }
+    expect(platform).not.toHaveBeenCalled()
   })
 })

@@ -108,7 +108,7 @@ Authenticated `/api/companion-materials` edits the current companion’s origina
 
 ## Web search and public webpage reading
 
-The companion has `web_search` and `web_fetch` tools. Search uses an independent
+The companion has `web_search`, `web_fetch` and `web_links` tools. Search uses an independent
 BYOK search credential for exactly one of Exa, Brave or DeepSeek; it never reuses
 the model key. Search calls and an explicitly requested management test may incur
 provider charges. Saving settings and skipping the test do not call a provider.
@@ -159,6 +159,22 @@ retain their upstream licenses. Run the isolated Worker coverage with
 Platform PRs must pass joint save → tool/provider/key change/disable/two-owner
 isolation/test acceptance before either merges. This feature performs no D1
 migration in chat and does not deploy either repository.
+
+
+`web_links({url, limit?})` lists anchors from the original public HTML page, in
+page order, with duplicate destinations removed. `limit` defaults to 100 and
+accepts integers 1–100. The result is `{url, links: [{text, url}], truncated}`;
+relative URLs respect the final page URL and HTML base element. Only HTTP(S)
+destinations without embedded credentials are returned. Labels are bounded to
+500 characters and URLs to 4,000; input shares `web_fetch`'s 512 KiB bound and
+15-second timeout. `truncated` marks input or result-list truncation. An empty
+HTML link list succeeds; non-HTML responses fail. Use `web_fetch` to read a
+selected destination. Links are untrusted, and each subsequent fetch validates
+its destination independently. No destination is fetched while listing links.
+Like `web_fetch`, it runs without a search key or Platform in self-hosting, and
+with search disabled in hosted mode. It does not render JavaScript or provide
+Markdown heading trees. Anchor extraction follows the Apache-2.0 `guionai/web`
+implementation, using Lamplit's existing bounded transport.
 
 ## Hosted platform feedback
 
