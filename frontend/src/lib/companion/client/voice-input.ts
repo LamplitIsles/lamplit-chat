@@ -3,9 +3,7 @@ import {
   MAX_VOICE_DURATION_MS,
   isVoiceAudioWithinDataUrlLimit,
   maxVoiceAudioBytesForMediaType,
-  normalizeVoiceExpression,
   normalizeVoiceMediaType,
-  type VoiceExpression,
 } from "../voice-contract.ts";
 
 export {
@@ -16,7 +14,6 @@ export {
 } from "../voice-contract.ts";
 export type {
   VoiceAudioMediaType,
-  VoiceExpression,
 } from "../voice-contract.ts";
 
 export const VOICE_TRANSCRIPT_MAX_CHARS = 20_000;
@@ -37,7 +34,6 @@ export interface VoiceRecording {
 
 export interface CompanionVoiceTranscription {
   text: string;
-  expression?: VoiceExpression;
 }
 
 export class VoiceRecordingError extends Error {
@@ -109,6 +105,7 @@ export interface VoiceRecordingControllerOptions extends VoiceCaptureEnvironment
   maxBytes?: number;
   onStatus?: (status: VoiceRecordingStatus) => void;
   onError?: (error: VoiceRecordingError) => void;
+  onDurationLimit?: () => void;
 }
 
 function browserEnvironment(): VoiceCaptureEnvironment {
@@ -141,10 +138,10 @@ function clearActiveTimer(
 }
 
 function stopTracks(stream: MediaStreamLike | undefined): void {
-  try {
-    for (const track of stream?.getTracks?.() ?? []) track.stop?.();
-  } catch {
-    // A browser may invalidate a stream while a permission prompt is closing.
+  let tracks: readonly MediaTrackLike[];
+  try { tracks = stream?.getTracks?.() ?? []; } catch { return; }
+  for (const track of tracks) {
+    try { track.stop?.(); } catch { /* Release the remaining tracks too. */ }
   }
 }
 
@@ -264,27 +261,7 @@ export async function voiceBlobToBase64(
   return output;
 }
 
-function expressionFromRaw(value: unknown): VoiceExpression | undefined {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const expression = expressionFromRaw(item);
-      if (expression) return expression;
-    }
-    return undefined;
-  }
-  if (typeof value === "object" && value !== null) {
-    const record = value as Record<string, unknown>;
-    return normalizeVoiceExpression(
-      record.expression ??
-        record.speechExpression ??
-        record.speech_expression ??
-        record.emotion,
-    );
-  }
-  return normalizeVoiceExpression(value);
-}
-
-/** Keep only the provider-neutral text and first recognized expression label. */
+/** Admit only clean draft text; provider annotations do not enter the composer. */
 export function normalizeVoiceTranscription(
   raw: unknown,
 ): CompanionVoiceTranscription {
@@ -299,28 +276,7 @@ export function normalizeVoiceTranscription(
     );
   if (Array.from(text).length > VOICE_TRANSCRIPT_MAX_CHARS)
     throw new VoiceRecordingError("transcript-invalid", "语音转写内容过长。");
-  let expression: VoiceExpression | undefined;
-  for (const candidate of [
-    record.expression,
-    record.speechExpression,
-    record.speech_expression,
-    record.sentences,
-    record.expressions,
-  ]) {
-    expression = expressionFromRaw(candidate);
-    if (expression) break;
-  }
-  return expression ? { text, expression } : { text };
-}
-
-/** The one ordinary text turn emitted for a successful voice transcription. */
-export function formatVoiceTurn(
-  transcription: CompanionVoiceTranscription,
-): string {
-  const normalized = normalizeVoiceTranscription(transcription);
-  return normalized.expression
-    ? `🎙️ ${normalized.text} [${normalized.expression}]`
-    : `🎙️ ${normalized.text}`;
+  return { text };
 }
 
 interface ActiveRecording {
@@ -480,7 +436,10 @@ export class VoiceRecordingController {
       active.recorder.start(1000);
       active.startedAt = (this.options.now ?? Date.now)();
       active.timer = activeTimer(this.options)(
-        () => this.requestStop(active, "duration-limit"),
+        () => {
+          try { this.options.onDurationLimit?.(); } catch { /* Always stop even if a UI observer fails. */ }
+          if (this.operation === active && !active.stopReason) this.requestStop(active, "duration-limit");
+        },
         this.maxDurationMs,
       );
       return true;
@@ -543,7 +502,8 @@ export class VoiceRecordingController {
       this.disposed ||
       this.operation ||
       this.statusValue === "recording" ||
-      this.statusValue === "stopping"
+      this.statusValue === "stopping" ||
+      this.statusValue === "transcribing"
     )
       return false;
     this.setStatus("transcribing");
@@ -617,13 +577,6 @@ export class VoiceRecordingController {
       this.fail(active, new VoiceRecordingError("cancelled", "录音已取消。"));
       return;
     }
-    if (reason === "duration-limit") {
-      this.fail(
-        active,
-        new VoiceRecordingError("duration-limit", "录音最长 5 分钟，已停止。"),
-      );
-      return;
-    }
     if (reason === "size-limit" || active.bytes > active.maxBytes) {
       this.fail(
         active,
@@ -644,10 +597,10 @@ export class VoiceRecordingController {
       );
       this.complete(active, {
         ...admitted,
-        durationMs: Math.max(
+        durationMs: Math.min(this.maxDurationMs, Math.max(
           0,
           (this.options.now ?? Date.now)() - active.startedAt,
-        ),
+        )),
       });
     } catch (error) {
       this.fail(active, error);

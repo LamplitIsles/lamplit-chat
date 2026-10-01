@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest'
-import { VoiceRecordingController, VoiceRecordingError, formatVoiceTurn } from '../../frontend/src/lib/companion/client/voice-input'
+import { describe, expect, it, vi } from 'vitest'
+import { VoiceRecordingController, VoiceRecordingError, normalizeVoiceTranscription, type VoiceRecordingControllerOptions } from '../../frontend/src/lib/companion/client/voice-input'
 import { createComposerState, reduceComposer, shouldSubmitEnter } from '../../frontend/src/lib/companion/client/composer'
 
-function capture() {
+function capture(options: VoiceRecordingControllerOptions = {}) {
   let grant!: (stream: { getTracks: () => { stop: () => void }[] }) => void
   let stopped = 0
   let started = 0
@@ -22,6 +22,7 @@ function capture() {
     mediaDevices: { getUserMedia: () => new Promise(resolve => { grant = resolve }) },
     mediaRecorder: Recorder,
     isSecureContext: true,
+    ...options,
   })
   return {
     controller,
@@ -68,10 +69,11 @@ describe('composer and recording lifecycle', () => {
     expect(fake.counts()).toEqual({ stopped: 1, started: 1 })
     expect(await fake.controller.stopAndGet()).toBeUndefined()
     expect(fake.controller.markTranscribing()).toBe(true)
+    expect(fake.controller.markTranscribing()).toBe(false)
     expect(await fake.controller.start()).toBe(false)
     await fake.controller.cancel()
     expect(fake.controller.status).toBe('idle')
-    expect(formatVoiceTurn({ text: ' 测试 ' })).toBe('🎙️ 测试')
+    expect(normalizeVoiceTranscription({ text: ' 测试 ', expression: 'happy' })).toEqual({ text: '测试' })
     fake.controller.dispose()
   })
 
@@ -89,5 +91,42 @@ describe('composer and recording lifecycle', () => {
     fake.grant()
     await rejected
     expect(fake.counts()).toEqual({ stopped: 2, started: 1 })
+  })
+})
+
+
+describe('voice admission and limit cleanup', () => {
+  it('stops and recognizes at the duration limit with actual bounded elapsed time', async () => {
+    vi.useFakeTimers()
+    let recording: ReturnType<VoiceRecordingController['stopAndGet']> | undefined
+    const fake = capture({ maxDurationMs: 20, onDurationLimit: () => { recording = fake.controller.stopAndGet() } })
+    try {
+      const start = fake.controller.start()
+      fake.grant()
+      await start
+      await vi.advanceTimersByTimeAsync(20)
+      expect(await recording).toMatchObject({ durationMs: 20, bytes: 14 })
+      expect(fake.counts()).toEqual({ stopped: 1, started: 1 })
+    } finally { fake.controller.dispose(); vi.useRealTimers() }
+  })
+
+  it('rejects insecure capture without requesting media', async () => {
+    const fake = capture({ isSecureContext: false })
+    await expect(fake.controller.start()).rejects.toMatchObject({ code: 'insecure-context' })
+    expect(fake.counts()).toEqual({ stopped: 0, started: 0 })
+    fake.controller.dispose()
+  })
+
+  it('rejects oversize capture, keeps retry available, and releases all tracks', async () => {
+    const stop = vi.fn()
+    const fake = capture({ maxBytes: 2, mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop() { throw new Error('Invalid track') } }, { stop }] }) } })
+    await fake.controller.start()
+    await expect(fake.controller.stopAndGet()).rejects.toMatchObject({ code: 'size-limit' })
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(fake.controller.busy).toBe(false)
+    await fake.controller.start()
+    await fake.controller.cancel()
+    expect(stop).toHaveBeenCalledTimes(2)
+    fake.controller.dispose()
   })
 })

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { MAX_MESSAGE_LENGTH } from "../../message-input.ts";
-  import { formatVoiceTurn } from "./voice-input.js";
+  import { normalizeVoiceTranscription } from "./voice-input.js";
   import {
     english,
     type CompanionLocaleKey,
@@ -22,6 +22,7 @@
   import Pause from "lucide-svelte/icons/pause";
   import Play from "lucide-svelte/icons/play";
   import Square from "lucide-svelte/icons/square";
+  import Keyboard from "lucide-svelte/icons/keyboard";
   import Mic from "lucide-svelte/icons/mic";
   import X from "lucide-svelte/icons/x";
   import Images from "lucide-svelte/icons/images";
@@ -303,6 +304,15 @@
   let submissionToken = 0;
   let pendingSubmissions = 0;
   let voicePointer: number | undefined;
+  let voiceMode = false;
+  let voiceCancelled = false;
+  let voiceLimitReached = false;
+  let voiceSubmitted = false;
+  let voiceDraftReady = false;
+  let voiceStartY = 0;
+  let voiceKey: string | undefined;
+  let draftRevision = 0;
+  let voiceDraftRevision = 0;
   let voiceStarting = false;
   let voiceInputGeneration = 0;
   let composerResizeToken = 0;
@@ -312,8 +322,10 @@
   let voiceClock: ReturnType<typeof setInterval> | undefined;
   let voiceFailure: CompanionLocaleKey | "" = "";
   let voiceController = new VoiceRecordingController({
+    onDurationLimit: () => { voiceLimitReached = true; liveAnnouncement = { key: "voice.duration" }; void stopVoiceAndTranscribe(); },
     onStatus: (status) => {
       voiceStatus = status;
+      if (status === "transcribing") liveAnnouncement = { key: "voice.transcribing" };
     },
     onError: (error) => {
       clearVoiceClock();
@@ -331,6 +343,10 @@
   $: hasDraft = Boolean(composer.draft.trim() || imageDrafts.length);
   $: voiceBusy = voiceStarting || voiceStatus === "recording" || voiceStatus === "stopping" || voiceStatus === "transcribing";
   $: voiceAvailable = voiceCapability === "available" && Boolean(actions.transcribeVoice) && voiceCaptureAvailable;
+  $: if (!voiceAvailable && voiceMode) {
+    voiceMode = false;
+    void cancelVoiceInput();
+  }
   $: unavailableVoiceText = voiceCapability === "loading"
     ? t("voice.wait")
     : voiceCapability !== "available" || !actions.transcribeVoice
@@ -383,6 +399,8 @@
   }
   $: if (sessionId !== voiceSessionId) {
     voiceSessionId = sessionId;
+    voiceDraftReady = false;
+    voiceMode = false;
     void cancelVoiceInput();
   }
   $: if (
@@ -1065,6 +1083,7 @@
   function submit(): void {
     if (projection.canSubmit === false || voiceBusy) return;
     composerFeedback = undefined;
+    voiceDraftReady = false;
     const restoreText = composer.draft;
     const text = restoreText.trim();
     if (text.length > MAX_MESSAGE_LENGTH) return;
@@ -1149,6 +1168,8 @@
     voiceInputGeneration += 1;
     voiceStarting = false;
     voicePointer = undefined;
+    voiceKey = undefined;
+    voiceCancelled = true;
     clearVoiceClock();
     voiceTranscriptionAbort?.abort();
     voiceTranscriptionAbort = undefined;
@@ -1162,6 +1183,7 @@
   }
 
   async function stopVoiceAndTranscribe(): Promise<void> {
+    if (voiceStatus !== "recording" || voiceStarting) return;
     clearVoiceClock();
     const generation = voiceInputGeneration;
     let recording: VoiceRecording | undefined;
@@ -1183,6 +1205,7 @@
       !voiceController.markTranscribing()
     )
       return;
+    voiceSubmitted = true;
     const abort = new AbortController();
     const originSessionId = sessionId;
     voiceTranscriptionAbort = abort;
@@ -1191,10 +1214,19 @@
         recording,
         abort.signal,
       );
-      if (abort.signal.aborted || sessionId !== originSessionId) return;
-      const text = formatVoiceTurn(transcription);
-      await actions.send(text, []);
-      liveAnnouncement = { key: "voice.sent" };
+      if (abort.signal.aborted || generation !== voiceInputGeneration || sessionId !== originSessionId) return;
+      if (draftRevision !== voiceDraftRevision || composer.draft.length) {
+        voiceMode = false;
+        voiceFailure = "voice.discarded";
+        liveAnnouncement = { key: "voice.discarded" };
+        return;
+      }
+      const { text } = normalizeVoiceTranscription(transcription);
+      setDraft(text);
+      voiceDraftReady = true;
+      voiceMode = false;
+      liveAnnouncement = { key: "voice.draftReady" };
+      void tick().then(() => composerInput?.focus());
     } catch (error) {
       if (!abort.signal.aborted && generation === voiceInputGeneration) {
         voiceFailure = voiceErrorKey(error);
@@ -1207,14 +1239,8 @@
     }
   }
 
-  async function toggleVoiceInput(): Promise<void> {
-    if (voiceStarting || composer.composing) return;
-    if (projection.canSubmit === false && voiceStatus !== "recording" && voiceStatus !== "stopping") return;
-    if (voiceStatus === "recording" || voiceStatus === "stopping") {
-      if (voiceStatus === "recording") await stopVoiceAndTranscribe();
-      return;
-    }
-    if (voiceStatus === "transcribing") return;
+  async function startVoiceInput(): Promise<void> {
+    if (composer.draft.length || projection.running || voiceStarting || voiceStatus === "recording" || voiceStatus === "stopping" || voiceStatus === "transcribing" || composer.composing || projection.canSubmit === false) return;
     if (voiceCapability === "loading") {
       liveAnnouncement = { key: "voice.wait" };
       return;
@@ -1231,6 +1257,11 @@
     }
     voiceElapsedMs = 0;
     voiceFailure = "";
+    voiceCancelled = false;
+    voiceLimitReached = false;
+    voiceSubmitted = false;
+    voiceDraftReady = false;
+    voiceDraftRevision = draftRevision;
     clearVoiceClock();
     const generation = ++voiceInputGeneration;
     voiceStarting = true;
@@ -1255,8 +1286,9 @@
     if (event.button !== 0 || voicePointer !== undefined || voiceBusy || !voiceAvailable || projection.canSubmit === false || composer.composing) return;
     event.preventDefault();
     voicePointer = event.pointerId;
+    voiceStartY = event.clientY;
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    void toggleVoiceInput();
+    void startVoiceInput();
   }
   function onVoicePointerUp(event: PointerEvent): void {
     if (voicePointer !== event.pointerId) return;
@@ -1267,9 +1299,34 @@
   function onVoicePointerCancel(event: PointerEvent): void {
     if (voicePointer === event.pointerId) void cancelVoiceInput();
   }
-  function onVoiceClick(event: MouseEvent): void {
-    // Pointer presses use hold/release; keyboard and assistive clicks toggle.
-    if (event.detail === 0) void toggleVoiceInput();
+  function onVoicePointerMove(event: PointerEvent): void {
+    if (voicePointer === event.pointerId && voiceStartY - event.clientY >= 60) void cancelVoiceInput();
+  }
+  function onVoiceKeyDown(event: KeyboardEvent): void {
+    if (![" ", "Enter"].includes(event.key)) return;
+    event.preventDefault();
+    if (event.repeat || voiceKey || voiceBusy) return;
+    voiceKey = event.key;
+    void startVoiceInput();
+  }
+  function onVoiceKeyUp(event: KeyboardEvent): void {
+    if (event.key !== voiceKey) return;
+    event.preventDefault();
+    voiceKey = undefined;
+    if (voiceStarting) void cancelVoiceInput();
+    else if (voiceStatus === "recording") void stopVoiceAndTranscribe();
+  }
+  function switchVoiceMode(): void {
+    if (composer.draft.length || projection.running || projection.canSubmit === false) return;
+    if (!voiceAvailable) { liveAnnouncement = { key: voiceCapability === "loading" ? "voice.wait" : "voice.notEnabled" }; return; }
+    voiceCancelled = false;
+    voiceFailure = "";
+    voiceMode = true;
+  }
+  function switchTextMode(): void {
+    void cancelVoiceInput();
+    voiceMode = false;
+    void tick().then(() => composerInput?.focus());
   }
   function onVoiceVisibility(): void {
     if (document.hidden) void cancelVoiceInput();
@@ -1306,6 +1363,7 @@
   }
 
   function setDraft(value: string): void {
+    draftRevision += 1;
     composer = reduceComposer(composer, { type: "input", value });
     void scheduleComposerResize();
   }
@@ -1319,6 +1377,7 @@
     setDraft((event.currentTarget as HTMLTextAreaElement).value);
   }
   function onCompositionEnd(event: CompositionEvent): void {
+    draftRevision += 1;
     composer = reduceComposer(composer, {
       type: "compositionend",
       value: (event.currentTarget as HTMLTextAreaElement).value,
@@ -1576,6 +1635,7 @@
     if (lightbox && lightboxDialog) trapFocus(event, lightboxDialog);
   }
   function onPopState(): void {
+    if (voiceBusy) void cancelVoiceInput();
     overlayHistory = false;
     if (lightbox) closeLightbox(true);
   }
@@ -2318,6 +2378,18 @@
                 aria-hidden="true"
                 on:change={onImageInput}
                 on:cancel={() => attachmentsOpen = false} />{/if}
+              {#if voiceMode}
+                <button type="button" class="cmp-btn cmp-btn-ghost companion-voice-hold"
+                  data-testid="voice-hold" data-state={voiceStatus}
+                  disabled={!voiceBusy && (!voiceAvailable || projection.canSubmit === false || projection.running)}
+                  on:pointerdown={onVoicePointerDown} on:pointermove={onVoicePointerMove}
+                  on:pointerup={onVoicePointerUp} on:pointercancel={onVoicePointerCancel}
+                  on:keydown={onVoiceKeyDown} on:keyup={onVoiceKeyUp}
+                  on:blur={() => { if (voiceKey) void cancelVoiceInput(); }}
+                  aria-label={t(voiceStatus === "transcribing" ? "voice.transcribing" : "voice.holdButton")}>
+                  {voiceStarting ? t("voice.requesting") : voiceStatus === "recording" ? t("voice.recording", { elapsed: formatVoiceElapsed(voiceElapsedMs) }) : voiceStatus === "stopping" || voiceStatus === "transcribing" ? t("voice.transcribing") : voiceFailure ? t("voice.retry") : voiceCancelled ? t("voice.cancelledIdle") : t("voice.holdButton")}
+                </button>
+              {:else}
               <textarea
                 bind:this={composerInput}
                 class="companion-textarea"
@@ -2336,6 +2408,7 @@
                 on:compositionstart={onCompositionStart}
                 on:compositionend={onCompositionEnd}
                 on:keydown={onKeydown}></textarea>
+              {/if}
               <div
                 class="companion-compose-actions">
               <button bind:this={attachmentsButton}
@@ -2347,7 +2420,10 @@
                 aria-controls="companion-attachments"
                 on:click={() => attachmentsOpen = !attachmentsOpen}><svelte:component this={attachmentsOpen ? X : Plus} size={22}
                 aria-hidden="true" /></button>
-              {#if contextCapacity}
+              {#if voiceMode}<span class="companion-voice-hint">{t(voiceStatus === "transcribing" || voiceStatus === "stopping" ? "voice.draftHint" : voiceFailure ? "voice.retryHint" : voiceCancelled ? voiceSubmitted ? "voice.cancelSubmitted" : "voice.cancelUnsubmitted" : "voice.releaseHint")}</span>
+              {:else if voiceDraftReady}<span class="companion-voice-hint">{t("voice.editHint")}</span>
+              {:else if !hasDraft && !projection.running && voiceAvailable}<span class="companion-voice-hint">{t("voice.switchHint")}</span>{/if}
+              {#if contextCapacity && !voiceMode}
                 <div class="companion-context-meter-wrap">
                   <button
                     bind:this={contextMeterButton}
@@ -2410,27 +2486,16 @@
                   {/if}
                 </div>
               {/if}
-              {#if voiceBusy || (!hasDraft && !projection.running)}
-                <button
-                  class="cmp-btn cmp-btn-ghost cmp-btn-circle companion-microphone"
-                  type="button"
-                  data-state={voiceStatus}
-                  aria-label={t(voiceStatus === "recording" ? "voice.stop" : voiceStatus === "transcribing" ? "voice.transcribing" : voiceAvailable ? "voice.start" : "voice.micUnavailable")}
-                  title={voiceAvailable ? t("voice.hold") : unavailableVoiceText}
-                  aria-describedby={!voiceAvailable ? "companion-voice-unavailable" : undefined}
-                  disabled={voiceStatus === "stopping" || voiceStatus === "transcribing" || (!voiceBusy && (projection.canSubmit === false || !voiceAvailable || composer.composing))}
-                  on:pointerdown={onVoicePointerDown}
-                  on:pointerup={onVoicePointerUp}
-                  on:pointercancel={onVoicePointerCancel}
-                  on:click={onVoiceClick}>
-                  {#if voiceStarting || voiceStatus === "stopping" || voiceStatus === "transcribing"}<span
-                  class="cmp-loading cmp-loading-spinner cmp-loading-sm" aria-hidden="true"></span>{:else if voiceStatus === "recording"}<Square size={18} aria-hidden="true" />{:else}<Mic size={22} aria-hidden="true" />{/if}
+              {#if voiceMode}
+                <button type="button" class="cmp-btn cmp-btn-ghost cmp-btn-circle" aria-label={t(voiceBusy ? "voice.cancel" : "voice.textMode")}
+                  on:click={() => voiceBusy ? void cancelVoiceInput() : switchTextMode()}>
+                  {#if voiceBusy}<X size={22} aria-hidden="true" />{:else}<Keyboard size={22} aria-hidden="true" />{/if}
                 </button>
-                {#if voiceBusy}<button
-                  type="button"
-                  class="cmp-btn cmp-btn-ghost cmp-btn-circle"
-                  aria-label={t("voice.cancel")}
-                  on:click={() => void cancelVoiceInput()}><X size={20} aria-hidden="true" /></button>{/if}
+              {:else if !hasDraft && !projection.running}
+                <button class="cmp-btn cmp-btn-ghost cmp-btn-circle companion-microphone" type="button"
+                  aria-label={t("voice.switchMode")} title={voiceAvailable ? t("voice.switchMode") : unavailableVoiceText}
+                  disabled={projection.canSubmit === false || composer.composing}
+                  on:click={switchVoiceMode}><Mic size={22} aria-hidden="true" /></button>
               {:else if projection.running && !hasDraft}
                 <button
                   class="cmp-btn cmp-btn-primary cmp-btn-circle companion-send"
@@ -2464,6 +2529,7 @@
                 {:else}<p role="status">{t("image.unavailable")}</p>{/if}
               </div>
             {/if}
+            {#if voiceLimitReached}<div class="companion-voice-input-status" role="status">{t("voice.duration")}</div>{/if}
             {#if composerFeedback}
               <div class="companion-voice-input-status companion-voice-input-error" role="alert">{t(composerFeedback.key, composerFeedback.params)}</div>
             {/if}
@@ -2472,7 +2538,7 @@
                 {t("message.tooLong", { limit: MAX_MESSAGE_LENGTH, count: composer.draft.trim().length })}
               </div>
             {/if}
-            {#if voiceStatus === "recording" || voiceStatus === "stopping"}
+            {#if !voiceMode && (voiceStatus === "recording" || voiceStatus === "stopping")}
               <div
                 class="companion-voice-input-status"
                 data-testid="companion-voice-recording-status"
@@ -2487,7 +2553,7 @@
                       elapsed: formatVoiceElapsed(voiceElapsedMs),
                     })}
               </div>
-            {:else if voiceStatus === "transcribing"}
+            {:else if !voiceMode && voiceStatus === "transcribing"}
               <div
                 class="companion-voice-input-status"
                 data-testid="companion-voice-transcribing-status"
@@ -2504,6 +2570,7 @@
                 role="status"
               >
                 {unavailableVoiceText}
+                {#if accountSettingsHref}<a href={`${accountSettingsHref}#voice`}>{t("voice.configure")}</a>{/if}
               </div>
             {:else if voiceFailure || voiceStatus === "unavailable"}
               <div

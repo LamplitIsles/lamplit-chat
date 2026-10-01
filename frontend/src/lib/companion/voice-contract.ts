@@ -1,17 +1,15 @@
 /**
- * The browser/Companion boundary for the optional DSH Speech short-audio service.
+ * The browser/Companion boundary for the fixed Qwen short-audio service.
  * Keep this module free of browser and Node-only APIs so both bundles can use
  * the same admission rules.
  */
 
 /** Qwen3-ASR-Flash's synchronous complete Base64 Data URL bound. */
-export const MAX_VOICE_DATA_URL_BYTES = 10 * 1024 * 1024;
+export const MAX_VOICE_DATA_URL_BYTES = 10_000_000;
 /** Companion stops capture before the provider's duration policy can reject it. */
 export const MAX_VOICE_DURATION_MS = 5 * 60 * 1000;
-export const VOICE_TRANSCRIBE_ENDPOINT = "voice/transcribe" as const;
-export const VOICE_CAPABILITY_ENDPOINT = "voice/capability" as const;
 
-/** Media types advertised by the optional DSH ASR contract. */
+/** Media types admitted by the voice API. */
 export const VOICE_AUDIO_MEDIA_TYPES = [
   "audio/aac",
   "audio/amr",
@@ -28,19 +26,6 @@ export const VOICE_AUDIO_MEDIA_TYPES = [
 ] as const;
 
 export type VoiceAudioMediaType = (typeof VOICE_AUDIO_MEDIA_TYPES)[number];
-
-/** Labels normalized by DSH Speech from Qwen's model-derived speech expression. */
-export const VOICE_EXPRESSIONS = [
-  "surprised",
-  "neutral",
-  "happy",
-  "sad",
-  "disgusted",
-  "angry",
-  "fearful",
-] as const;
-
-export type VoiceExpression = (typeof VOICE_EXPRESSIONS)[number];
 
 const PARAM_TOKEN = "[a-z0-9!#$&^_.+-]+";
 const AUDIO_MEDIA_TYPE_PATTERN = new RegExp(
@@ -74,22 +59,6 @@ export function voiceMediaBaseType(
   const normalized = normalizeVoiceMediaType(value);
   if (!normalized) return undefined;
   return normalized.split(";", 1)[0] as VoiceAudioMediaType;
-}
-
-export function isVoiceExpression(value: unknown): value is VoiceExpression {
-  return (
-    typeof value === "string" &&
-    (VOICE_EXPRESSIONS as readonly string[]).includes(
-      value.trim().toLowerCase(),
-    )
-  );
-}
-
-export function normalizeVoiceExpression(
-  value: unknown,
-): VoiceExpression | undefined {
-  if (!isVoiceExpression(value)) return undefined;
-  return value.trim().toLowerCase() as VoiceExpression;
 }
 
 /** Return the normalized Data URL prefix sent to the synchronous ASR service. */
@@ -139,7 +108,7 @@ export function maxVoiceBase64CharsForMediaType(
   return maxRawBytes === undefined ? undefined : voiceBase64Length(maxRawBytes);
 }
 
-/** Shared admission check for browser Blobs and decoded Host RPC payloads. */
+/** Shared admission check for browser Blobs and HTTP audio payloads. */
 export function isVoiceAudioWithinDataUrlLimit(
   mediaType: unknown,
   rawBytes: number,
@@ -185,5 +154,8 @@ export function isCanonicalBase64(
     )
       return false;
   }
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  if (padding === 2 && (alphabet.indexOf(value[value.length - 3]) & 15) !== 0) return false;
+  if (padding === 1 && (alphabet.indexOf(value[value.length - 2]) & 3) !== 0) return false;
   return true;
 }

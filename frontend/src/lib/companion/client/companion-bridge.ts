@@ -37,7 +37,7 @@ export interface CompanionActions {
   stop?: () => Promise<void>;
   loadOlder?: () => Promise<void>;
   attachmentUrl?: (attachment: unknown) => Promise<string>;
-  /** Authenticated Companion Host transcription; recording bytes never enter Session attachments. */
+  /** Authenticated Worker transcription; recording bytes never enter Session attachments. */
   transcribeVoice?: (
     recording: VoiceRecording,
     signal?: AbortSignal,
@@ -96,7 +96,7 @@ export interface CompanionBridgeProps {
   sessionId?: string;
   /** Host-advertised image capability and intake limits; absent means unavailable. */
   imageLimits?: ImageAttachmentLimits;
-  /** Optional DSH Speech capability observed by the Host RPC. */
+  /** Current authenticated Worker voice capability. */
   voiceCapability?: "loading" | "available" | "unavailable";
   continuity?: CompanionContinuityView;
   recoveredDraft?: CompanionRecoveredDraft;

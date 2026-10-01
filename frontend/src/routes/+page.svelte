@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { updated } from '$app/stores';
   import { AgentClient } from 'agents/client';
+  import { normalizeVoiceTranscription, voiceBlobToBase64 } from '$lib/companion/client/voice-input';
   import Companion from '$lib/companion/client/Companion.svelte';
   import { companionTranslate } from '$lib/companion/client/locale';
   import { APPEARANCE_STORAGE_KEY, LANGUAGE_STORAGE_KEY, initialPreferences, resolveScheme, writePreference, type CompanionAppearance, type CompanionLanguage } from '$lib/companion/client/preferences';
@@ -41,6 +42,16 @@
   let reloading = false;
   let online = true;
   let photosEnabled = false;
+  let voiceCapability: "loading" | "available" | "unavailable" = "loading";
+  let voiceCapabilityRequest = 0;
+  async function refreshVoiceCapability() {
+    const token = ++voiceCapabilityRequest;
+    try {
+      const response = await fetch("/api/voice/capability");
+      const data = response.ok ? await response.json() : null;
+      if (!disposed && token === voiceCapabilityRequest) voiceCapability = data?.available === true ? "available" : "unavailable";
+    } catch { if (!disposed && token === voiceCapabilityRequest) voiceCapability = "unavailable"; }
+  }
   let accountSettingsHref: string | null = null;
   let displayNames = { companionName: '', userName: '' };
   let namesRequest = 0;
@@ -265,6 +276,14 @@
   }
 
   const actions: CompanionActions = {
+    async transcribeVoice(recording, signal) {
+      const audioBase64 = await voiceBlobToBase64(recording.blob, recording.mediaType);
+      if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
+      const response = await fetch('/api/voice/transcribe', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ audioBase64, mediaType: recording.mediaType, durationMs: recording.durationMs }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Recognition unavailable');
+      return normalizeVoiceTranscription(result);
+    },
     async send(text, images, onRetire) {
       if (!canStartSubmission(optimistic, uploading)) {
         throw new CompanionPreControllerError(t('connection.interrupted'));
@@ -423,7 +442,10 @@
       if (event.key === 'lamplit.ui-assets.revision' && photosEnabled) void refreshAssets().catch(showError);
     };
     window.addEventListener('storage', onStorage);
-    const onFocus = () => { syncPreferences(); void refreshNames().catch(showError); };
+    void refreshVoiceCapability();
+    const onPageShow = () => { void refreshVoiceCapability(); };
+    window.addEventListener("pageshow", onPageShow);
+    const onFocus = () => { void refreshVoiceCapability(); syncPreferences(); void refreshNames().catch(showError); };
     window.addEventListener('focus', onFocus);
     mark('lamplit-page-mounted');
     online = navigator.onLine;
@@ -461,7 +483,7 @@
       if (document.visibilityState === 'visible') void reportUserTimeZone().catch(showError);
       void pollCompanionRefresh({ ready, running, optimistic: Boolean(optimistic), promptInFlight, visible: document.visibilityState === 'visible' }, refresh)?.catch(showError);
     }, 3000);
-    return () => { mounted = false; window.removeEventListener('storage', onStorage); window.removeEventListener('focus', onFocus); disposed = true; window.clearInterval(poll); if (reconciliationTimer !== undefined) window.clearTimeout(reconciliationTimer); document.removeEventListener('visibilitychange', onVisible); colorScheme.removeEventListener('change', onColorSchemeChange); window.removeEventListener('online', onNetworkChange); window.removeEventListener('offline', onNetworkChange); session?.close(); registry?.close(); };
+    return () => { window.removeEventListener("pageshow", onPageShow); mounted = false; window.removeEventListener('storage', onStorage); window.removeEventListener('focus', onFocus); disposed = true; window.clearInterval(poll); if (reconciliationTimer !== undefined) window.clearTimeout(reconciliationTimer); document.removeEventListener('visibilitychange', onVisible); colorScheme.removeEventListener('change', onColorSchemeChange); window.removeEventListener('online', onNetworkChange); window.removeEventListener('offline', onNetworkChange); session?.close(); registry?.close(); };
   });
 
   function setLanguage(value: CompanionLanguage) { language = value; writePreference(LANGUAGE_STORAGE_KEY, value); }
@@ -518,5 +540,5 @@
 <Companion bind:updateSafe networkOnline={online} {projection} {actions} {t} locale={language} {appearance} {activity} onLanguageChange={setLanguage} onAppearanceChange={setAppearance} {sessionId} {accountSettingsHref}
   imageSettings={photosEnabled ? { hasAvatar, hasUserAvatar, hasBackground, error: assetError, upload: (slot, event) => { void uploadAsset(slot, event); }, remove: (slot) => { void removeAsset(slot); } } : undefined}
   identity={{ companionName: displayNames.companionName || 'Companion', companionAvatar: hasAvatar ? `/api/ui-assets/avatar?v=${assetVersion}` : '', userName: displayNames.userName || t('you'), userAvatar: hasUserAvatar ? `/api/ui-assets/user-avatar?v=${assetVersion}` : '', preferredAddress: displayNames.userName || t('you'), signature: relationship.signature, mood: relationship.mood, moodLabel: moodText(), moodNote: relationship.note, affinity: relationship.affinity, affinityStage: affinityText() }}
-  {history} workspaceReadiness={ready ? 'ready' : 'loading'} sessionReadiness={ready ? 'ready' : 'loading'} relationshipReadiness="ready" voiceCapability="unavailable" showRelationship={true} showDiary={true} showGallery={photosEnabled} imageLimits={photosEnabled ? imageLimits : undefined} {recoveredDraft} onHistoryOpenChange={(open) => { if (open) void refreshRelationship(); }} />
+  {history} workspaceReadiness={ready ? 'ready' : 'loading'} sessionReadiness={ready ? 'ready' : 'loading'} relationshipReadiness="ready" {voiceCapability} showRelationship={true} showDiary={true} showGallery={photosEnabled} imageLimits={photosEnabled ? imageLimits : undefined} {recoveredDraft} onHistoryOpenChange={(open) => { if (open) void refreshRelationship(); }} />
 </div>

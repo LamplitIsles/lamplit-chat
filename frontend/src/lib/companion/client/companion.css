@@ -279,3 +279,6 @@
 
 #dsh-companion .companion-header-offline{flex-wrap:wrap}
 #dsh-companion .companion-network-notice{flex-basis:100%;margin:0;color:var(--color-secondary);font-size:13px;line-height:1.5}
+
+#dsh-companion .cmp-btn.companion-voice-hold{background:transparent;border:0;box-shadow:none;width:100%;min-height:40px;font-size:16px;font-weight:600;touch-action:none;user-select:none;border-radius:12px;white-space:normal;color:var(--color-base-content)}
+#dsh-companion .companion-voice-hint{order:-1;margin-right:auto;font-size:12px;color:var(--color-secondary)}
