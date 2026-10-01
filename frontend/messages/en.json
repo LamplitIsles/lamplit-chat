@@ -254,7 +254,7 @@
   "voice.discarded": "Draft changed; recognition discarded.",
   "voice.configure": "Configure voice",
   "voice.cancelSubmitted": "Recognition cancelled; result discarded",
-  "voice.cancelUnsubmitted": "This recording was not submitted",
+  "voice.cancelUnsubmitted": "Recording cancelled",
   "drawer.home": "{name}’s home",
   "drawer.wakes": "Auto wake",
   "wake.intro": "I’ll come back to this chat at the times we agreed.",

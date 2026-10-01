@@ -250,7 +250,7 @@
   "voice.discarded": "草稿已修改，识别结果已丢弃。",
   "voice.configure": "配置语音",
   "voice.cancelSubmitted": "识别已取消，结果不会填入草稿",
-  "voice.cancelUnsubmitted": "这次录音没有提交",
+  "voice.cancelUnsubmitted": "已取消录音",
   "drawer.home": "{name}的小家",
   "drawer.wakes": "自动唤醒",
   "wake.intro": "到了约定的时间，我会回到这段聊天里。",
