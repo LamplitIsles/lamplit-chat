@@ -1,3 +1,4 @@
+import { createPlatformFeedbackTools } from './platform-feedback-tool'
 import { createWebTools, searchSettings } from './web-tools'
 import { CompanionFiles, MaterialFailure, materialReply } from './companion-materials'
 import type { MaterialRequest, MaterialReply } from '../shared/companion-materials'
@@ -643,6 +644,7 @@ export class PiSession extends HostedAgent {
         createMemoryTool(registry, this.sessionStorage.getMetadataSync().id),
         ...createRelationshipTools(registry),
         ...createWebTools(this.env, this.instanceId()),
+        ...createPlatformFeedbackTools(this.env, this.instanceId(), this.sessionStorage.getMetadataSync().id),
       ],
       memory: registry,
       compaction: this.compactionSettings(),

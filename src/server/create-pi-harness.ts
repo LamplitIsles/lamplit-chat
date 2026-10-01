@@ -1,3 +1,4 @@
+import { PLATFORM_FEEDBACK_AUTHORIZATION } from './platform-feedback-tool'
 import { installCompanionCompaction, defaultCompactionPrompt } from './companion-compaction'
 import { AgentHarness, type AgentHarnessTool, type CompactionSettings, type Session } from '@earendil-works/pi-agent-core'
 import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
@@ -76,7 +77,7 @@ export async function createPiHarness({ env, session, tools, memory, compaction,
       } catch (error) {
         console.error('Could not load relationship state', error)
       }
-      return buildPiSystemPrompt(memoryContext, env.PI_SYSTEM_PROMPT, instructions, relationshipContext)
+      return [buildPiSystemPrompt(memoryContext, env.PI_SYSTEM_PROMPT, instructions, relationshipContext), tools.some(tool => tool.name === 'submit_platform_feedback') ? PLATFORM_FEEDBACK_AUTHORIZATION : ''].filter(Boolean).join('\n\n')
     },
     thinkingLevel: 'medium',
     toProviderMessages: async (messages) => projectTurnTime(messages, await getUserTimeZone()),

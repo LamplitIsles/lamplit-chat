@@ -159,3 +159,22 @@ retain their upstream licenses. Run the isolated Worker coverage with
 Platform PRs must pass joint save → tool/provider/key change/disable/two-owner
 isolation/test acceptance before either merges. This feature performs no D1
 migration in chat and does not deploy either repository.
+
+## Hosted platform feedback
+
+Hosted companions can autonomously call `submit_platform_feedback` to send
+Lamplit product problems or improvement suggestions: a required problem and
+optional circumstances and expected improvement. The Human has authorized this
+feedback tool without confirmation for each submission. Other sending and
+publishing retain their existing authorization rules; feedback must exclude
+secrets and private conversation transcripts.
+
+Machine feedback appears under the owning account in the management app’s
+**My feedback / 我的反馈**, with source and processing status. There is no dedicated
+chat receipt interface. Self-hosted personal deployments do not provide the tool.
+Existing hosted sessions receive it when their harness is rebuilt.
+
+See [the tool contract and isolated chat checks](docs/platform-feedback-tool.md)
+for trusted identity, existing bindings, stable submission keys, result validation
+and uncertain outcomes. A timeout or disconnect is unconfirmed and may already
+have been saved; replay the same call identity to avoid duplicates.
