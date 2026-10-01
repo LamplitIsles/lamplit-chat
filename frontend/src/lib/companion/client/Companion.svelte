@@ -12,6 +12,9 @@
   import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import { Capacitor } from "@capacitor/core";
   import { Camera, CameraErrorCode } from "@capacitor/camera";
+  import ArrowUp from "lucide-svelte/icons/arrow-up";
+  import ArrowLeft from "lucide-svelte/icons/arrow-left";
+  import ChevronRight from "lucide-svelte/icons/chevron-right";
   import Plus from "lucide-svelte/icons/plus";
   import CameraIcon from "lucide-svelte/icons/camera";
   import Menu from "lucide-svelte/icons/menu";
@@ -2439,7 +2442,7 @@
                   class="cmp-btn cmp-btn-primary cmp-btn-circle companion-send"
                   aria-label={t("message.send")}
                   on:click={submit}
-                  disabled={projection.canSubmit === false || composer.composing || composer.draft.trim().length > MAX_MESSAGE_LENGTH}><span aria-hidden="true">↑</span></button>
+                  disabled={projection.canSubmit === false || composer.composing || composer.draft.trim().length > MAX_MESSAGE_LENGTH}><ArrowUp size={22} aria-hidden="true" /></button>
               {/if}
               {#if projection.running && hasDraft && !voiceBusy && actions.stop}
                 <button
@@ -2591,7 +2594,7 @@
               <button
                 type="button"
                 class="cmp-btn cmp-btn-ghost cmp-btn-sm companion-diary-back"
-                on:click={() => diaryEntry = undefined}>← {t("diary.back")}</button
+                on:click={() => diaryEntry = undefined}><ArrowLeft size={16} aria-hidden="true" /> {t("diary.back")}</button
               >
               <article class="companion-diary-page">
                 <time datetime={diaryEntry.name.slice(0, -3)}
@@ -2615,7 +2618,7 @@
                 {#each diaryEntries as entry}
                   <button type="button" class="companion-diary-list-entry" on:click={() => void openDiaryEntry(entry)}>
                     <time datetime={entry.slice(0, -3)}>{entry.slice(0, -3)}</time>
-                    <span aria-hidden="true">›</span>
+                    <ChevronRight size={16} aria-hidden="true" />
                   </button>
                 {/each}
               </div>
