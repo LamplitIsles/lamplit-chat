@@ -105,3 +105,57 @@ Local `origin` remains Forgejo for development and PRs; `github` points to the p
 ## Companion materials
 
 Authenticated `/api/companion-materials` edits the current companion’s original root Markdown, updates/deletes existing memory with conflict checks, and reads/saves/resets the full effective COMPACTION.md prompt. Only AGENTS.md is automatically injected; it can direct the companion to read other root Markdown. Management requires no model or inference. Selfhost must configure a ready `COMPANION_SESSION_ID`. See [API contract and isolated integration guide](docs/companion-materials.md), [machine-readable contract](docs/companion-materials.contract.json), and `src/server/fixtures/companion-materials.json`. An organizing assistant is paid Phase 2.
+
+## Web search and public webpage reading
+
+The companion has `web_search` and `web_fetch` tools. Search uses an independent
+BYOK search credential for exactly one of Exa, Brave or DeepSeek; it never reuses
+the model key. Search calls and an explicitly requested management test may incur
+provider charges. Saving settings and skipping the test do not call a provider.
+Normal zero-result searches succeed.
+
+For self-hosting, set `WEB_SEARCH_PROVIDER` to `exa`, `brave` or `deepseek` in your
+private Wrangler configuration or local `.dev.vars`, and keep
+`WEB_SEARCH_API_KEY` in `.dev.vars` locally or as a Worker secret when deploying.
+Both are optional; clearing either disables search. Hosted instances obtain
+settings from Platform's secret-protected `/internal/chat-search/<instanceId>`
+service binding endpoint. Platform owns encrypted per-user storage and the
+management UI. Each actual search reads current settings; the next turn updates
+available tools without a chat reload. Disablement blocks old tool calls too.
+Already sent provider requests cannot be recalled or their charges reversed.
+
+`POST /api/web-search/test` accepts `{query}` through the existing authenticated
+entry and uses exactly the same executor as `web_search`. Hosted requests require
+the internal secret and authenticated instance ID derived by Platform. Config
+identifiers are `exa|brave|deepseek`; result labels are exactly
+`Exa|Brave|DeepSeek`, with `{title,link,snippet,position}` results. Responses are
+no-store and failures return bounded `{error,code}` without provider diagnostics.
+
+`web_fetch` remains available without a search key and with search disabled. This
+is the disclosed Owner implementation assumption for this release. It reads
+public HTTP(S) HTML, Markdown or plain text. It sends only an Accept header,
+requests Markdown first, forwards no user credentials/cookies, runs no webpage
+JavaScript, and uses linkedom plus Defuddle 0.19.4 for article extraction, then
+Turndown on the extracted DOM for Markdown. There is no browser, login capture or site-specific fetching. Content is untrusted
+source material, not system instructions. Empty, failed or recognized access
+interstitial pages return a failure rather than an article.
+
+Page reading rejects URL credentials, local/private/reserved IP addresses,
+nonstandard ports, local hostnames, nonpublic DNS answers and redirects to those
+targets. Each redirect is checked again. Worker `node:dns` checks use Cloudflare
+DNS; Worker fetch cannot pin that checked IP, so DNS rebinding remains a platform
+limitation. Bounds are 15 seconds total network time, three redirects, 512 KiB
+input, 24,000 body characters and 500 title characters. Clipping either body or
+title sets `truncated` to true. Results include final `url`, `truncated`,
+`inputBytes` and local `parseTimeMs`. Search transport is bounded to 30 seconds
+and 1 MiB provider response. Extraction is synchronous and its CPU cannot be
+preempted by the network timer. Local Worker fixtures and profiles establish
+runtime support, not production site coverage or Free-account CPU compliance.
+
+Provider execution and bounded readers are copied/adapted from guionai/web;
+see NOTICE and LICENSES/guionai-web-Apache-2.0.txt. Defuddle, linkedom, Turndown and ipaddr.js
+retain their upstream licenses. Run the isolated Worker coverage with
+`npm run test:worker -- src/server/web-search.worker.test.ts`. Both chat and
+Platform PRs must pass joint save → tool/provider/key change/disable/two-owner
+isolation/test acceptance before either merges. This feature performs no D1
+migration in chat and does not deploy either repository.

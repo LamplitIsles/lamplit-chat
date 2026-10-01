@@ -4,7 +4,7 @@ import server, { handleConversationPhotos } from './server'
 
 export default {
   async fetch(request: Request, env: Env) {
-    if (/^\/api\/companion-materials|^\/api\/history-|^\/api\/agents\//.test(new URL(request.url).pathname)) return server.fetch(request, env)
+    if (/^\/api\/companion-materials|^\/api\/web-search|^\/api\/history-|^\/api\/agents\//.test(new URL(request.url).pathname)) return server.fetch(request, env)
     return await handleConversationPhotos(request, env) ?? new Response('Not found', { status: 404 })
   },
 }

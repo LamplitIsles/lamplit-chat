@@ -1,3 +1,4 @@
+import { createWebTools, searchSettings } from './web-tools'
 import { CompanionFiles, MaterialFailure, materialReply } from './companion-materials'
 import type { MaterialRequest, MaterialReply } from '../shared/companion-materials'
 import type { PiRegistry } from './pi-registry'
@@ -629,7 +630,7 @@ export class PiSession extends HostedAgent {
     this.sessionStorage.acknowledgeOutbox(eventIds)
   }
 
-  private getHarness(): Promise<PiHarness> {
+  private async getHarness(): Promise<PiHarness> {
     const registry = this.registry()
     this.harness ??= this.modelEnvironment().then(modelEnv => {
       this.harnessModelConfig = modelConfigKey(modelEnv)
@@ -641,6 +642,7 @@ export class PiSession extends HostedAgent {
         createSessionSearchTool(registry),
         createMemoryTool(registry, this.sessionStorage.getMetadataSync().id),
         ...createRelationshipTools(registry),
+        ...createWebTools(this.env, this.instanceId()),
       ],
       memory: registry,
       compaction: this.compactionSettings(),
@@ -649,7 +651,15 @@ export class PiSession extends HostedAgent {
       getUserTimeZone: () => registry.getUserTimeZone(),
       })
     })
-    return this.harness
+    const harness = await this.harness
+    const lane = await harness.lane('main', BACKGROUND_CONTEXT)
+    let searchEnabled = false
+    try { searchEnabled = (await searchSettings(this.env, this.instanceId())).enabled } catch { /* Fail closed; page reading remains available. */ }
+    const names = await lane.getActiveTools(BACKGROUND_CONTEXT)
+    if (names.includes('web_search') !== searchEnabled) {
+      await lane.setActiveTools(searchEnabled ? [...names, 'web_search'] : names.filter(name => name !== 'web_search'), BACKGROUND_CONTEXT)
+    }
+    return harness
   }
 
   private async getLane() {

@@ -16,3 +16,9 @@ The builtin companion continuity compaction prompt is adapted from
 LamplitIsles/codex-for-love apps/partner/runtime/prompts.ts, Apache-2.0,
 pinned at a4d51f02ccdf1cf9e0b9b839da398412739e0290. The prior-summary
 wrapper is adapted for Pi. Copyright 2026 LamplitIsles.
+
+Web search provider request and normalization code and bounded HTTP reader in
+src/server/web-search-providers.ts and src/server/web-request.ts are adapted
+from guionai/web (https://github.com/guionai/web), Apache License 2.0.
+Modified for selected-provider-only execution, Worker settings and bounded errors.
+The retained license is LICENSES/guionai-web-Apache-2.0.txt.

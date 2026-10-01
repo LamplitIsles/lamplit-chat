@@ -1,3 +1,4 @@
+import { handleSearchTest } from './server/web-tools'
 import { handleCompanionMaterials } from './server/companion-materials-api'
 import { handleHistory } from './server/history-import-api'
 import { routeAgentRequest } from 'agents'
@@ -26,6 +27,7 @@ export default {
       headers.set('set-cookie', auth.setCookie)
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
     }
+    if (new URL(request.url).pathname === '/api/web-search/test') return respond(await handleSearchTest(request, env, instanceId))
     const materialResponse = await handleCompanionMaterials(request, env, instanceId)
     if (materialResponse) return respond(materialResponse)
     const historyResponse = await handleHistory(request, env, instanceId)
