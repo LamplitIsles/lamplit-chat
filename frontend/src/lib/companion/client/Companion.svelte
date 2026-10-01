@@ -307,9 +307,7 @@
   let displayedProjection: CompanionProjection = projection;
   let submissionToken = 0;
   let pendingSubmissions = 0;
-  let voiceCancelled = false;
   let voiceLimitReached = false;
-  let voiceSubmitted = false;
   let draftRevision = 0;
   let voiceDraftRevision = 0;
   let voiceDraftSnapshot = "";
@@ -1166,7 +1164,6 @@
   async function cancelVoiceInput(): Promise<void> {
     voiceInputGeneration += 1;
     voiceStarting = false;
-    voiceCancelled = true;
     clearVoiceClock();
     voiceTranscriptionAbort?.abort();
     voiceTranscriptionAbort = undefined;
@@ -1202,7 +1199,6 @@
       !voiceController.markTranscribing()
     )
       return;
-    voiceSubmitted = true;
     const abort = new AbortController();
     const originSessionId = sessionId;
     voiceTranscriptionAbort = abort;
@@ -1255,9 +1251,7 @@
     }
     voiceElapsedMs = 0;
     voiceFailure = "";
-    voiceCancelled = false;
     voiceLimitReached = false;
-    voiceSubmitted = false;
     voiceDraftRevision = draftRevision;
     voiceDraftSnapshot = composer.draft;
     voiceSelectionStart = composerInput?.selectionStart ?? composer.draft.length;
@@ -2375,7 +2369,6 @@
                 on:click={() => attachmentsOpen = !attachmentsOpen}><svelte:component this={attachmentsOpen ? X : Plus} size={22}
                 aria-hidden="true" /></button>
               {#if voiceBusy}<span class="companion-voice-hint">{t(voiceStatus === "recording" ? "voice.recordingShort" : voiceStarting ? "voice.requesting" : "voice.transcribing", { elapsed: formatVoiceElapsed(voiceElapsedMs) })}</span>
-              {:else if voiceCancelled}<span class="companion-voice-hint">{t(voiceSubmitted ? "voice.cancelSubmitted" : "voice.cancelUnsubmitted")}</span>
               {/if}
               {#if contextCapacity && !voiceBusy}
                 <div class="companion-context-meter-wrap">

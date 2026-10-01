@@ -31,7 +31,7 @@ Existing password auth protects self-host endpoints; trusted instance/internal-s
 
 Recording stays in browser memory and is sent only for recognition. The Worker forwards a complete Base64 data URL to the fixed provider; it does not persist or log audio, keys or recognized text. A transcript enters normal chat persistence only after explicit Send. Consult the provider's data/retention policy for its processing.
 
-Cancellation before submission makes no recognition request. After submission, cancellation releases local capture and discards the result; it cannot guarantee avoidance of provider processing or billing. The cancelled state distinguishes an unsubmitted recording from a cancelled recognition. Configuration/capability checks do not incur ASR calls.
+Cancellation before submission makes no recognition request. After submission, cancellation releases local capture and discards the result; it cannot guarantee avoidance of provider processing or billing. Configuration/capability checks do not incur ASR calls.
 
 ## Isolated verification and joint fixture
 
