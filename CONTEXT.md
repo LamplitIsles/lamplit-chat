@@ -124,3 +124,11 @@ _Avoid_: Web search, browser operation, reading private account content
 Fixed Beijing `qwen-audio-3.1-asr-flash-streaming`: actual16kHz PCM AudioWorklet → authenticated `/api/voice/stream` → final-only cursor draft. [Wire/limits/privacy/fixture ownership](docs/voice-input.md) is authoritative. Existing independent `VOICE_API_KEY`/hosted encrypted settings stay unchanged. Audio streams while speaking; cancellation closes processing but cannot undo billing. Both chat/platform merges wait for Owner joint gate.
 Dictation that contributes editable text to the user's unsent chat draft, including further speech added to an existing draft. The user decides when to send the resulting message.
 _Avoid_: Voice message, automatic message sending, voice call
+
+**Active context usage（当前上下文用量）**:
+The current native model context occupancy, derived from the active branch and fresh valid native observations. It excludes accumulated billing and other branches; unavailable usage remains nullable while known capacity is retained.
+_Avoid_: Lifetime token totals, a guessed context window
+
+**Quiet compaction（静默整理）**:
+An explicit or automatic native continuity operation whose successful completion produces no chat marker or toast. Its preserved native records support continuation, while stale context usage retires until a fresh valid observation.
+_Avoid_: A user chat message, replay on reconnect

@@ -15,7 +15,8 @@
     "lint": "oxlint --deny-warnings src",
     "typecheck": "tsc --noEmit",
     "deploy": "npm run build && wrangler deploy",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
     "@cloudflare/computer": "^0.3.1",
@@ -27,6 +28,7 @@
     "defuddle": "^0.19.4",
     "ipaddr.js": "^2.5.0",
     "linkedom": "^0.18.13",
+    "patch-package": "^8.0.1",
     "turndown": "^7.2.4",
     "typebox": "^1.3.34"
   },

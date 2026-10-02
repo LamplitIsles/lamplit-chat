@@ -4,24 +4,27 @@ import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn, execFileSync } from 'node:child_process'
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const quiet = process.env.QUIET_COMPACTION_ACCEPTANCE === 'true'
+if (quiet) (await import('./quiet-compaction-artifacts.mjs')).verifyQuietArtifacts()
 const root = resolve(process.argv[2] ?? '.scratch/companion-panels/acceptance')
-if (!root.startsWith(join(repo, '.scratch/companion-panels') + '/')) throw new Error('Fixture root must be inside this repo .scratch/companion-panels/')
+if (!root.startsWith(join(repo, quiet ? '.scratch/quiet-compaction' : '.scratch/companion-panels') + '/')) throw new Error('Fixture root must be inside this repo .scratch/companion-panels/')
 mkdirSync(root, { recursive: true })
-const handoff = join(repo, '../lamplit-app/.scratch/companion-panels/artifacts')
+const handoff = join(repo, quiet ? '../lamplit-app/.scratch/quiet-compaction/frozen-95f0f06' : '../lamplit-app/.scratch/companion-panels/artifacts')
+const suffix = quiet ? 'compact' : 'panels'
 const identity = JSON.parse(readFileSync(join(handoff, 'identity.json')))
-for (const [archive, expected] of [['lamplit-web-panels.tgz', identity.browserArchiveSHA256], ['lamplit-contracts-panels.tgz', identity.contractsArchiveSHA256]]) {
+for (const [archive, expected] of [[`lamplit-web-${suffix}.tgz`, identity.browserArchiveSHA256], [`lamplit-contracts-${suffix}.tgz`, identity.contractsArchiveSHA256]]) {
   if (!execFileSync('shasum', ['-a', '256', join(handoff, archive)], { encoding: 'utf8' }).startsWith(expected + ' ')) throw new Error('Artifact archive mismatch')
 }
 for (const [manifest, expected] of [['browser.sha256', identity.browserManifestSHA256], ['contracts.sha256', identity.contractsManifestSHA256]]) {
   if (!execFileSync('shasum', ['-a', '256', join(handoff, manifest)], { encoding: 'utf8' }).startsWith(expected + ' ')) throw new Error('Artifact manifest mismatch')
 }
 execFileSync('shasum', ['-a', '256', '-c', join(handoff, 'contracts.sha256')], { cwd: join(repo, 'node_modules/@lamplit/contracts') })
-for (const [folder, archive, manifest] of [['web', 'lamplit-web-panels.tgz', 'browser.sha256'], ['contracts', 'lamplit-contracts-panels.tgz', 'contracts.sha256']]) {
+for (const [folder, archive, manifest] of [['web', `lamplit-web-${suffix}.tgz`, 'browser.sha256'], ['contracts', `lamplit-contracts-${suffix}.tgz`, 'contracts.sha256']]) {
   mkdirSync(join(root, folder), { recursive: true })
   execFileSync('tar', ['-xzf', join(handoff, archive), '-C', join(root, folder)])
   writeFileSync(join(root, `${folder}-manifest.log`), execFileSync('shasum', ['-a', '256', '-c', join(handoff, manifest)], { cwd: join(root, folder, ...(folder === 'contracts' ? ['package'] : [])) }))
 }
-const data = JSON.parse(execFileSync('bun', ['--eval', `import {panelsFixture,fixtureImage} from ${JSON.stringify(join(repo, '../lamplit-app/tests/panels-fixture.ts'))}; const f=panelsFixture(); console.log(JSON.stringify({dates:f.dates,images:f.images,records:f.records,reminders:f.reminders,image:Array.from(fixtureImage)}))`], { encoding: 'utf8' }))
+const data = JSON.parse(execFileSync('bun', ['--eval', `import {panelsFixture,fixtureImage} from ${JSON.stringify(join(repo, quiet ? '.scratch/quiet-compaction/frozen/acceptance/panels-fixture.ts' : '../lamplit-app/tests/panels-fixture.ts'))}; const f=panelsFixture(); console.log(JSON.stringify({dates:f.dates,images:f.images,records:f.records,reminders:f.reminders,image:Array.from(fixtureImage)}))`], { encoding: 'utf8' }))
 writeFileSync(join(root, 'fixture.json'), JSON.stringify(data, null, 2))
 writeFileSync(join(root, 'identity.json'), JSON.stringify(identity, null, 2))
 const config = JSON.parse(readFileSync(join(repo, 'wrangler.slice.jsonc')))
@@ -116,7 +119,7 @@ export default {async fetch(request,env){
   return worker.fetch(request,env);
 }};
 `)
-const child = spawn(join(repo, 'node_modules/.bin/wrangler'), ['dev', '--config', join(root, 'pi-fixture.jsonc'), '--local', '--persist-to', join(root, 'pi-state'), '--ip', '127.0.0.1', '--port', '8951', '--inspector-port', '0', '--show-interactive-dev-session=false'], {
+const child = spawn(join(repo, 'node_modules/.bin/wrangler'), ['dev', '--config', join(root, 'pi-fixture.jsonc'), '--local', '--persist-to', join(root, 'pi-state'), '--ip', '127.0.0.1', '--port', process.env.PANELS_FIXTURE_PORT ?? '8951', '--inspector-port', '0', '--show-interactive-dev-session=false'], {
   cwd: root, stdio: 'inherit', env: { PATH: process.env.PATH, TMPDIR: root, XDG_CONFIG_HOME: join(root, 'config'), XDG_CACHE_HOME: join(root, 'cache'), XDG_DATA_HOME: join(root, 'data'), WRANGLER_REGISTRY_PATH: join(root, 'registry'), WRANGLER_LOG_PATH: join(root, 'logs'), WRANGLER_SEND_METRICS: 'false', CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: 'false' },
 })
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal))

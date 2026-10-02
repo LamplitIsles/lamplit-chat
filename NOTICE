@@ -42,3 +42,11 @@ The approved reusable runner is pinned separately at
 091c0def66abdb45728906785e6defd55c60d50c; product artifacts are unchanged.
 The package retains its LICENSE. Native image/admission/recovery adapters and
 isolated workerd fixture are authored here; app artifacts are consumed unchanged.
+
+The quiet-compaction integration consumes unchanged reviewed browser, compiled
+contracts and acceptance runners from LamplitIsles/lamplit-app, Apache-2.0, at
+95f0f06fc00fd4e7fa3e664ca2b1fe12fe8d10b8 (App #3119; Chat #3120).
+The package retains its LICENSE. The repository-maintained export-only patch to
+@earendil-works/pi-agent-core 0.99.1 (MIT) exposes its existing native projection;
+it does not modify its implementation or claim upstream published API support.
+Native context/admission adapters and isolated test controls are authored here.

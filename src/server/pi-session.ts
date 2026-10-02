@@ -24,7 +24,9 @@ import {
 } from '@earendil-works/pi-agent-core'
 import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
 import { hostedCallable, HostedAgent } from './hosted-agent'
-import type { StreamingResponse } from 'agents'
+import { getCurrentAgent, type StreamingResponse } from 'agents'
+import { activeContextUsage } from './context-usage'
+import type { Compaction, CompactInput, CompactResult } from '@lamplit/contracts'
 import type {
   ApplyMemoryExtractionInput,
   CompactionSettings,
@@ -132,6 +134,8 @@ export class PiSession extends HostedAgent {
         diaryList: () => this.listDiary(), diaryRead: name => this.readDiary(name),
         album: input => this.readPanelAlbum(input.cursor), reminders: () => this.listTimedWakes(),
       }),
+      observation: () => this.chatObservation(),
+      compact: input => this.compactChat(input),
       branch: () => this.getBranch(),
       identity: async () => {
         await this.waitUntilInitialized()
@@ -349,21 +353,74 @@ export class PiSession extends HostedAgent {
     })
   }
 
+  private async chatObservation() {
+    await this.waitUntilInitialized()
+    const lane = await this.getLane()
+    const model = await lane.getModel(BACKGROUND_CONTEXT)
+    const name = await this.session.getName(BACKGROUND_CONTEXT) ?? 'Lamplit'
+    // Async preparation must not mix an earlier busy/session observation with
+    // newly appended context. Retry the bounded projection if native state moves.
+    for (;;) {
+      const sessionId = this.sessionStorage.getMetadataSync().id
+      const tip = this.sessionStorage.getLeafId()
+      const activeTurnId = this.sessionStorage.getValueSync(laneState('main'))?.value?.currentOperationId ?? null
+      const entries = this.sessionStorage.getPathToRoot(tip)
+      const contextUsage = await activeContextUsage(entries, model?.contextWindow, this.sessionStorage.getSetting<number>('chatUsageBoundary') ?? 0)
+      if (sessionId !== this.sessionStorage.getMetadataSync().id || tip !== this.sessionStorage.getLeafId() || activeTurnId !== (this.sessionStorage.getValueSync(laneState('main'))?.value?.currentOperationId ?? null)) continue
+      const latest = [...entries].reverse().find(entry => entry.type === 'compaction')
+      const compaction = this.sessionStorage.getSetting<Compaction>('chatCompaction') ?? (latest ? { id: latest.id, status: 'complete' as const } : null)
+      return { sessionId, name, activeTurnId, contextUsage, compaction }
+    }
+  }
+
+  private compactBusy(): boolean {
+    const state = this.sessionStorage.getValueSync(laneState('main'))?.value
+    return this.active || !!state?.currentOperationId || !!state?.inbox.some(item => {
+      const pending = this.sessionStorage.getValueSync(pendingEntry(item.entryId))?.value
+      return pending?.type === 'message' && pending.payload.role === 'user'
+    })
+  }
+
+  private async compactChat(input: CompactInput): Promise<CompactResult> {
+    // Capture the actual caller before preparation. Hosted background calls cannot
+    // supply authorization for a human command.
+    const connection = getCurrentAgent().connection
+    const harness = await this.getHarness()
+    const lane = await this.getLane()
+    if (this.env.HOSTED_MODE === 'true' && !connection) return { ...input, accepted: false }
+    if (connection) await this.verifyConnection(connection)
+    if (connection && !this.chatConnections.has(connection.id)) return { ...input, accepted: false }
+    if (input.sessionId !== this.sessionStorage.getMetadataSync().id || this.compactBusy()) return { ...input, accepted: false }
+    this.active = true
+    let acknowledge!: (accepted: boolean) => void
+    const admitted = new Promise<boolean>(resolve => { acknowledge = resolve })
+    const off = harness.events.on('compaction_start', event => {
+      if (event.lane === 'main' && event.reason === 'manual') acknowledge(true)
+    })
+    // The SDK owns admission, cancellation, execution and persistence. A start
+    // event acknowledges admission; a pre-start refusal never becomes queued work.
+    this.ctx.waitUntil(this.runCompact(lane).then(() => acknowledge(false), () => acknowledge(false)).finally(() => {
+      off(); this.active = false
+    }))
+    return { ...input, accepted: await admitted }
+  }
+
+  private async runCompact(lane: Awaited<ReturnType<PiSession['getLane']>>, focus?: string): Promise<{ summary: string; tokensBefore: number }> {
+    const result = await lane.compact({ customInstructions: focus }, BACKGROUND_CONTEXT)
+    if (!result.ok) throw result.error
+    if (result.value.compaction.status !== 'completed') throw new Error('Compaction did not complete; conversation preserved.')
+    const entry = this.sessionStorage.getEntrySync(result.value.compaction.tipId ?? '')
+    if (!entry || entry.type !== 'compaction') throw new Error('Compaction entry was not saved.')
+    await this.flushOutboxToRegistry()
+    return { summary: entry.summary, tokensBefore: entry.tokensBefore }
+  }
+
   @hostedCallable()
   async compact(focus?: string): Promise<{ summary: string; tokensBefore: number }> {
-    if (this.active) throw new Error('Pi is currently running.')
-    this.active = true
-    try {
-      const result = await (await this.getLane()).compact({ customInstructions: focus }, BACKGROUND_CONTEXT)
-      if (!result.ok) throw result.error
-      if (result.value.compaction.status !== 'completed') throw new Error('Compaction did not complete; conversation preserved.')
-      const entry = this.sessionStorage.getEntrySync(result.value.compaction.tipId ?? '')
-      if (!entry || entry.type !== 'compaction') throw new Error('Compaction entry was not saved.')
-      await this.flushOutboxToRegistry()
-      return { summary: entry.summary, tokensBefore: entry.tokensBefore }
-    } finally {
-      this.active = false
-    }
+    const lane = await this.getLane()
+    await this.verifyCurrentConnection()
+    if (this.compactBusy()) throw new Error('Pi is currently running.')
+    return this.withExclusiveOperation(() => this.runCompact(lane, focus))
   }
 
   @hostedCallable()
@@ -883,6 +940,8 @@ export class PiSession extends HostedAgent {
       } : snapshot.metadata
       await this.sessionStorage.replace(targetMetadata, snapshot.entries)
       this.sessionStorage.setSetting('compaction', snapshot.compaction)
+      this.sessionStorage.setSetting('chatUsageBoundary', this.sessionStorage.entriesInOrder().at(-1)?.seq ?? 0)
+      this.sessionStorage.setSetting('chatCompaction', null)
       this.sessionStorage.setSetting(MEMORY_EXTRACTION_CURSOR, this.sessionStorage.getEntriesWithSeq().at(-1)?.seq ?? 0)
       for (const file of snapshot.files) {
         const path = workspacePath(file.path)
@@ -947,6 +1006,17 @@ export class PiSession extends HostedAgent {
       loadInstructions: () => this.workspace.readFile(`${WORKSPACE_ROOT}/AGENTS.md`),
       getUserTimeZone: () => registry.getUserTimeZone(),
       awaitWakeSchedules: () => this.awaitWakeSchedules(),
+      }).then(harness => {
+        harness.events.on('compaction_start', event => {
+          if (event.lane === 'main') this.sessionStorage.setSetting('chatCompaction', { id: event.runId, status: 'running' })
+        })
+        harness.events.on('compaction_end', event => {
+          if (event.lane === 'main') this.sessionStorage.setSetting('chatCompaction', { id: event.runId, status: event.status === 'completed' ? 'complete' : 'failed' })
+        })
+        harness.events.on('navigation_end', event => {
+          if (event.lane === 'main' && event.status === 'completed') this.sessionStorage.setSetting('chatUsageBoundary', this.sessionStorage.entriesInOrder().at(-1)?.seq ?? 0)
+        })
+        return harness
       })
     })
     const harness = await this.harness

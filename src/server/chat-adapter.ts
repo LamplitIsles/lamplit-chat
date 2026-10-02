@@ -1,6 +1,6 @@
 import type { AgentLane } from '@earendil-works/pi-agent-core'
 import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
-import { capabilities, PAGE_SIZE, type ChatMessage, type ChatView, type Submission, type Receipt, type ImageRef, type InputRecovery, type ImageLimits } from '@lamplit/contracts'
+import { capabilities, PAGE_SIZE, type ChatMessage, type ChatView, type Submission, type Receipt, type ImageRef, type InputRecovery, type ImageLimits, type ContextUsage, type Compaction, type CompactInput, type CompactResult } from '@lamplit/contracts'
 import { occurrenceKey } from '../shared/timed-wake'
 import type { PanelBackend } from '@lamplit/contracts'
 import type { ChatBackend } from '@lamplit/contracts/server'
@@ -8,6 +8,8 @@ import type { SessionBranch, PromptAdmissionStatus, SteerAdmissionStatus } from 
 
 export type ChatAdmission = Submission & { kind: 'prompt' | 'steer'; turnId: string | null; rejected?: boolean }
 export interface PiChatSource {
+  observation(): Promise<{ sessionId: string; name: string; activeTurnId: string | null; contextUsage: ContextUsage; compaction: Compaction }>
+  compact(input: CompactInput): Promise<CompactResult>
   panels: PanelBackend
   branch(): Promise<SessionBranch>
   identity(): Promise<{ id: string; name: string; turnId: string | null }>
@@ -64,12 +66,19 @@ export function createPiChatBackend(source: PiChatSource): ChatBackend {
   return {
     ...source.panels,
     async read(): Promise<ChatView> {
-      const [identity, all] = await Promise.all([source.identity(), messages()]);
-      return { version: 1, sessionId: identity.id, name: identity.name, activeTurnId: identity.turnId, ...page(all), recovery: await source.recovery(), capabilities: { ...capabilities, images: source.imageLimits() } };
+      for (;;) {
+        const identity = await source.identity();
+        const [all, recovery] = await Promise.all([messages(), source.recovery()]);
+        const observation = await source.observation();
+        if (observation.sessionId !== identity.id) continue;
+        return { version: 1, ...page(all), recovery, capabilities: { ...capabilities, images: source.imageLimits() }, ...observation };
+      }
     },
+    compact: input => source.compact(input),
     async history(before) { return page(await messages(), before); },
     submit(input) {
       const task = admission.then(async () => {
+        if (input.text === '/compact') throw new Error('Use the compact operation');
         const records = await source.records();
         const previous = records.get(input.operationId);
         if (previous) { if (submissionIdentity(previous) !== submissionIdentity(input)) throw new Error('Submission identity conflict'); return lookup(input.operationId); }

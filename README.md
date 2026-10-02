@@ -240,3 +240,19 @@ See [the public/native contract and frozen actual-host acceptance recipe](docs/i
 for limits, owner/session authorization, retry/replacement identity and isolated
 workerd checks. The native frontend remains available. The local fixture uses
 port 8973 and fresh test-owned state; its control route is never production routing.
+
+## Shared quiet compaction
+
+The shared browser's exact bare `/compact` invokes Pi's native compaction operation.
+Busy or refused commands retain the draft; native running/failure feedback is shown,
+and successful manual/automatic completion is silent. The capacity meter uses active
+native context and selected model metadata. Stale pre-compaction usage becomes null
+on the wire and displays zero until fresh valid assistant usage, retaining capacity.
+Reconnect and lost replies do not replay compaction.
+
+`npm ci` now applies the repository-maintained export-only patch to pinned Pi SDK
+0.99.1 with `patch-package --error-on-fail`; keep `patches/` with the package/lockfile.
+This exposes the existing native projection through the public facade without an
+SDK upgrade or algorithm change. See [quiet-compaction.md](docs/quiet-compaction.md)
+for protocol, admission, exact frozen-artifact validation and isolated native browser
+commands. Native/frontend checks remain unchanged, and this change does not deploy.

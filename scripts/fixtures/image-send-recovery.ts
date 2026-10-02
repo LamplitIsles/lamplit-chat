@@ -9,8 +9,8 @@ import { insertEntry, branchTip, laneState, setValue } from '@earendil-works/pi-
 
 const jpeg = btoa(String.fromCharCode(255, 216, 255, 217))
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=='
-const fixture = { regressions: false, mode: 'consumed', hold: true, disabled: false, uploadFailure: false, modelCalls: 0, requests: [], uploads: [], runs: [], releases: [], voiceCalls: 0, frames: 0, bytes: 0, closes: 0, enabled: true, text: 'recognized final', status: 200 }
-const chunk = (delta, finish_reason) => 'data: ' + JSON.stringify({ id: 'native-fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture-model', choices: [{ index: 0, delta, finish_reason }] }) + '\n\n'
+export const fixture = { regressions: false, mode: 'consumed', hold: true, disabled: false, uploadFailure: false, modelCalls: 0, requests: [], uploads: [], runs: [], releases: [], voiceCalls: 0, frames: 0, bytes: 0, closes: 0, enabled: true, text: 'recognized final', status: 200 }
+const chunk = (delta, finish_reason) => 'data: ' + JSON.stringify({ id: 'native-fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture-model', ...(finish_reason ? { usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } } : {}), choices: [{ index: 0, delta, finish_reason }] }) + '\n\n'
 globalThis.fetch = async (input, init) => {
   const url = input instanceof Request ? input.url : String(input)
   if (url.startsWith('https://example.invalid/')) {
@@ -18,7 +18,7 @@ globalThis.fetch = async (input, init) => {
     fixture.requests.push(JSON.parse(String(init?.body ?? '{}')))
     const reply = fixture.regressions ? 'Complete Pi reply' : fixture.modelCalls === 1 ? '完整图片回复' : '追加图片回复'
     const body = new ReadableStream({ start(controller) {
-      const finish = () => { controller.enqueue(new TextEncoder().encode(chunk({ role: 'assistant', content: reply }, null) + chunk({}, 'stop') + 'data: [DONE]\n\n')); controller.close() }
+      const finish = () => { if (fixture.compactionFailure) { controller.error(new Error('Synthetic native summary failure')); return } controller.enqueue(new TextEncoder().encode(chunk({ role: 'assistant', content: reply }, null) + chunk({}, 'stop') + 'data: [DONE]\n\n')); controller.close() }
       if (fixture.hold) fixture.releases.push(finish); else finish()
     } })
     return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
