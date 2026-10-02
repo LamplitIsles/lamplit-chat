@@ -31,8 +31,9 @@ export const HistoryNodeSchema = object({
   parts: Type.Array(HistoryPartSchema, { minItems: 1, maxItems: 100 }),
 })
 export const HistoryConversationSchema = object({
-  source: Type.Union([Type.Literal('rikka'), Type.Literal('deepseek')]),
+  source: Type.Union([Type.Literal('rikka'), Type.Literal('deepseek'), Type.Literal('operit')]),
   conversationId: id,
+  sourceParentConversationId: Type.Optional(id),
   assistant: Type.Optional(object({ id, name: label })),
   title: label, createdAt: SourceTimeSchema, updatedAt: SourceTimeSchema,
   selectedLeafId: nullableId,
@@ -46,7 +47,7 @@ export const HistoryCommitSchema = object({ batches: Type.Integer({ minimum: 1, 
 // Structural field names only; dynamic mapping keys are represented by "*", never source IDs.
 const diagnosticPosition = Type.Integer({ minimum: 0, maximum: 1_000_000_000 })
 const diagnosticPath = Type.Array(Type.Union([
-  Type.Union((['*', 'id', 'title', 'inserted_at', 'updated_at', 'mapping', 'parent', 'children', 'message', 'model', 'fragments', 'type', 'content', 'results', 'url', 'files', 'file_id', 'file_name', 'file_size', 'role', 'parts', 'annotations', 'createdAt', 'finishedAt', 'modelId', 'usage', 'translation'] as const).map(v => Type.Literal(v))),
+  Type.Union((['*', 'id', 'title', 'inserted_at', 'updated_at', 'mapping', 'parent', 'children', 'message', 'model', 'fragments', 'type', 'content', 'results', 'url', 'files', 'file_id', 'file_name', 'file_size', 'role', 'parts', 'annotations', 'createdAt', 'finishedAt', 'modelId', 'usage', 'translation', 'archiveType', 'formatVersion', 'exportedAt', 'chats', 'conversation', 'messages', 'characterCardName', 'parentChatId', 'baseMessage', 'variants', 'variantIndex', 'selectedVariantIndex', 'timestamp', 'sender', 'roleName'] as const).map(v => Type.Literal(v))),
   diagnosticPosition,
 ]), { minItems: 1, maxItems: 12 })
 export const HistoryDiagnosticLocationSchema = Type.Union([
@@ -57,11 +58,11 @@ export const HistoryDiagnosticLocationSchema = Type.Union([
 export type HistoryDiagnosticLocation = Static<typeof HistoryDiagnosticLocationSchema>
 export const HistoryDiagnosticSchema = object({
   issueId: Type.Optional(Type.String({ pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' })),
-  source: Type.Union([Type.Literal('rikka'), Type.Literal('deepseek')]),
+  source: Type.Union([Type.Literal('rikka'), Type.Literal('deepseek'), Type.Literal('operit')]),
   stage: Type.Union((['preflight', 'parse', 'normalize', 'upload', 'commit'] as const).map(v => Type.Literal(v))),
   code: Type.Union((['invalid-format', 'unsupported-part', 'resource-limit', 'role-missing', 'interrupted', 'invalid-data', 'conflict', 'role-mismatch', 'invalid-graph', 'batch-order', 'internal-error'] as const).map(v => Type.Literal(v))),
   filename: Type.Optional(Type.String({ maxLength: 120 })),
-  member: Type.Optional(Type.Union([Type.Literal('conversations.json'), Type.Literal('rikka_hub.db'), Type.Literal('settings.json')])),
+  member: Type.Optional(Type.Union([Type.Literal('conversations.json'), Type.Literal('rikka_hub.db'), Type.Literal('settings.json'), Type.Literal('operit.json')])),
   location: Type.Optional(HistoryDiagnosticLocationSchema),
   originalBytes: Type.Optional(Type.Integer({ minimum: 0, maximum: 1_000_000_000 })),
   expandedBytes: Type.Optional(Type.Integer({ minimum: 0, maximum: 1_000_000_000 })),
@@ -88,4 +89,4 @@ export type HistoryErrorCode = 'invalid-data' | 'resource-limit' | 'not-found' |
 export type HistoryError = { error: { code: HistoryErrorCode; stage: string; issueId: string; sourceNodeId?: string } }
 export type HistoryReply = { status: number; body: unknown }
 
-export type HistoryImportSettings = { rikkaAssistantId: string | null }
+export type HistoryImportSettings = { rikkaAssistantId: string | null; operitAssistantId: string | null }

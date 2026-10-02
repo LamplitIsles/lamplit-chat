@@ -5,6 +5,7 @@ import type { PiRegistry } from './pi-registry'
 import { createSessionSearchTool } from './workspace-tools'
 import type { HistoryConversation, HistoryNode, HistoryImportStatus } from '../shared/history-import'
 import deepseek from './fixtures/history-deepseek.json'
+import operitFixture from './fixtures/history-operit.json'
 import diagnosticFixtures from './fixtures/history-diagnostics.json'
 import server from '../server'
 
@@ -202,12 +203,12 @@ describe('incremental import, fixed Rikka role and recovery', () => {
     const rikka = structuredClone(imported) as { conversation: HistoryConversation; nodes: HistoryNode[] }
     const cancelled = await start(rikka.conversation)
     await request(`history-import/${cancelled.importId}`, 'DELETE')
-    expect(await (await request('history-import')).json()).toEqual({ rikkaAssistantId: null })
+    expect(await (await request('history-import')).json()).toEqual({ rikkaAssistantId: null, operitAssistantId: null })
     const invalid = await start(rikka.conversation)
     await request(`history-import/${invalid.importId}/append`, 'POST', { batch: 0, nodes: [{ ...rikka.nodes[0], parentId: 'missing' }] })
     expect((await request(`history-import/${invalid.importId}/commit`, 'POST', { batches: 1 })).status).toBe(400)
     await request(`history-import/${invalid.importId}`, 'DELETE')
-    expect(await (await request('history-import')).json()).toEqual({ rikkaAssistantId: null })
+    expect(await (await request('history-import')).json()).toEqual({ rikkaAssistantId: null, operitAssistantId: null })
     const roleA = await start(rikka.conversation)
     const roleB = await start({ ...rikka.conversation, assistant: { id: 'fictional-other-role', name: 'Other guide' } })
     for (const pending of [roleA, roleB]) await request(`history-import/${pending.importId}/append`, 'POST', { batch: 0, nodes: rikka.nodes })
@@ -233,10 +234,10 @@ describe('incremental import, fixed Rikka role and recovery', () => {
         state.storage.sql.exec('INSERT INTO pi_registry_search_fts VALUES(?,?,?,?,?)', id, node.id, node.role, node.time.raw, 'atomicrollbacktoken')
         if (fail) throw new Error('fictional index failure containing private material')
       })
-      const pending = archive.start({ conversation: rikka.conversation })
+      const pending = await archive.start({ conversation: rikka.conversation })
       await archive.append(pending.importId, { batch: 0, nodes: rikka.nodes })
       expect(() => archive.commit(pending.importId, { batches: 1 })).toThrow('fictional index failure')
-      expect(archive.settings()).toEqual({ rikkaAssistantId: null })
+      expect(archive.settings()).toEqual({ rikkaAssistantId: null, operitAssistantId: null })
       expect(archive.list('', 20).archives).toEqual([])
       expect(state.storage.sql.exec('SELECT * FROM pi_registry_search_fts').toArray()).toEqual([])
       expect(await instance.searchSessions({ query: 'atomicrollbacktoken' })).toEqual([])
@@ -433,5 +434,196 @@ describe('bounded resources, invalid data and private diagnostics', () => {
         expect(JSON.stringify(spy.mock.calls)).not.toContain('PRIVATE_BODY_AND_SECRET')
       } finally { state.storage.sql.exec('DROP TRIGGER history_test_failure'); spy.mockRestore() }
     })
+  })
+})
+
+describe('Operit exact-name groups and atomic archives', () => {
+  function operit(): { conversation: HistoryConversation; nodes: HistoryNode[] } {
+    return structuredClone(operitFixture) as { conversation: HistoryConversation; nodes: HistoryNode[] }
+  }
+  async function assistant(name: string) {
+    const { hashSourceId } = await import('./history-import-api')
+    return { id: name === '' ? 'none' : `card:${await hashSourceId(name)}`, name }
+  }
+  const settings = async () => (await request('history-import')).json()
+
+  it('validates canonical UTF-8 identities, exact whitespace and source-specific fields', async () => {
+    const { conversation } = operit()
+    expect(await assistant(conversation.assistant!.name)).toEqual(conversation.assistant)
+    for (const value of [undefined, { id: 'arbitrary', name: 'Guide' }, { id: 'none', name: '无角色卡' }, { id: conversation.assistant!.id.toUpperCase(), name: conversation.assistant!.name }, { id: conversation.assistant!.id, name: 'Renamed' }, { id: 'none', name: 'x'.repeat(201) }]) {
+      expect((await request('history-import', 'POST', { conversation: { ...conversation, assistant: value } })).status).toBe(400)
+    }
+    for (const name of ['', ' ', '灯园向导 🌙', '无角色卡']) {
+      const stage = await start({ ...conversation, assistant: await assistant(name) })
+      await request(`history-import/${stage.importId}`, 'DELETE')
+    }
+    expect((await request('history-import', 'POST', { conversation: { ...fixture().conversation, sourceParentConversationId: 'parent' } })).status).toBe(400)
+    expect(await settings()).toEqual(operitFixture.settingsBefore)
+  })
+
+  it('rejects escaped lone surrogates before hashing, preserving valid replacement and astral names', async () => {
+    const { conversation, nodes } = operit()
+    const malformed = ['\ud800', '\ud801', '\udc00', 'Guide\ud800', '\ud800\ud801', '\udc00\ud800']
+    const replacement = await assistant('\ufffd')
+    expect((await assistant(malformed[0])).id).toBe(replacement.id)
+    expect((await assistant(malformed[1])).id).toBe(replacement.id)
+    async function rejectMalformed() {
+      for (const name of malformed) {
+        // request() JSON.stringify sends lone code units as escaped JSON through the real API.
+        const response = await request('history-import', 'POST', { conversation: { ...conversation, assistant: await assistant(name) } })
+        expect(response.status).toBe(400)
+        expect(await response.json()).toMatchObject({ error: { code: 'invalid-data' } })
+      }
+    }
+    await rejectMalformed()
+    expect(await settings()).toEqual(operitFixture.settingsBefore)
+    for (const name of ['\ufffd', 'Guide \ud83c\udf19']) {
+      const group = await assistant(name)
+      const committed = await upload({ ...conversation, assistant: group }, nodes)
+      const page = await (await request(`history-archives/${committed.archiveId}`)).json() as { conversation: HistoryConversation }
+      expect(page.conversation.assistant).toEqual(group)
+      await rejectMalformed()
+      expect(await settings()).toEqual({ rikkaAssistantId: null, operitAssistantId: group.id })
+      owner = crypto.randomUUID()
+    }
+  })
+
+  it('reads missing external parents and all alternatives through API and session_search, without executable ownership', async () => {
+    const { conversation, nodes } = operit()
+    const pending = await start(conversation)
+    await request(`history-import/${pending.importId}/append`, 'POST', { batch: 0, nodes })
+    expect(await settings()).toEqual(operitFixture.settingsBefore)
+    expect(await registry().searchSessions({ query: 'heliotropevariant' })).toEqual([])
+    expect((await request(`history-archives/${pending.archiveId}`)).status).toBe(404)
+    const done = await request(`history-import/${pending.importId}/commit`, 'POST', { batches: 1 })
+    expect(done.status).toBe(200)
+    expect(await settings()).toEqual(operitFixture.settingsAfter)
+    const page = await (await request(`history-archives/${pending.archiveId}`)).json() as { conversation: HistoryConversation; nodes: HistoryNode[] }
+    expect(page.conversation).toEqual(conversation)
+    expect(page.nodes).toEqual(nodes.map(n => expect.objectContaining(n)))
+    expect(page.nodes.map(n => n.selected)).toEqual([true, false, true])
+    await runInDurableObject(registry(), async instance => {
+      const tool = createSessionSearchTool(instance)
+      for (const query of ['moonfloweroriginal', 'heliotropevariant']) {
+        const result = await tool.execute('fictional-operit-search', { query }, () => {}, undefined, {} as Parameters<typeof tool.execute>[4], {} as Parameters<typeof tool.execute>[5])
+        expect(result.content[0].type).toBe('text')
+        if (result.content[0].type === 'text') expect(JSON.parse(result.content[0].text)).toMatchObject([{ archive: { id: pending.archiveId, conversation }, matches: [{ sourceNodeId: expect.any(String) }] }])
+      }
+    })
+    expect(await registry().searchSessions({ query: 'operitthoughtquartz' })).toEqual([])
+    expect(await registry().searchSessions({ query: 'Archived lookup' })).toEqual([])
+    expect(await registry().hasReadySession(pending.archiveId)).toBe(false)
+    expect((await request(`agents/pi-session/${pending.archiveId}/prompt`, 'POST', {})).status).toBe(404)
+    expect(await (await request(`history-import/${pending.importId}/commit`, 'POST', { batches: 1 })).json()).toEqual(await done.json())
+    const originalOwner = owner
+    owner = crypto.randomUUID()
+    expect((await request(`history-archives/${pending.archiveId}`)).status).toBe(404)
+    expect((await request(`history-import/${pending.importId}`)).status).toBe(404)
+    expect(await registry().searchSessions({ query: 'heliotropevariant' })).toEqual([])
+    expect(await settings()).toEqual(operitFixture.settingsBefore)
+    owner = originalOwner
+  })
+
+  it('recovers lost starts and batches, deduplicates and appends messages/variants, preserving content on conflict', async () => {
+    const { conversation, nodes } = operit()
+    const initial = await start(conversation)
+    expect(await start(conversation)).toEqual(initial)
+    for (let i = 0; i < 2; i++) expect((await request(`history-import/${initial.importId}/append`, 'POST', { batch: 0, nodes })).status).toBe(200)
+    expect((await request(`history-import/${initial.importId}/commit`, 'POST', { batches: 1 })).status).toBe(200)
+    expect((await upload(conversation, nodes))).toMatchObject({ archiveId: initial.archiveId, added: 0 })
+    conversation.selectedLeafId = nodes[1].id
+    nodes[1].selected = true; nodes[2].selected = false
+    expect((await upload(conversation, nodes)).added).toBe(0)
+    const variant = { ...nodes[2], id: 'node:1788249660000:2', selected: false, parts: [{ type: 'text' as const, text: 'newoperitvariant' }] }
+    const message = { ...nodes[0], id: 'node:1788249780000:0', messageId: 'message:1788249780000', parentId: nodes[2].id, sourceOrder: 2, parts: [{ type: 'text' as const, text: 'newoperitmessage' }] }
+    conversation.selectedLeafId = message.id
+    expect((await upload(conversation, [variant, message]))).toMatchObject({ archiveId: initial.archiveId, added: 2 })
+    expect(await registry().searchSessions({ query: 'newoperitvariant' })).toHaveLength(1)
+    expect(await registry().searchSessions({ query: 'newoperitmessage' })).toHaveLength(1)
+    const bad = await start(conversation)
+    await request(`history-import/${bad.importId}/append`, 'POST', { batch: 0, nodes: [{ ...nodes[0], parts: [{ type: 'text', text: 'conflictingoperitbody' }] }] })
+    const failed = await request(`history-import/${bad.importId}/commit`, 'POST', { batches: 1 })
+    expect(failed.status).toBe(409)
+    expect(await failed.json()).toMatchObject({ error: { code: 'conflict' } })
+    await request(`history-import/${bad.importId}`, 'DELETE')
+    expect(await registry().searchSessions({ query: 'conflictingoperitbody' })).toEqual([])
+    const page = await (await request(`history-archives/${initial.archiveId}`)).json() as { nodes: HistoryNode[] }
+    expect(page.nodes).toEqual([...nodes, variant, message].map(n => expect.objectContaining(n)))
+  })
+
+  it('binds none separately from a real card named 无角色卡 and retains completed conversations after cancellation', async () => {
+    const { conversation, nodes } = operit()
+    conversation.assistant = await assistant('')
+    const cancelled = await start(conversation)
+    await request(`history-import/${cancelled.importId}`, 'DELETE')
+    const bad = await start(conversation)
+    await request(`history-import/${bad.importId}/append`, 'POST', { batch: 0, nodes: [{ ...nodes[0], parentId: 'absent' }] })
+    expect((await request(`history-import/${bad.importId}/commit`, 'POST', { batches: 1 })).status).toBe(400)
+    expect(await settings()).toEqual(operitFixture.settingsBefore)
+    await request(`history-import/${bad.importId}`, 'DELETE')
+    const first = await upload(conversation, nodes)
+    expect(await settings()).toEqual({ rikkaAssistantId: null, operitAssistantId: 'none' })
+    expect((await upload(conversation, nodes)).added).toBe(0)
+    const named = await start({ ...conversation, assistant: await assistant('无角色卡') })
+    expect(named.archiveId).not.toBe(first.archiveId)
+    await request(`history-import/${named.importId}/append`, 'POST', { batch: 0, nodes })
+    const response = await request(`history-import/${named.importId}/commit`, 'POST', { batches: 1 })
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ error: { code: 'role-mismatch' } })
+    await request(`history-import/${named.importId}`, 'DELETE')
+    expect((await request(`history-archives/${first.archiveId}`)).status).toBe(200)
+    expect((await request(`history-archives/${named.archiveId}`)).status).toBe(404)
+  })
+
+  it('allows only one competing exact-name binding, independent of Rikka and DeepSeek', async () => {
+    const { conversation, nodes } = operit()
+    const stages = await Promise.all(['Guide', 'guide'].map(async name => start({ ...conversation, assistant: await assistant(name) })))
+    for (const stage of stages) await request(`history-import/${stage.importId}/append`, 'POST', { batch: 0, nodes })
+    const replies = await Promise.all(stages.map(stage => request(`history-import/${stage.importId}/commit`, 'POST', { batches: 1 })))
+    expect(replies.map(r => r.status).sort((a, b) => a - b)).toEqual([200, 409])
+    const bound = await settings() as { operitAssistantId: string }
+    for (const name of ['Guide ', 'Another guide', '']) {
+      const stage = await start({ ...conversation, assistant: await assistant(name) })
+      await request(`history-import/${stage.importId}/append`, 'POST', { batch: 0, nodes })
+      expect((await request(`history-import/${stage.importId}/commit`, 'POST', { batches: 1 })).status).toBe(409)
+      await request(`history-import/${stage.importId}`, 'DELETE')
+    }
+    const rikka = (await import('./fixtures/history-rikka.json')).default
+    await upload(rikka.conversation as HistoryConversation, rikka.nodes as HistoryNode[])
+    await upload()
+    expect(await settings()).toEqual({ rikkaAssistantId: 'fictional-role-1', operitAssistantId: bound.operitAssistantId })
+  })
+
+  it('rolls back first binding, archive and FTS on index failure and allows a successful retry', async () => {
+    const { HistoryArchives } = await import('./history-archives')
+    await runInDurableObject(registry(), async (instance, state) => {
+      let fail = true
+      const archives = new HistoryArchives(state.storage, (id, node) => {
+        state.storage.sql.exec('INSERT INTO pi_registry_search_fts VALUES(?,?,?,?,?)', id, node.id, node.role, node.time.raw, 'operitrollbacktoken')
+        if (fail) throw new Error('fictional index failure')
+      })
+      const { conversation, nodes } = operit()
+      const pending = await archives.start({ conversation })
+      await archives.append(pending.importId, { batch: 0, nodes })
+      expect(() => archives.commit(pending.importId, { batches: 1 })).toThrow('fictional index failure')
+      expect(archives.settings()).toEqual(operitFixture.settingsBefore)
+      expect(archives.list('', 20).archives).toEqual([])
+      expect(await instance.searchSessions({ query: 'operitrollbacktoken' })).toEqual([])
+      expect(archives.getStatus(pending.importId).state).toBe('staging')
+      fail = false
+      expect(archives.commit(pending.importId, { batches: 1 })).toMatchObject({ state: 'committed', added: 3 })
+      expect(archives.settings()).toEqual(operitFixture.settingsAfter)
+    })
+  })
+
+  it('accepts controlled JSON diagnostics and source-specific basenames without leaking values', async () => {
+    const { safeDiagnostic } = await import('./history-import-api')
+    const event = diagnosticFixtures.at(-1)!
+    expect((await request('history-import/diagnostics', 'POST', event)).status).toBe(200)
+    expect(await safeDiagnostic(event, 'fictional-issue')).toMatchObject({ filename: 'fictional-operit.json', member: 'operit.json', location: event.location })
+    for (const filename of ['../聊天备份.json', '聊天\u202e备份.json', '聊天备份\ufe0f.json']) expect(await safeDiagnostic({ ...event, filename }, 'fictional-issue')).toHaveProperty('filename', '聊天备份.json')
+    for (const filename of ['export.zip', 'sk-sensitive.json', 'ｓｋ-sensitive.json', 's\u200bk-sensitive.json', 'backup.json.exe']) expect(await safeDiagnostic({ ...event, filename }, 'fictional-issue')).not.toHaveProperty('filename')
+    expect(await safeDiagnostic({ ...diagnosticFixtures[0], filename: 'export.json' }, 'fictional-issue')).not.toHaveProperty('filename')
+    for (const path of [['chats', 0, 'characterCardName', 'private-role-name'], ['workspace'], ['provider'], ['apiKey'], Array(13).fill('messages')]) expect((await request('history-import/diagnostics', 'POST', { ...event, location: { kind: 'json', path } })).status).toBe(400)
   })
 })

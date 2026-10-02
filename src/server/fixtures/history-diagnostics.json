@@ -2,5 +2,6 @@
   {"source":"deepseek","stage":"parse","code":"unsupported-part","member":"conversations.json","location":{"kind":"json","path":[0,"mapping","*","message","fragments",2,"type"]}},
   {"source":"rikka","stage":"parse","code":"invalid-format","member":"rikka_hub.db","location":{"kind":"db","table":"message_node","column":"messages","row":4,"path":[1,"parts",2,"type"]}},
   {"source":"rikka","stage":"preflight","code":"role-missing","member":"settings.json","filename":"聊天备份.zip"},
-  {"source":"rikka","stage":"normalize","code":"invalid-format","member":"rikka_hub.db","location":{"kind":"db","table":"ConversationEntity","column":"assistant_id","row":3}}
+  {"source":"rikka","stage":"normalize","code":"invalid-format","member":"rikka_hub.db","location":{"kind":"db","table":"ConversationEntity","column":"assistant_id","row":3}},
+  {"source":"operit","stage":"normalize","code":"invalid-data","filename":"fictional-operit.json","member":"operit.json","location":{"kind":"json","path":["chats",0,"messages",1,"variants",0,"variantIndex"]},"sourceId":"fictional-operit-child"}
 ]

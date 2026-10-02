@@ -3,7 +3,7 @@ import type { TSchema, Static } from 'typebox'
 import {
   HISTORY_LIMITS as L, HistoryStartSchema, HistoryAppendSchema, HistoryCommitSchema,
   type HistoryConversation, type HistoryNode, type HistoryImportStatus, type ArchiveSummary, type ArchiveNode,
-  type HistoryErrorCode,
+  type HistoryErrorCode, type HistoryImportSettings,
 } from '../shared/history-import'
 
 type StageRow = { id: string; archive_id: string; metadata: string; state: 'staging' | 'committed'; next_batch: number; node_count: number; bytes: number; expires: number; added: number | null }
@@ -36,8 +36,16 @@ function sourceTime(time: HistoryNode['time']): void {
     if (!/T.*(?:Z|[+-]\d\d:\d\d)$/.test(time.raw) || (time.interpretation === 'utc' && !time.raw.endsWith('Z')) || !Number.isFinite(Date.parse(time.raw)) || time.epochMs !== Date.parse(time.raw)) throw new HistoryFailure('invalid-data')
   }
 }
-function validateConversation(c: HistoryConversation): void {
-  if ((c.source === 'rikka') !== Boolean(c.assistant)) throw new HistoryFailure('invalid-data')
+async function validateConversation(c: HistoryConversation): Promise<void> {
+  if ((c.source !== 'deepseek') !== Boolean(c.assistant) || (c.source !== 'operit' && c.sourceParentConversationId !== undefined)) throw new HistoryFailure('invalid-data')
+  if (c.source === 'operit') {
+    const { id, name } = c.assistant!
+    // Unicode mode matches lone surrogates, while valid surrogate pairs are single code points.
+    if (/[\uD800-\uDFFF]/u.test(name)) throw new HistoryFailure('invalid-data')
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(name)))
+    const expected = name === '' ? 'none' : `card:${Array.from(digest, b => b.toString(16).padStart(2, '0')).join('')}`
+    if (id !== expected) throw new HistoryFailure('invalid-data')
+  }
   sourceTime(c.createdAt); sourceTime(c.updatedAt)
 }
 export function piMessage(node: HistoryNode): ArchiveNode['message'] {
@@ -58,6 +66,7 @@ export class HistoryArchives {
       CREATE TABLE IF NOT EXISTS history_staging(id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, metadata TEXT NOT NULL, state TEXT NOT NULL, next_batch INTEGER NOT NULL, node_count INTEGER NOT NULL, bytes INTEGER NOT NULL, expires INTEGER NOT NULL, added INTEGER);
       CREATE TABLE IF NOT EXISTS history_staged_nodes(import_id TEXT NOT NULL, node_id TEXT NOT NULL, seq INTEGER NOT NULL, data TEXT NOT NULL, immutable TEXT NOT NULL, PRIMARY KEY(import_id,node_id));
       CREATE TABLE IF NOT EXISTS history_batches(import_id TEXT NOT NULL, batch INTEGER NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY(import_id,batch));
+      CREATE TABLE IF NOT EXISTS history_operit_role(id INTEGER PRIMARY KEY CHECK(id=1), assistant_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS history_role(id INTEGER PRIMARY KEY CHECK(id=1), assistant_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS history_diagnostic_rate(id INTEGER PRIMARY KEY CHECK(id=1), minute INTEGER NOT NULL, count INTEGER NOT NULL);
     `)
@@ -75,9 +84,9 @@ export class HistoryArchives {
   private status(row: StageRow): HistoryImportStatus {
     return { importId: row.id, archiveId: row.archive_id, state: row.state, nextBatch: row.next_batch, nodeCount: row.node_count, bytes: row.bytes, expiresAt: row.expires, ...(row.added === null ? {} : { added: row.added }) }
   }
-  start(input: unknown): HistoryImportStatus {
+  async start(input: unknown): Promise<HistoryImportStatus> {
     const { conversation } = check(HistoryStartSchema, input)
-    validateConversation(conversation)
+    await validateConversation(conversation)
     return this.storage.transactionSync(() => {
       this.cleanup()
       const key = stable([conversation.source, conversation.assistant?.id ?? null, conversation.conversationId])
@@ -95,8 +104,8 @@ export class HistoryArchives {
       return this.status(this.stage(id))
     })
   }
-  settings(): { rikkaAssistantId: string | null } {
-    return { rikkaAssistantId: this.storage.sql.exec<{ assistant_id: string }>('SELECT assistant_id FROM history_role WHERE id=1').toArray()[0]?.assistant_id ?? null }
+  settings(): HistoryImportSettings {
+    return { operitAssistantId: this.storage.sql.exec<{ assistant_id: string }>('SELECT assistant_id FROM history_operit_role WHERE id=1').toArray()[0]?.assistant_id ?? null, rikkaAssistantId: this.storage.sql.exec<{ assistant_id: string }>('SELECT assistant_id FROM history_role WHERE id=1').toArray()[0]?.assistant_id ?? null }
   }
   getStatus(id: string): HistoryImportStatus { return this.status(this.stage(id)) }
   async append(id: string, input: unknown): Promise<HistoryImportStatus> {
@@ -172,10 +181,11 @@ export class HistoryArchives {
         for (const item of path) visited.add(item)
       }
       if (c.selectedLeafId !== null && (!graph.has(c.selectedLeafId) || [...graph.values()].includes(c.selectedLeafId))) throw new HistoryFailure('invalid-graph')
-      if (c.source === 'rikka') {
-        const bound = this.storage.sql.exec<{ assistant_id: string }>('SELECT assistant_id FROM history_role WHERE id=1').toArray()[0]
+      if (c.source === 'rikka' || c.source === 'operit') {
+        const table = c.source === 'operit' ? 'history_operit_role' : 'history_role'
+        const bound = this.storage.sql.exec<{ assistant_id: string }>(`SELECT assistant_id FROM ${table} WHERE id=1`).toArray()[0]
         if (bound && bound.assistant_id !== c.assistant!.id) throw new HistoryFailure('role-mismatch', 409)
-        this.storage.sql.exec('INSERT OR IGNORE INTO history_role VALUES(1,?)', c.assistant!.id)
+        this.storage.sql.exec(`INSERT OR IGNORE INTO ${table} VALUES(1,?)`, c.assistant!.id)
       }
       this.storage.sql.exec('INSERT INTO history_archives VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata,node_count=excluded.node_count', archiveId, key, row.metadata, graph.size)
       let seq = existing?.node_count ?? 0, added = 0

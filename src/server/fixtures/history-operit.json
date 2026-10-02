@@ -1,0 +1,106 @@
+{
+  "conversation": {
+    "source": "operit",
+    "conversationId": "fictional-operit-child",
+    "title": "Lantern garden",
+    "createdAt": {
+      "raw": "2026-09-01T12:00:00",
+      "interpretation": "local-unknown"
+    },
+    "updatedAt": {
+      "raw": "2026-09-01T12:03:00",
+      "interpretation": "local-unknown"
+    },
+    "selectedLeafId": "node:1788249660000:1",
+    "assistant": {
+      "id": "card:9de7d7855eb5e9d294edf7300c1b72fdd4561b0fabb28e0f54becdbf365f501c",
+      "name": "灯园向导 🌙"
+    },
+    "sourceParentConversationId": "fictional-missing-parent"
+  },
+  "nodes": [
+    {
+      "id": "node:1788249600000:0",
+      "messageId": "message:1788249600000",
+      "parentId": null,
+      "alternativeGroupId": null,
+      "sourceOrder": 0,
+      "selected": true,
+      "speaker": "Garden visitor",
+      "role": "user",
+      "time": {
+        "raw": "2026-09-01T12:00:00",
+        "interpretation": "local-unknown"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "Where does the moonflower grow?"
+        },
+        {
+          "type": "attachment",
+          "name": "garden.png",
+          "reference": "attachment:fictional-image",
+          "status": "not-in-export"
+        }
+      ]
+    },
+    {
+      "id": "node:1788249660000:0",
+      "messageId": "message:1788249660000",
+      "parentId": "node:1788249600000:0",
+      "alternativeGroupId": "message:1788249660000",
+      "sourceOrder": 1,
+      "selected": false,
+      "speaker": "灯园向导 🌙",
+      "role": "assistant",
+      "time": {
+        "raw": "2026-09-01T12:01:00",
+        "interpretation": "local-unknown"
+      },
+      "parts": [
+        {
+          "type": "thought",
+          "text": "operitthoughtquartz"
+        },
+        {
+          "type": "text",
+          "text": "Operit moonfloweroriginal beside the lantern."
+        },
+        {
+          "type": "historical-tool",
+          "name": "garden_lookup",
+          "text": "Archived lookup result; inert."
+        }
+      ]
+    },
+    {
+      "id": "node:1788249660000:1",
+      "messageId": "message:1788249660000",
+      "parentId": "node:1788249600000:0",
+      "alternativeGroupId": "message:1788249660000",
+      "sourceOrder": 1,
+      "selected": true,
+      "speaker": "灯园向导 🌙",
+      "role": "assistant",
+      "time": {
+        "raw": "2026-09-01T12:03:00",
+        "interpretation": "local-unknown"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "Operit heliotropevariant beside the pond."
+        }
+      ]
+    }
+  ],
+  "settingsBefore": {
+    "rikkaAssistantId": null,
+    "operitAssistantId": null
+  },
+  "settingsAfter": {
+    "rikkaAssistantId": null,
+    "operitAssistantId": "card:9de7d7855eb5e9d294edf7300c1b72fdd4561b0fabb28e0f54becdbf365f501c"
+  }
+}

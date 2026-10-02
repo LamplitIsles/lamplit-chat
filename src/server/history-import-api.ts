@@ -28,9 +28,10 @@ export async function hashSourceId(sourceId: string): Promise<string> {
 export async function safeDiagnostic(input: unknown, issueId: string): Promise<Record<string, unknown>> {
   const event = check(HistoryDiagnosticSchema, input)
   const { sourceId, filename, issueId: existingIssueId, ...safe } = event
-  // Keep only a basename with a ZIP suffix, never paths, control characters or key-shaped names.
+  // Keep only a basename with a source-specific archive suffix, never paths, control characters or key-shaped names.
   const basename = filename?.normalize('NFKC').split(/[\\/]/).at(-1)?.replace(/[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '')
-  const validFilename = basename && /^[\p{L}\p{N}][\p{L}\p{N}\p{M}_. -]{0,115}\.zip$/iu.test(basename) && !/(?:sk-|gh[pousr]_|AKIA|key|token|secret|password)/i.test(basename)
+  const suffix = event.source === 'operit' ? /\.json$/i : /\.zip$/i
+  const validFilename = basename && suffix.test(basename) && /^[\p{L}\p{N}][\p{L}\p{N}\p{M}_. -]{0,115}\.(?:zip|json)$/iu.test(basename) && !/(?:sk-|gh[pousr]_|AKIA|key|token|secret|password)/i.test(basename)
   const sourceIdHash = sourceId ? await hashSourceId(sourceId) : undefined
   return { event: 'history-import', issueId: existingIssueId ?? issueId, ...safe, ...(validFilename ? { filename: basename } : {}), ...(sourceIdHash ? { sourceIdHash } : {}) }
 }

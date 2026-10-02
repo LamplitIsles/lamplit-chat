@@ -215,7 +215,7 @@ export class PiRegistry extends HostedAgent {
       let body: unknown
       switch (action) {
         case 'settings': body = this.history.settings(); break
-        case 'start': body = this.history.start(params.input); break
+        case 'start': body = await this.history.start(params.input); break
         case 'append': body = await this.history.append(id, params.input); break
         case 'commit': body = this.history.commit(id, params.input); break
         case 'status': body = this.history.getStatus(id); break

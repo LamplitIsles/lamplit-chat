@@ -21,3 +21,12 @@ installation, credentials or user data is required to run it.
 Use each file's `conversation` as the start request and `nodes` as append batch 0; commit with `{batches:1}`. Full contract and isolated test-service setup: [docs/history-import.md](../../../docs/history-import.md).
 
 `history-diagnostics.json` contains fictional diagnostic events using real export member spellings, wildcarded DeepSeek fragment paths, Rikka `message_node.messages` alternative/part positions, a conversation table/column locator, and a harmless Unicode ZIP basename. No source mapping IDs, content values or settings secrets are logged.
+
+
+## Android Operit normalized fixture (Spec #3084)
+
+`history-operit.json` is a complete fictional normalized API example, not native source JSON. Its Unicode role uses `card:` plus SHA-256 of the exact UTF-8 name; `settingsBefore` and `settingsAfter` are expected GET responses, not fields to upload. The two answer nodes preserve original variant 0 and selected variant 1 with a shared message/group/parent, ordered parts, source speakers and timezone-unknown local times. The external parent is deliberately absent. Tools and attachments are inert explanations; no resources are recovered or fetched.
+
+For no-card tests use `{id:"none",name:""}`. A real card named “无角色卡” must instead use `card:` plus its UTF-8 SHA-256; it cannot share the no-card archive namespace. Case, whitespace and Unicode spelling are exact and bounded to the existing label limit. Test coverage derives these fictional groups, rejected identities, concurrent bindings and rollback from this fixture.
+
+Authority: Android Operit v1.12.2 commit `dbf71916fae9750cfdc9f9a774f5a0fee56633fb`, first-party `OperitChatArchive.kt` and `ChatHistoryManager.kt` (model/writer links in the API docs). Native `operit_chat_archive` format 2 and writer base/variant semantics were reviewed from source; runtime serialization on a device was not tested. Platform #3085 owns native parser fixtures, tags/timestamps and resource limits. Backend fixtures must not be described as actual Android exports. `history-diagnostics.json` additionally demonstrates the controlled `operit.json` logical member and JSON field/ordinal locator without role/content/settings values.
