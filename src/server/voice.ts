@@ -1,11 +1,11 @@
-import { MAX_VOICE_PCM_BYTES, MAX_VOICE_FRAME_BYTES, VOICE_TRANSCRIPT_MAX_CHARS } from '../../frontend/src/lib/companion/voice-contract'
+import { VOICE_CAPABILITY_PATH, VOICE_SAMPLE_RATE, MAX_VOICE_DURATION_MS, MAX_VOICE_EVENT_BYTES, VOICE_TRANSCRIPT_MAX_CHARS, parseVoiceControl, validateVoiceFrameBytes, validateVoiceServerEvent, type VoiceServerEvent, type VoiceErrorCode } from '@lamplit/contracts/voice'
 import { boundedRequest, isOperationAborted, isRequestTimeout, readResponseText } from './web-request'
 
 export type VoiceEnvironment = Pick<Env, 'HOSTED_MODE' | 'PLATFORM_ORIGIN' | 'CHAT_INTERNAL_SECRET' | 'VOICE_API_KEY'> & { PLATFORM?: Pick<Fetcher, 'fetch'> }
 export const VOICE_PROVIDER_URL = 'https://dashscope.aliyuncs.com/api-ws/v1/inference'
 export const VOICE_MODEL = 'qwen-audio-3.1-asr-flash-streaming'
 class VoiceError extends Error {
-  constructor(readonly code: string) { super(code) }
+  constructor(readonly code: VoiceErrorCode) { super(code) }
 }
 const configError = () => new VoiceError('config_unavailable')
 function validKey(value: unknown): value is string {
@@ -47,7 +47,7 @@ function relay(client: WebSocket, env: VoiceEnvironment, instanceId: string | nu
   let lifetimeTimer: ReturnType<typeof setTimeout> | undefined
   let finishTimer: ReturnType<typeof setTimeout> | undefined
   const close = (socket?: WebSocket) => { try { socket?.close(1000) } catch { /* Already closed. */ } }
-  const end = (message?: unknown) => {
+  const end = (message?: VoiceServerEvent) => {
     if (terminal) return
     terminal = true
     clearTimeout(setupTimer); clearTimeout(lifetimeTimer); clearTimeout(finishTimer)
@@ -56,7 +56,7 @@ function relay(client: WebSocket, env: VoiceEnvironment, instanceId: string | nu
     close(client); close(upstream)
     sentences.clear(); unfinished.clear()
   }
-  const fail = (code = 'upstream_error') => end({ type: 'error', code })
+  const fail = (code: VoiceErrorCode = 'upstream_error') => end({ type: 'error', code })
   setupTimer = setTimeout(() => fail('timeout'), 15_000)
   client.addEventListener('close', () => end())
   client.addEventListener('error', () => end())
@@ -64,9 +64,7 @@ function relay(client: WebSocket, env: VoiceEnvironment, instanceId: string | nu
     if (terminal) return
     try {
       if (typeof event.data === 'string') {
-        if (new TextEncoder().encode(event.data).length > 128) return fail('invalid_audio')
-        const command = JSON.parse(event.data)
-        if (!command || Object.keys(command).length !== 1) return fail('invalid_audio')
+        const command = parseVoiceControl(event.data)
         if (command.type === 'cancel') return fail('cancelled')
         if (command.type !== 'finish' || !ready || finishing || !bytes) return fail('invalid_audio')
         finishing = true
@@ -74,8 +72,8 @@ function relay(client: WebSocket, env: VoiceEnvironment, instanceId: string | nu
         finishTimer = setTimeout(() => fail('timeout'), 20_000)
       } else {
         const data = event.data
-        if (!(data instanceof ArrayBuffer) || !ready || finishing || !data.byteLength || data.byteLength % 2 || data.byteLength > MAX_VOICE_FRAME_BYTES || bytes + data.byteLength > MAX_VOICE_PCM_BYTES) return fail('invalid_audio')
-        bytes += data.byteLength
+        if (!(data instanceof ArrayBuffer) || !ready || finishing) return fail('invalid_audio')
+        bytes = validateVoiceFrameBytes(data.byteLength, bytes)
         upstream!.send(data)
       }
     } catch { fail('invalid_audio') }
@@ -98,7 +96,7 @@ function relay(client: WebSocket, env: VoiceEnvironment, instanceId: string | nu
       upstream.addEventListener('message', event => {
         if (terminal) return
         try {
-          if (typeof event.data !== 'string' || new TextEncoder().encode(event.data).length > 128 * 1024) return fail('transcript_invalid')
+          if (typeof event.data !== 'string' || new TextEncoder().encode(event.data).length > MAX_VOICE_EVENT_BYTES) return fail('transcript_invalid')
           const data = JSON.parse(event.data)
           if (!data?.header || data.header.task_id !== taskId || !data.payload || typeof data.payload !== 'object' || Array.isArray(data.payload)) return fail('transcript_invalid')
           switch (data.header.event) {
@@ -106,7 +104,7 @@ function relay(client: WebSocket, env: VoiceEnvironment, instanceId: string | nu
               if (ready) return fail('transcript_invalid')
               ready = true
               clearTimeout(setupTimer)
-              lifetimeTimer = setTimeout(() => fail('timeout'), 320_000)
+              lifetimeTimer = setTimeout(() => fail('timeout'), MAX_VOICE_DURATION_MS + 20_000)
               client.send(JSON.stringify({ type: 'ready' }))
               break
             case 'result-generated': {
@@ -132,7 +130,7 @@ function relay(client: WebSocket, env: VoiceEnvironment, instanceId: string | nu
             case 'task-finished': {
               if (!ready || !finishing || !sentences.size || unfinished.size) return fail('transcript_invalid')
               const text = [...sentences].sort(([a], [b]) => a - b).map(([, text]) => text).join('').trim()
-              end({ type: 'result', text })
+              end(validateVoiceServerEvent({ type: 'result', text }))
               break
             }
             case 'task-failed': return fail()
@@ -140,14 +138,14 @@ function relay(client: WebSocket, env: VoiceEnvironment, instanceId: string | nu
           }
         } catch { fail('transcript_invalid') }
       })
-      upstream.send(JSON.stringify({ header: { action: 'run-task', task_id: taskId, streaming: 'duplex' }, payload: { task_group: 'audio', task: 'asr', function: 'recognition', model: VOICE_MODEL, parameters: { format: 'pcm', sample_rate: 16000, semantic_punctuation_enabled: false, max_sentence_silence: 400 }, input: {} } }))
+      upstream.send(JSON.stringify({ header: { action: 'run-task', task_id: taskId, streaming: 'duplex' }, payload: { task_group: 'audio', task: 'asr', function: 'recognition', model: VOICE_MODEL, parameters: { format: 'pcm', sample_rate: VOICE_SAMPLE_RATE, semantic_punctuation_enabled: false, max_sentence_silence: 400 }, input: {} } }))
     } catch (error) { if (!terminal) fail(error instanceof VoiceError ? error.code : 'upstream_error') }
   })()
 }
 export async function handleVoice(request: Request, env: VoiceEnvironment, instanceId: string | null): Promise<Response> {
   const respond = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } })
   if (request.method !== 'GET') return respond({ code: 'method_not_allowed' }, 405)
-  if (new URL(request.url).pathname === '/api/voice/capability') {
+  if (new URL(request.url).pathname === VOICE_CAPABILITY_PATH) {
     try { return respond({ available: Boolean(await voiceKey(env, instanceId, request.signal)) }) }
     catch (error) { return respond({ code: error instanceof VoiceError ? error.code : 'config_unavailable' }, 503) }
   }

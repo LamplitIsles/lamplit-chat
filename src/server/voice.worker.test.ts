@@ -47,7 +47,7 @@ describe('actual authenticated workerd streaming route', () => {
     expect(new Headers(fake.provider.mock.calls[0][1]?.headers).get('authorization')).toBe('Bearer fixture-voice')
     client.socket.send(new ArrayBuffer(3200))
     await waitFor(() => expect(fake.frames).toHaveLength(2))
-    fake.sentence(1, 'intermediate', false); fake.sentence(2, 'second'); fake.sentence(1, 'first '); fake.sentence(1, 'first ')
+    fake.sentence(1, 'intermediate', false); fake.sentence(2, 'second'); fake.sentence(1, 'replaced '); fake.sentence(1, 'first ')
     fake.send('result-generated', { output: { sentence: { heartbeat: true, sentence_id: 0 } } })
     client.socket.send(new ArrayBuffer(100)); client.socket.send('{"type":"finish"}')
     await waitFor(() => expect(fake.frames).toHaveLength(4))
@@ -135,6 +135,29 @@ describe('actual authenticated workerd streaming route', () => {
       await waitFor(() => expect(client.messages.at(-1)?.code).toBe(mode === 'close' || mode === 'failed' ? 'upstream_error' : 'transcript_invalid'))
       expect(JSON.stringify(client.messages)).not.toContain('fixture-voice'); fake.provider.mockRestore()
     }
+  })
+  it('closes upstream on browser disconnect and accepts the exact shared frame boundary', async () => {
+    const fake = fakeProvider(); const client = await connect(); await ready(client)
+    client.socket.send(new ArrayBuffer(16384))
+    await waitFor(() => expect(fake.frames).toHaveLength(2))
+    expect((fake.frames[1] as ArrayBuffer).byteLength).toBe(16384)
+    client.socket.close(1000)
+    await waitFor(() => expect(fake.closed()).toBe(true))
+    expect(client.messages).toEqual([{ type: 'ready' }])
+  })
+  it('rejects repeated finish and PCM after finish, and bounds Unicode finals by code point', async () => {
+    for (const input of ['{"type":"finish"}', new ArrayBuffer(2)]) {
+      const fake = fakeProvider(); const client = await connect(); await ready(client)
+      client.socket.send(new ArrayBuffer(2)); client.socket.send('{"type":"finish"}'); client.socket.send(input)
+      await waitFor(() => expect(client.messages.at(-1)?.code).toBe('invalid_audio'))
+      await waitFor(() => expect(fake.closed()).toBe(true)); fake.provider.mockRestore()
+    }
+    const fake = fakeProvider(); const client = await connect(); await ready(client)
+    client.socket.send(new ArrayBuffer(2)); client.socket.send('{"type":"finish"}')
+    await waitFor(() => expect(fake.frames).toHaveLength(3))
+    fake.sentence(1, '😀'.repeat(20000)); fake.send('task-finished')
+    await waitFor(() => expect(client.messages.at(-1)).toEqual({ type: 'result', text: '😀'.repeat(20000) }))
+    await waitFor(() => expect(fake.closed()).toBe(true))
   })
   it('returns only safe HTTP upstream errors', async () => {
     for (const [status, code] of [[401, 'invalid_key'], [403, 'invalid_key'], [429, 'rate_limited'], [500, 'upstream_error'], [302, 'upstream_error']] as const) {

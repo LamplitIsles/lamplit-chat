@@ -22,3 +22,9 @@ src/server/web-search-providers.ts and src/server/web-request.ts are adapted
 from guionai/web (https://github.com/guionai/web), Apache License 2.0.
 Modified for selected-provider-only execution, Worker settings and bounded errors.
 The retained license is LICENSES/guionai-web-Apache-2.0.txt.
+
+The shared browser voice-boundary integration consumes @lamplit/contracts/voice
+from LamplitIsles/lamplit-app, Apache-2.0, verified at
+ebbf0c90aa343e9966510385d5c74d71166266a5 (spec #3043).
+Its package retains its own LICENSE. The original Lamplit Chat capture/relay
+remains in this repository; no additional third-party capture source was copied.

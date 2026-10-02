@@ -1,3 +1,4 @@
+import { VOICE_CAPABILITY_PATH, VOICE_STREAM_PATH } from '@lamplit/contracts/voice'
 import { handleVoice } from './server/voice'
 import { handleSearchTest } from './server/web-tools'
 import { handleCompanionMaterials } from './server/companion-materials-api'
@@ -28,8 +29,17 @@ export default {
       headers.set('set-cookie', auth.setCookie)
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
     }
+    if (new URL(request.url).pathname === '/api/chat/socket') {
+      const url = new URL(request.url)
+      if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return new Response('WebSocket required', { status: 426 })
+      if (request.headers.get('origin') && request.headers.get('origin') !== url.origin) return new Response('Forbidden', { status: 403 })
+      const registry = env.PiRegistry.getByName(instanceId ?? 'singleton') as DurableObjectStub<import('./server/pi-registry').PiRegistry>
+      const sessionId = hosted ? (await registry.ensureDefaultSession()).id : env.COMPANION_SESSION_ID || (await registry.ensureDefaultSession()).id
+      const stub = env.PiSession.getByName(instanceId ? `${instanceId}:${sessionId}` : sessionId)
+      return stub.fetch(request)
+    }
     if (new URL(request.url).pathname === '/api/web-search/test') return respond(await handleSearchTest(request, env, instanceId))
-    if (['/api/voice/capability', '/api/voice/stream'].includes(new URL(request.url).pathname)) return respond(await handleVoice(request, env, instanceId))
+    if ([VOICE_CAPABILITY_PATH, VOICE_STREAM_PATH].includes(new URL(request.url).pathname)) return respond(await handleVoice(request, env, instanceId))
     const materialResponse = await handleCompanionMaterials(request, env, instanceId)
     if (materialResponse) return respond(materialResponse)
     const historyResponse = await handleHistory(request, env, instanceId)
@@ -104,6 +114,11 @@ export default {
       } else return new Response('Not found', { status: 404 })
       url.pathname = parts.join('/')
       request = new Request(url, request)
+    }
+    if (new URL(request.url).pathname === '/slice' || new URL(request.url).pathname.startsWith('/slice/')) {
+      const assetUrl = new URL(request.url)
+      assetUrl.pathname = assetUrl.pathname.slice('/slice'.length) || '/'
+      return respond(await env.ASSETS.fetch(new Request(assetUrl, request)))
     }
     const agentResponse = await routeAgentRequest(request, env, { prefix: PI_AGENT_PREFIX })
     return respond(agentResponse ?? await env.ASSETS.fetch(request))

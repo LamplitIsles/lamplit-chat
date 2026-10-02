@@ -3,14 +3,22 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const directory = mkdtempSync(join(tmpdir(), 'lamplit-voice-'))
 const platformService = process.argv.find(arg => arg.startsWith('--platform-service='))?.split('=')[1]
+const sharedBrowser = process.argv.includes('--shared-browser')
 const config = JSON.parse(readFileSync(join(repo, 'wrangler.test.jsonc'), 'utf8'))
 const port = process.env.VOICE_FIXTURE_PORT || '8898'
 config.name = process.env.VOICE_FIXTURE_NAME || 'lamplit-chat-voice-fixture'
 config.vars = { ...config.vars, MODEL_API_KEY: 'fixture-key', AUTH_PASSWORD: 'fixture-password-long-enough', HOSTED_MODE: 'true', CHAT_INTERNAL_SECRET: 'fixture-voice-internal-secret' }
+if (sharedBrowser) {
+  const artifact = join(repo, '../lamplit-app/.scratch/streaming-voice-input/artifacts/lamplit-web-voice.tgz')
+  execFileSync('tar', ['-xzf', artifact, '-C', directory])
+  config.assets = { directory: join(directory, 'build'), binding: 'ASSETS', not_found_handling: 'single-page-application', run_worker_first: true }
+  config.vars.HOSTED_MODE = 'false'
+  config.vars.VOICE_API_KEY = 'fixture-voice-key'
+}
 if (platformService) config.services = [{ binding: 'PLATFORM', service: platformService }]
 config.main = join(directory, 'entry.ts')
 writeFileSync(config.main, `
@@ -18,6 +26,10 @@ import worker from ${JSON.stringify(join(repo, 'src/server.ts'))};
 export { PiSession, PiRegistry } from ${JSON.stringify(join(repo, 'src/server-test-entry.ts'))};
 let state = { enabled: true, apiKey: 'fixture-voice-key', text: '明天我们一起去散步吧。', status: 200, delayMs: 0, startDelayMs: 0, calls: 0, frames: 0, bytes: 0, events: [], closes: 0, lastAuthorization: '', lastRequest: null };
 globalThis.fetch = async (url, init) => {
+  if (String(url).startsWith('https://example.invalid/')) {
+    state.modelCalls = (state.modelCalls ?? 0) + 1;
+    return new Response('data: {"id":"fixture","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[{"index":0,"delta":{"role":"assistant","content":"Complete Pi reply"},"finish_reason":null}]}\\n\\ndata: {"id":"fixture","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\\n\\ndata: [DONE]\\n\\n', { headers: { 'content-type': 'text/event-stream' } });
+  }
   if (String(url) !== 'https://dashscope.aliyuncs.com/api-ws/v1/inference') throw new Error('Fixture forbids external network');
   state.calls++;
   state.lastAuthorization = new Headers(init?.headers).get('authorization');
@@ -51,7 +63,7 @@ export default { async fetch(request, env) {
     const id = new URL(url).pathname.split('/').pop();
     return id === '11111111-1111-4111-8111-111111111111' ? Response.json({ enabled: state.enabled, apiKey: state.apiKey }) : id === '22222222-2222-4222-8222-222222222222' ? Response.json({ enabled: false }) : new Response(null, { status: 404 });
   } };
-  return worker.fetch(request, { ...env, PLATFORM: env.PLATFORM ?? platform });
+  return worker.fetch(request, { ...env, ...(env.HOSTED_MODE === 'false' ? { VOICE_API_KEY: state.enabled ? state.apiKey : '' } : {}), PLATFORM: env.PLATFORM ?? platform });
 } };
 `)
 const configPath = join(directory, 'wrangler.jsonc')

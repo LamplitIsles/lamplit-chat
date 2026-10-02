@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lamplit-app-slice",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-09-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "../lamplit-app/apps/web/build",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true
+  },
+  "vars": {
+    "AI_MODEL": "replace-with-your-model-id",
+    "AI_MEMORY_MODEL": "replace-with-your-model-id",
+    "MODEL_BASE_URL": "https://api.openai.com/v1",
+    "MODEL_CONTEXT_WINDOW": "128000",
+    "MODEL_MAX_TOKENS": "4096",
+    "PI_SYSTEM_PROMPT": "",
+    "COMPANION_SESSION_ID": ""
+  },
+  "secrets": { "required": ["MODEL_API_KEY", "AUTH_PASSWORD"] },
+  "durable_objects": {
+    "bindings": [
+      { "name": "PiSession", "class_name": "PiSession" },
+      { "name": "PiRegistry", "class_name": "PiRegistry" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PiSession"] },
+    { "tag": "v2", "new_sqlite_classes": ["PiRegistry"] }
+  ],
+  "observability": { "enabled": true }
+}

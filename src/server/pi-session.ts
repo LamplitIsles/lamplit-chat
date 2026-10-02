@@ -1,3 +1,5 @@
+import { createChatHost } from '@lamplit/contracts/server'
+import { createPiChatBackend, stopPiChatTurn, type ChatAdmission } from './chat-adapter'
 import { createWakeTools } from './timed-wake-tools'
 import { makeWake } from './timed-wake'
 import { WAKE_CUSTOM_TYPE, type WakeSource, type TimedWake, type WakeInput } from '../shared/timed-wake'
@@ -10,7 +12,7 @@ import {
   type DurableObjectStorageLike,
   Workspace,
 } from '@cloudflare/computer'
-import { laneState, operationMeta, pendingEntry } from '@earendil-works/pi-agent-core/harness/session'
+import { laneState, operationMeta, operationResult, pendingEntry } from '@earendil-works/pi-agent-core/harness/session'
 import {
   DEFAULT_COMPACTION_SETTINGS,
   StorageBackedSession,
@@ -87,6 +89,66 @@ type MemoryRegistry = {
 }
 
 export class PiSession extends HostedAgent {
+  private chatHost?: Promise<Awaited<ReturnType<typeof createChatHost>>>
+  private chatConnections = new Map<string, { receive(raw: string): Promise<void>; close(): void }>()
+  shouldSendProtocolMessages(connection: Parameters<HostedAgent['onConnect']>[0], context: Parameters<HostedAgent['onConnect']>[1]): boolean {
+    return new URL(context.request.url).pathname !== '/api/chat/socket' && super.shouldSendProtocolMessages(connection, context)
+  }
+  async onConnect(connection: Parameters<HostedAgent['onConnect']>[0], context: Parameters<HostedAgent['onConnect']>[1]): Promise<void> {
+    await super.onConnect(connection, context)
+    if (new URL(context.request.url).pathname !== '/api/chat/socket') return
+    connection.setState({ ...(connection.state as { tokenHash?: string } | null), chat: true })
+    const host = await this.getChatHost()
+    const channel = host.connect(connection, async () => {
+      try { await this.verifyConnection(connection); return true } catch { return false }
+    })
+    this.chatConnections.set(connection.id, channel)
+  }
+  async onMessage(connection: Parameters<HostedAgent['onMessage']>[0], message: Parameters<HostedAgent['onMessage']>[1]): Promise<void> {
+    if ((connection.state as { chat?: boolean } | null)?.chat) {
+      const channel = this.chatConnections.get(connection.id)
+      if (!channel || typeof message !== 'string') { connection.close(1012, 'Reconnect'); return }
+      await channel.receive(message)
+    } else await super.onMessage(connection, message)
+  }
+  async onClose(connection: Parameters<HostedAgent['onClose']>[0], code: number, reason: string, wasClean: boolean): Promise<void> {
+    this.chatConnections.get(connection.id)?.close(); this.chatConnections.delete(connection.id)
+    if (!this.chatConnections.size && this.chatHost) { const pending = this.chatHost; const host = await pending; if (!this.chatConnections.size && this.chatHost === pending) { host.close(); this.chatHost = undefined } }
+    await super.onClose(connection, code, reason, wasClean)
+  }
+  private getChatHost() {
+    return this.chatHost ??= createChatHost(createPiChatBackend({
+      branch: () => this.getBranch(),
+      identity: async () => {
+        await this.waitUntilInitialized()
+        const metadata = this.sessionStorage.getMetadataSync()
+        const lane = this.sessionStorage.getValueSync(laneState('main'))?.value
+        return { id: metadata.id, name: await this.session.getName(BACKGROUND_CONTEXT) ?? 'Lamplit', turnId: lane?.currentOperationId ?? null }
+      },
+      records: () => this.ctx.storage.list<ChatAdmission>({ prefix: 'chat-submission:' }).then(rows => new Map([...rows].map(([key, value]) => [key.slice('chat-submission:'.length), value]))),
+      record: (id, value) => this.ctx.storage.put(`chat-submission:${id}`, value),
+      prompt: input => new Promise<void>(resolve => {
+        const stream = { send: (value: unknown) => { if (value && typeof value === 'object' && 'type' in value && (value.type === 'accepted' || value.type === 'error')) resolve(); return true }, end: () => { resolve(); return true } }
+        this.ctx.waitUntil(this.prompt(stream, { operationId: input.operationId, prompt: input.text }).catch(error => { console.error('Chat prompt failed', error); resolve() }).finally(resolve))
+      }),
+      steer: async input => { await this.submitSteer({ submissionId: input.operationId, prompt: input.text }) },
+      promptReceipt: id => this.getPromptAdmission(id), steerReceipt: id => this.getSteerAdmission(id),
+      unconsumed: entryId => !this.sessionStorage.getEntrySync(entryId) && !this.sessionStorage.getValueSync(pendingEntry(entryId)),
+      outcomes: async () => {
+        const state = this.sessionStorage.getValueSync(laneState('main'))?.value
+        const records = await this.ctx.storage.list<ChatAdmission>({ prefix: 'chat-submission:' })
+        const ids = new Set([...records.values()].flatMap(record => record.turnId ? [record.turnId] : []))
+        if (state?.lastOperationId) ids.add(state.lastOperationId)
+        const results = await Promise.all([...ids].map(id => this.session.getValue(operationResult(id), BACKGROUND_CONTEXT)))
+        return results.flatMap(stored => {
+          const result = stored?.value
+          if (!result || result.kind !== 'run') return []
+          return [{ id: `turn:${result.operationId}:status`, role: 'notice' as const, text: result.status === 'completed' ? '回复完成' : result.status === 'aborted' ? '已停止回复' : '回复失败', createdAt: result.endedAt, operationId: null, turnId: result.operationId }]
+        })
+      },
+      stop: async turnId => stopPiChatTurn(await this.getLane(), turnId),
+    }))
+  }
   revokePersonalSession(tokenHash: string): void {
     this.closeSessionConnections(tokenHash)
   }
@@ -125,6 +187,7 @@ export class PiSession extends HostedAgent {
   }) as ComputerWorkspace
 
   async onStart(): Promise<void> {
+    for (const connection of this.getConnections()) if ((connection.state as { chat?: boolean } | null)?.chat) connection.close(1012, 'Reconnect')
     if (!this.sessionStorage.isInitialized() || this.active) return
     this.ctx.waitUntil(this.serializeWake(() => this.ensureWakeSchedules()))
     const durableState = this.sessionStorage.getValueSync(laneState('main'))?.value
@@ -505,7 +568,7 @@ export class PiSession extends HostedAgent {
   }
 
   @hostedCallable({ streaming: true })
-  async prompt(stream: StreamingResponse, input: { operationId: string; prompt: string; photoIds?: string[] }): Promise<void> {
+  async prompt(stream: Pick<StreamingResponse, 'send' | 'end'>, input: { operationId: string; prompt: string; photoIds?: string[] }): Promise<void> {
     const modelEnv = await this.modelEnvironment()
     if (!modelEnv.MODEL_API_KEY || !modelEnv.MODEL_BASE_URL || !modelEnv.AI_MODEL) throw new Error('Model is not configured.')
     if (this.harnessModelConfig !== modelConfigKey(modelEnv)) this.harness = undefined

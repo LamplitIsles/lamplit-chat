@@ -24,6 +24,11 @@ export class HostedAgent extends Agent<Env> {
     if (this.env.HOSTED_MODE !== 'true') return
     const connection = getCurrentAgent().connection
     if (!connection) return
+    await this.verifyConnection(connection)
+  }
+
+  async verifyConnection(connection: Parameters<Agent<Env>['onConnect']>[0]): Promise<void> {
+    if (this.env.HOSTED_MODE !== 'true') return
     const tokenHash = (connection.state as HostedConnectionState | null)?.tokenHash
     const instanceId = this.name.split(':')[0]
     if (!tokenHash || !this.env.PLATFORM || !this.env.CHAT_INTERNAL_SECRET || !/^[0-9a-f-]{36}$/.test(instanceId)) throw new Error('Session is invalid')
