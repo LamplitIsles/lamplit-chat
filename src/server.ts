@@ -1,4 +1,5 @@
 import { VOICE_CAPABILITY_PATH, VOICE_STREAM_PATH } from '@lamplit/contracts/voice'
+import { handleChatImages } from './server/chat-images-api'
 import { handleVoice } from './server/voice'
 import { handleSearchTest } from './server/web-tools'
 import { handleCompanionMaterials } from './server/companion-materials-api'
@@ -29,6 +30,8 @@ export default {
       headers.set('set-cookie', auth.setCookie)
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
     }
+    const imageResponse = await handleChatImages(request, env, instanceId)
+    if (imageResponse) return respond(imageResponse)
     if (new URL(request.url).pathname === '/api/chat/socket') {
       const url = new URL(request.url)
       if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return new Response('WebSocket required', { status: 426 })

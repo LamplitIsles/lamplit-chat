@@ -225,3 +225,18 @@ with the reviewed adjacent app handoff for an isolated actual-workerd host on
 port 8951. The guide includes native seeding and read-only browser verification at
 390/1280 with synthetic model/ASR responses. The existing native frontend remains
 available pending full shared-app parity.
+
+## Shared images and input recovery
+
+The shared app now uses authenticated `/api/chat/images`, `/api/chat/media` and
+`/api/chat/socket` with Pi's existing operation-owned R2 variants and native
+prompt/steer admission. Image-only messages, ordered image history, album provenance
+and eligible native-origin failed input are projected from native storage. Edited
+resends upload under a fresh operation; consumed/replaced sources cannot replay.
+Uncertain delivery remains visible and never automatically resubmits. Image intake
+availability follows the existing R2 binding, while text/voice remain usable.
+
+See [the public/native contract and frozen actual-host acceptance recipe](docs/image-send-recovery.md)
+for limits, owner/session authorization, retry/replacement identity and isolated
+workerd checks. The native frontend remains available. The local fixture uses
+port 8973 and fresh test-owned state; its control route is never production routing.

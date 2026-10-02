@@ -1,7 +1,9 @@
 import { createPiPanelBackend, PanelCursors } from './companion-panels'
+import { PI_IMAGE_LIMITS, imageRef, checkUpload, nativePhotoId } from './chat-images'
+import { validateSubmission, validateRecovery, type Submission, type InputRecovery, type ImageUpload, type ImageRef } from '@lamplit/contracts'
 import { PANEL_LIMITS, type AlbumPage } from '@lamplit/contracts'
 import { createChatHost } from '@lamplit/contracts/server'
-import { createPiChatBackend, stopPiChatTurn, type ChatAdmission } from './chat-adapter'
+import { createPiChatBackend, stopPiChatTurn } from './chat-adapter'
 import { createWakeTools } from './timed-wake-tools'
 import { makeWake } from './timed-wake'
 import { WAKE_CUSTOM_TYPE, type WakeSource, type TimedWake, type WakeInput } from '../shared/timed-wake'
@@ -57,6 +59,8 @@ import { PI_REGISTRY_INSTANCE } from '../shared/pi-contract'
 import { createSessionSearchTool, createWorkspaceTools } from './workspace-tools'
 import type { ComputerWorkspace } from './computer-workspace'
 import { WORKSPACE_ROOT, workspacePath } from './workspace-root'
+
+export type ChatImageOwner = { sessionId: string; instanceId: string | null; tokenHash: string | null }
 
 type InitializeMetadata = Pick<SessionSummary, 'id' | 'createdAt' | 'updatedAt' | 'lineage'> & { name?: string }
 type SessionExport = {
@@ -135,18 +139,26 @@ export class PiSession extends HostedAgent {
         const lane = this.sessionStorage.getValueSync(laneState('main'))?.value
         return { id: metadata.id, name: await this.session.getName(BACKGROUND_CONTEXT) ?? 'Lamplit', turnId: lane?.currentOperationId ?? null }
       },
-      records: () => this.ctx.storage.list<ChatAdmission>({ prefix: 'chat-submission:' }).then(rows => new Map([...rows].map(([key, value]) => [key.slice('chat-submission:'.length), value]))),
-      record: (id, value) => this.ctx.storage.put(`chat-submission:${id}`, value),
-      prompt: input => new Promise<void>(resolve => {
-        const stream = { send: (value: unknown) => { if (value && typeof value === 'object' && 'type' in value && (value.type === 'accepted' || value.type === 'error')) resolve(); return true }, end: () => { resolve(); return true } }
-        this.ctx.waitUntil(this.prompt(stream, { operationId: input.operationId, prompt: input.text }).catch(error => { console.error('Chat prompt failed', error); resolve() }).finally(resolve))
+      records: async () => this.sessionStorage.chatRecords(),
+      record: async (id, value) => this.sessionStorage.recordChat(id, value),
+      images: id => this.sharedImages(this.sessionStorage.photosForEntry(id)),
+      recovery: () => this.chatRecovery(),
+      imageLimits: () => this.env.COMPUTER_R2 ? PI_IMAGE_LIMITS : false,
+      validate: input => this.validateChatInput(input),
+      rejected: async id => {
+        if (!this.sessionStorage.getPromptSubmission(id) && !this.sessionStorage.steerRecord(id)) this.sessionStorage.setChatRejected(id, true)
+      },
+      prompt: input => new Promise<void>((resolve, reject) => {
+        const stream = { send: (value: unknown) => { if (value && typeof value === 'object' && 'type' in value) { if (value.type === 'error') reject(new Error('Native admission failed')); if (value.type === 'accepted') resolve(); } return true }, end: () => { resolve(); return true } }
+        this.ctx.waitUntil(this.prompt(stream, { operationId: input.operationId, prompt: input.text, photoIds: input.images?.map(image => image.attachmentId) }).catch(reject).finally(resolve))
       }),
-      steer: async input => { await this.submitSteer({ submissionId: input.operationId, prompt: input.text }) },
+      steer: async input => { await this.submitSteer({ submissionId: input.operationId, prompt: input.text, photoIds: input.images?.map(image => image.attachmentId) }) },
       promptReceipt: id => this.getPromptAdmission(id), steerReceipt: id => this.getSteerAdmission(id),
-      unconsumed: entryId => !this.sessionStorage.getEntrySync(entryId) && !this.sessionStorage.getValueSync(pendingEntry(entryId)),
+      consumed: entryId => !!this.sessionStorage.getEntrySync(entryId),
+      unconsumed: entryId => this.sessionStorage.dropped(entryId) && !this.sessionStorage.getEntrySync(entryId),
       outcomes: async () => {
         const state = this.sessionStorage.getValueSync(laneState('main'))?.value
-        const records = await this.ctx.storage.list<ChatAdmission>({ prefix: 'chat-submission:' })
+        const records = this.sessionStorage.chatRecords()
         const ids = new Set([...records.values()].flatMap(record => record.turnId ? [record.turnId] : []))
         if (state?.lastOperationId) ids.add(state.lastOperationId)
         const results = await Promise.all([...ids].map(id => this.session.getValue(operationResult(id), BACKGROUND_CONTEXT)))
@@ -376,9 +388,12 @@ export class PiSession extends HostedAgent {
     const photos = await this.modelPhotos(input.submissionId, input.photoIds)
     if (JSON.stringify([prompt, photos]).length > PHOTO_ROW_BUDGET) throw new Error('Photo group exceeds the Pi message size limit.')
     const fingerprint = await promptFingerprint(submissionFingerprintInput(prompt, input.photoIds))
+    const lane = await this.getLane()
+    await this.verifyCurrentConnection()
+    this.sessionStorage.saveInput(input.submissionId, input.prompt, input.photoIds ?? [], 'steer')
     const record = this.sessionStorage.admitSteer(input.submissionId, fingerprint, input.photoIds ?? [])
     if (record.created) {
-      const result = await (await this.getLane()).steer({ role: 'user', content: photos.length ? [...(prompt ? [{ type: 'text' as const, text: prompt }] : []), ...photos] : prompt, timestamp: record.timestamp }, undefined, BACKGROUND_CONTEXT)
+      const result = await lane.steer({ role: 'user', content: photos.length ? [...(prompt ? [{ type: 'text' as const, text: prompt }] : []), ...photos] : prompt, timestamp: record.timestamp }, undefined, BACKGROUND_CONTEXT)
       if (!result.ok) throw result.error
       this.sessionStorage.acceptSteer(input.submissionId, result.value.entryId)
       this.sessionStorage.acceptPhotos(input.submissionId, result.value.entryId)
@@ -592,9 +607,13 @@ export class PiSession extends HostedAgent {
     const photos = await this.modelPhotos(input.operationId, input.photoIds)
     if (JSON.stringify([prompt, photos]).length > PHOTO_ROW_BUDGET) throw new Error('Photo group exceeds the Pi message size limit.')
     const fingerprint = await promptFingerprint(submissionFingerprintInput(prompt, input.photoIds))
+    const harness = await this.getHarness()
+    const lane = await this.getLane()
+    await this.verifyCurrentConnection()
     if (this.active && !this.sessionStorage.getPromptSubmission(input.operationId)) {
       throw new Error('Pi is already running in this workspace.')
     }
+    this.sessionStorage.saveInput(input.operationId, input.prompt, input.photoIds ?? [], 'prompt')
     const submission = this.sessionStorage.admitPromptSubmission(input.operationId, fingerprint, input.photoIds ?? [])
     if (!submission.created) {
       try {
@@ -613,13 +632,12 @@ export class PiSession extends HostedAgent {
     this.promptOperationId = input.operationId
     let unsubscribe: Array<() => void> = []
     try {
-      const harness = await this.getHarness()
       const eventTypes = ['message_update', 'message_end', 'tool_start', 'tool_update', 'tool_end'] as const
       unsubscribe = eventTypes.map((type) => harness.events.on(type, (event) => {
         const payload = toPiStreamEvent(event)
         if (payload) stream.send(payload)
       }))
-      await admitAndDrivePrompt(await this.getLane(), { operationId: input.operationId, prompt, images: photos }, BACKGROUND_CONTEXT, async () => {
+      await admitAndDrivePrompt(lane, { operationId: input.operationId, prompt, images: photos }, BACKGROUND_CONTEXT, async () => {
         const entryId = await exactPromptEntryId(
           input.operationId,
           async (id) => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
@@ -660,6 +678,90 @@ export class PiSession extends HostedAgent {
     )
   }
 
+  async chatRecovery(): Promise<InputRecovery[]> {
+    await this.waitUntilInitialized()
+    const records = this.sessionStorage.chatRecords()
+    const native = this.sessionStorage.nativeInputs()
+    const ids = [...new Set([...native.map(input => input.operationId), ...records.keys()])]
+    const recovery: InputRecovery[] = []
+    for (const id of ids) {
+      if (this.sessionStorage.replaced(id)) continue
+      const entryId = this.sessionStorage.inputEntry(id)
+      if (entryId && this.sessionStorage.getEntrySync(entryId)) continue
+      const record = records.get(id)
+      const input = native.find(input => input.operationId === id)
+      // A native entry or explicit pre-admission rejection is required for eligibility.
+      const state = record?.rejected ? 'rejected' : entryId && this.sessionStorage.dropped(entryId) ? 'unconsumed' : !entryId ? 'uncertain' : null
+      if (!state) continue
+      const text = record?.text ?? input?.text
+      if (text === undefined || text.length > 16_000) continue
+      const available = await this.sharedImages(this.sessionStorage.photosForOperation(id))
+      const images: ImageRef[] = (record?.images ?? input?.photos.map(photo => imageRef(photo)) ?? []).map(image => ({ ...image, availability: available.some(photo => photo.attachmentId === image.attachmentId && photo.availability === 'available') ? 'available' : 'missing' }))
+      recovery.push(validateRecovery({ sourceId: id, operationId: id, text, images, state, replacementEligible: state !== 'uncertain' && this.sessionStorage.eligible(id) }))
+    }
+    return recovery.slice(-20)
+  }
+  private async sharedImages(photos: ConversationPhoto[]): Promise<ImageRef[]> {
+    return Promise.all(photos.map(async photo => imageRef(photo, !!this.env.COMPUTER_R2 && !!await this.env.COMPUTER_R2.head(this.photoKey(photo.id, 'original')) && !!await this.env.COMPUTER_R2.head(this.photoKey(photo.id, 'preview')))))
+  }
+  private async validateChatInput(input: Submission): Promise<void> {
+    validateSubmission(input)
+    if (this.sessionStorage.nativeInputs().some(existing => existing.operationId === input.operationId) && !this.sessionStorage.chatRecords().has(input.operationId)) throw new Error('Operation belongs to native input')
+    if (input.images?.length) {
+      const photos = this.sessionStorage.photosForOperation(input.operationId)
+      if (photos.length !== input.images.length || photos.some((photo, i) => photo.id !== input.images![i]!.attachmentId || photo.name !== input.images![i]!.name || photo.mediaType !== input.images![i]!.mediaType || input.images![i]!.availability !== 'available')) throw new Error('Image operation identity conflict')
+      await this.modelPhotos(input.operationId, input.images.map(image => image.attachmentId))
+      for (const photo of photos) for (const variant of ['original', 'preview'] as const) {
+        if (!await this.env.COMPUTER_R2!.head(this.photoKey(photo.id, variant))) throw new Error('Image variant is missing')
+      }
+    } else if (this.sessionStorage.photosForOperation(input.operationId).length) throw new Error('Image operation identity conflict')
+    for (const source of input.replacementSourceIds ?? []) if (source === input.operationId || !this.sessionStorage.eligible(source)) throw new Error('Recovery source is no longer eligible')
+  }
+  // HTTP adapters pass the authenticated identity again at the durable boundary.
+  async authorizeChatImages(owner: ChatImageOwner): Promise<void> {
+    await this.waitUntilInitialized()
+    if (owner.sessionId !== this.sessionStorage.getMetadataSync().id || owner.instanceId !== this.instanceId()) throw new Error('Image owner mismatch')
+    if (this.env.HOSTED_MODE === 'true') {
+      if (!owner.tokenHash || !/^[a-f0-9]{64}$/.test(owner.tokenHash) || !this.env.PLATFORM) throw new Error('Session required')
+      const response = await this.env.PLATFORM.fetch(`${this.env.PLATFORM_ORIGIN ?? 'https://app.lamplit.run'}/internal/chat-session/${owner.tokenHash}/${owner.instanceId}`, { headers: { 'x-lamplit-internal-secret': this.env.CHAT_INTERNAL_SECRET! } })
+      if (!response.ok || !(await response.json() as { active: boolean }).active) throw new Error('Session expired')
+    }
+  }
+  async uploadChatImages(input: ImageUpload, owner: ChatImageOwner) {
+    await this.authorizeChatImages(owner)
+    checkUpload(input, owner.sessionId)
+    const prepared: PhotoUpload[] = []
+    for (const image of input.images) {
+      const photo = { ...image, id: await nativePhotoId(input.operationId, image.id), operationId: input.operationId }
+      photoBytes(photo) // Validate every native variant before allocating any photo rows.
+      prepared.push(photo)
+    }
+    const images: ImageRef[] = []
+    for (const image of prepared) {
+      await this.authorizeChatImages(owner)
+      const id = image.id
+      const photo = await this.uploadPhoto(image)
+      for (const variant of ['original', 'preview', 'model'] as const) if (!await this.env.COMPUTER_R2!.head(this.photoKey(id, variant))) throw new Error('Image variant is missing')
+      images.push(imageRef(photo))
+    }
+    await this.authorizeChatImages(owner)
+    return { sessionId: owner.sessionId, operationId: input.operationId, images }
+  }
+  async readChatImage(id: string, variant: 'original' | 'preview' | 'model', owner: ChatImageOwner) {
+    await this.authorizeChatImages(owner)
+    const photo = this.sessionStorage.photo(id)
+    if (!photo || !this.env.COMPUTER_R2) return null
+    const membership = photo.entryId && this.sessionStorage.getEntrySync(photo.entryId)
+    const operation = this.sessionStorage.chatRecords().has(photo.operationId) || this.sessionStorage.nativeInputs().some(input => input.operationId === photo.operationId)
+    if (!membership && (!operation || this.sessionStorage.replaced(photo.operationId))) return null
+    const object = await this.env.COMPUTER_R2.get(this.photoKey(id, variant))
+    const limit = variant === 'original' ? 32 * 1024 * 1024 : variant === 'preview' ? 160_000 : 320_000
+    if (!object || object.size > limit) return null
+    const bytes = new Uint8Array(await object.arrayBuffer())
+    await this.authorizeChatImages(owner)
+    return { bytes, mediaType: variant === 'original' ? photo.mediaType : 'image/jpeg' }
+  }
+
   private photoKey(id: string, variant: 'original' | 'preview' | 'model'): string {
     const instanceId = this.instanceId()
     return `${instanceId ? `instances/${instanceId}/` : ''}conversation-photos/${this.sessionStorage.getMetadataSync().id}/${id}/${variant}`
@@ -669,15 +771,7 @@ export class PiSession extends HostedAgent {
   async uploadPhoto(input: PhotoUpload): Promise<ConversationPhoto> {
     await this.waitUntilInitialized()
     if (!this.env.COMPUTER_R2) throw new Error('Photo storage is not configured.')
-    if (!UUID.test(input.operationId) || !UUID.test(input.id)) throw new Error('Invalid photo identity.')
-    if (!Number.isInteger(input.order) || input.order < 0 || input.order >= 6) throw new Error('Too many photos.')
-    if (!PHOTO_TYPES.has(input.mediaType) || input.name.length > 255) throw new Error('Unsupported photo type or name.')
-    if (input.original.length > 11_000_000 || input.preview.length > 220_000 || input.model.length > 450_000) throw new Error('Photo exceeds size limits.')
-    const original = decodeBase64(input.original)
-    const preview = decodeBase64(input.preview)
-    const model = decodeBase64(input.model)
-    if (original.byteLength > 8_000_000 || preview.byteLength > 160_000 || model.byteLength > 320_000) throw new Error('Photo exceeds size limits.')
-    if (!isPhotoBytes(original, input.mediaType) || !isPhotoBytes(preview, 'image/jpeg') || !isPhotoBytes(model, 'image/jpeg')) throw new Error('Photo bytes do not match the supported image type.')
+    const { original, preview, model } = photoBytes(input)
     const fingerprint = await promptFingerprint(JSON.stringify([input.operationId, input.id, input.order, input.name, input.mediaType, input.original, input.preview, input.model]))
     const previousPhotos = this.sessionStorage.photosForOperation(input.operationId)
     const photo: ConversationPhoto = { id: input.id, operationId: input.operationId, name: input.name, mediaType: input.mediaType, created: previousPhotos[0]?.created ?? Date.now(), order: input.order }
@@ -714,7 +808,9 @@ export class PiSession extends HostedAgent {
         this.env.COMPUTER_R2.head(this.photoKey(photo.id, 'original')),
       ]) : [null, null]
       const base = `/api/conversation-images/${sessionId}/${photo.id}`
-      return { id: photo.id, filename: photo.name, createdAt: photo.created, origin: 'human' as const,
+      const entry = this.sessionStorage.getEntrySync(photo.entryId ?? '')
+      const origin: AlbumPage['images'][number]['origin'] = entry?.type === 'message' && entry.message.role === 'assistant' ? 'agent' : 'human'
+      return { id: photo.id, filename: photo.name, createdAt: photo.created, origin,
         available: Boolean(preview && original), previewUrl: preview ? `${base}/preview` : null, originalUrl: original ? `${base}/original` : null }
     }))
     return { images, nextCursor: page.nextCursor ? await cursors.encode('album', page.nextCursor) : null }
@@ -747,7 +843,9 @@ export class PiSession extends HostedAgent {
     const content = await Promise.all(photos.map(async (photo) => {
       const object = await bucket.get(this.photoKey(photo.id, 'model'))
       if (!object || object.size > 320_000) throw new Error('Photo model variant is unavailable.')
-      return { type: 'image' as const, data: encodeBase64(new Uint8Array(await object.arrayBuffer())), mimeType: 'image/jpeg' }
+      const bytes = new Uint8Array(await object.arrayBuffer())
+      if (!isPhotoBytes(bytes, 'image/jpeg')) throw new Error('Invalid model image')
+      return { type: 'image' as const, data: encodeBase64(bytes), mimeType: 'image/jpeg' }
     }))
     if (JSON.stringify(content).length > PHOTO_ROW_BUDGET) throw new Error('Photo group exceeds the Pi message size limit.')
     return content
@@ -1009,6 +1107,19 @@ export class PiSession extends HostedAgent {
     const config = await response.json() as { baseUrl: string; model: string; apiKey: string }
     return { ...this.env, MODEL_BASE_URL: config.baseUrl, AI_MODEL: config.model, AI_MEMORY_MODEL: config.model, MODEL_API_KEY: config.apiKey }
   }
+}
+
+function photoBytes(input: PhotoUpload) {
+  if (!UUID.test(input.operationId) || !UUID.test(input.id)) throw new Error('Invalid photo identity.')
+  if (!Number.isInteger(input.order) || input.order < 0 || input.order >= 6) throw new Error('Too many photos.')
+  if (!PHOTO_TYPES.has(input.mediaType) || input.name.length > 255) throw new Error('Unsupported photo type or name.')
+  if (input.original.length > 11_000_000 || input.preview.length > 220_000 || input.model.length > 450_000) throw new Error('Photo exceeds size limits.')
+  const original = decodeBase64(input.original)
+  const preview = decodeBase64(input.preview)
+  const model = decodeBase64(input.model)
+  if (original.byteLength > 8_000_000 || preview.byteLength > 160_000 || model.byteLength > 320_000) throw new Error('Photo exceeds size limits.')
+  if (!isPhotoBytes(original, input.mediaType) || !isPhotoBytes(preview, 'image/jpeg') || !isPhotoBytes(model, 'image/jpeg')) throw new Error('Photo bytes do not match the supported image type.')
+  return { original, preview, model }
 }
 
 function validPrompt(prompt: string): string {

@@ -33,8 +33,8 @@ The user's preserved past conversations, including imported conversations, avail
 _Avoid_: Companion memory, current model context
 
 **Companion plugin（聊天机插件）**:
-A supported extension of the chat agent whose exposed parameters and prompts the user can configure. Additional extension behaviour is proposed through contributions to its implementation.
-_Avoid_: Arbitrary backend fork, frontend theme
+A supported feature extension of the chat agent that can add capabilities and their corresponding user-facing interactions. The user can configure its exposed parameters and prompts.
+_Avoid_: Arbitrary backend fork, frontend theme, MCP connection alone
 
 **Chat agent（聊天机）**:
 A personal conversational AI with its own continuing identity and private context. Its instructions emphasize companionship and memory, while its available capabilities can include the same tools and execution abilities as the work agent.
@@ -43,6 +43,10 @@ _Avoid_: Read-only companion, chat mode
 **Core web chat（核心网页聊天）**:
 The owner's browser conversation with the chat agent, including durable conversation context. It does not require an optional messaging connector or the work agent's execution capabilities.
 _Avoid_: Keet connection, work-agent task
+
+**Chat agent engine（聊天机引擎）**:
+The system that carries a chat agent's conversations and execution. The engine is distinct from the companion's continuing identity, personality, and memories.
+_Avoid_: Companion identity, model provider, chat mode
 
 **Work agent（工作机）**:
 A platform-maintained task-focused AI with its own identity and work context, used to customize the user's chat companion rather than being a customization target itself. It does not have exclusive access to execution capabilities; information shared with the separate chat agent must be explicit.

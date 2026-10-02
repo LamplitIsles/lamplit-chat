@@ -78,3 +78,15 @@ The UI opens one conversation. Other registry and tree operations still exist on
 ## Verification
 
 `npm run check:frontend` checks Svelte, `npm run typecheck` checks Worker TypeScript, `npm test` runs unit and Workers tests, and `npm run build` creates the static site. `npm run deploy` builds and deploys the self-hosted Worker; hosted deployment uses `wrangler.hosted.jsonc` after the same frontend build. No deployment is performed by local verification.
+
+## Shared image and recovery adapter
+
+The shared socket and bounded authenticated image HTTP routes reuse native
+`uploadPhoto`, `modelPhotos`, prompt/steer ledgers and R2 variants. Immutable
+submission identity includes text, ordered image metadata and replacement IDs.
+Native storage records submitted input and exact main-lane cancellation proof,
+and validates/tombstones replacement sources atomically with harness admission.
+Shared envelopes alone remain uncertain. History and album project actual native
+photo-entry membership, including agent provenance; uploads alone are excluded.
+[Image sending and recovery](image-send-recovery.md) owns public endpoints,
+limits, authorization and the frozen browser/native acceptance commands.

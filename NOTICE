@@ -34,3 +34,11 @@ from LamplitIsles/lamplit-app, Apache-2.0, verified at
 0075e3c0887a30a6b19f63852ab20c103f13c79e (spec #3062).
 Its package retains its own LICENSE. Public schemas remain owned by that package;
 the Pi native-store projections and local acceptance harness are authored here.
+
+The image-send-recovery integration consumes the reviewed compiled contracts,
+browser from LamplitIsles/lamplit-app, Apache-2.0, at
+ebde803fb955349c8bd05de259f13ca14b63f668 (app spec #3096, chat spec #3097).
+The approved reusable runner is pinned separately at
+091c0def66abdb45728906785e6defd55c60d50c; product artifacts are unchanged.
+The package retains its LICENSE. Native image/admission/recovery adapters and
+isolated workerd fixture are authored here; app artifacts are consumed unchanged.

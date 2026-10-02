@@ -1,8 +1,9 @@
 import { WAKE_CUSTOM_TYPE, occurrenceKey, type TimedWake, type WakeSource } from '../shared/timed-wake'
 import { nextWake } from './timed-wake'
-import { branchTip, setValue, pendingEntry, type CommittedWrite, type Entry, type PendingEntry, type SessionMetadata } from '@earendil-works/pi-agent-core/harness/session'
+import { branchTip, laneState, operationMeta, setValue, pendingEntry, type CommittedWrite, type Entry, type PendingEntry, type SessionMetadata } from '@earendil-works/pi-agent-core/harness/session'
 import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
 import type { ConversationPhoto, ConversationPhotoPage, SessionIndexEvent, SessionLineage } from '../shared/pi-contract'
+import { submissionIdentity, type ChatAdmission } from './chat-adapter'
 import { PiV4Storage } from './pi-v4-storage'
 
 export type PiSessionMetadata = {
@@ -37,6 +38,10 @@ export class PiSessionStorage extends PiV4Storage {
   constructor(private readonly durable: DurableObjectStorage) {
     super(durable)
     durable.sql.exec(`
+      CREATE TABLE IF NOT EXISTS chat_inputs (operation_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS chat_replaced (operation_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS chat_dropped (entry_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS chat_submissions (operation_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS timed_wake_receipts (occurrence TEXT PRIMARY KEY, entry_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS pi_session_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS pi_session_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -64,6 +69,54 @@ export class PiSessionStorage extends PiV4Storage {
     `)
   }
 
+  chatRecords(): Map<string, ChatAdmission> {
+    return new Map(this.durable.sql.exec<{ operation_id: string; payload: string }>('SELECT * FROM chat_submissions').toArray().map(row => [row.operation_id, JSON.parse(row.payload)]))
+  }
+  recordChat(id: string, record: ChatAdmission): boolean {
+    const existing = this.chatRecords().get(id)
+    if (existing) {
+      if (submissionIdentity(existing) !== submissionIdentity(record)) throw new Error('Submission identity conflict')
+      return false
+    }
+    this.durable.sql.exec('INSERT INTO chat_submissions(operation_id, payload) VALUES (?, ?)', id, JSON.stringify(record))
+    return true
+  }
+  setChatRejected(id: string, rejected: boolean): void {
+    const record = this.chatRecords().get(id)
+    if (!record) throw new Error('Submission is missing')
+    this.durable.sql.exec('UPDATE chat_submissions SET payload = ? WHERE operation_id = ?', JSON.stringify({ ...record, rejected }), id)
+  }
+  saveInput(operationId: string, text: string, photoIds: string[], kind: 'prompt' | 'steer'): void {
+    const photos = photoIds.map(id => {
+      const photo = this.photo(id)
+      if (!photo || photo.operationId !== operationId) throw new Error('Submitted photo is missing')
+      return photo
+    })
+    this.durable.sql.exec('INSERT OR IGNORE INTO chat_inputs(operation_id, payload) VALUES (?, ?)', operationId, JSON.stringify({ text, photoIds, photos, kind }))
+  }
+  nativeInputs(): Array<{ operationId: string; text: string; photoIds: string[]; photos: ConversationPhoto[]; kind: 'prompt' | 'steer' }> {
+    return this.durable.sql.exec<{ operation_id: string; payload: string }>('SELECT * FROM chat_inputs ORDER BY rowid').toArray().map(row => ({ operationId: row.operation_id, ...JSON.parse(row.payload) }))
+  }
+  inputEntry(id: string): string | undefined { return this.getPromptSubmission(id)?.entryId ?? this.steerRecord(id)?.entryId }
+  dropped(entryId: string): boolean { return !!this.durable.sql.exec('SELECT 1 FROM chat_dropped WHERE entry_id = ?', entryId).toArray()[0] }
+  replaced(id: string): boolean { return !!this.durable.sql.exec('SELECT 1 FROM chat_replaced WHERE operation_id = ?', id).toArray()[0] }
+  eligible(id: string): boolean {
+    if (this.replaced(id)) return false
+    const entry = this.inputEntry(id)
+    return entry ? this.dropped(entry) && !this.getEntrySync(entry) : this.chatRecords().get(id)?.rejected === true
+  }
+  private replaceForAdmission(id: string): void {
+    const record = this.chatRecords().get(id)
+    if (!record?.replacementSourceIds?.length) return
+    // Operation reconciliation precedes obsolete-source rejection.
+    const entry = this.inputEntry(id)
+    if (entry) return
+    for (const source of record.replacementSourceIds) {
+      if (source === id || !this.eligible(source)) throw new Error('Recovery source is no longer eligible')
+    }
+    for (const source of record.replacementSourceIds) this.durable.sql.exec('INSERT INTO chat_replaced(operation_id) VALUES (?)', source)
+  }
+
   timedWakes(): TimedWake[] { return this.getSetting<TimedWake[]>('timedWakes') ?? [] }
   wakeReceipt(source: WakeSource): string | undefined {
     return this.durable.sql.exec<{ entry_id: string }>('SELECT entry_id FROM timed_wake_receipts WHERE occurrence = ?', occurrenceKey(source)).toArray()[0]?.entry_id
@@ -76,6 +129,29 @@ export class PiSessionStorage extends PiV4Storage {
   // The acceptance identity and next occurrence commit with Pi's durable inbox.
   protected override beforeCommit(writes: CommittedWrite[]): void {
     const address = pendingEntry('')
+    const metaAddress = operationMeta('')
+    const state = this.getValueSync(laneState('main'))?.value
+    for (const write of writes) {
+      if (write.kind !== 'value') continue
+      if (write.op === 'set' && write.namespace === metaAddress.namespace && write.key.startsWith(metaAddress.key)) {
+        const meta = write.value as import('@earendil-works/pi-agent-core/harness/session').OperationMeta
+        if (meta.lane === 'main') this.replaceForAdmission(meta.operationId)
+      }
+      if (write.namespace !== address.namespace || !write.key.startsWith(address.key)) continue
+      const entryId = write.key.slice(address.key.length)
+      if (write.op === 'delete' && state?.inbox.some(item => item.entryId === entryId) &&
+          !this.getEntrySync(entryId) && !writes.some(item => item.kind === 'entry' && item.id === entryId)) {
+        const pending = this.getValueSync(pendingEntry(entryId))?.value
+        if (pending?.type === 'message' && pending.payload.role === 'user') this.durable.sql.exec('INSERT OR IGNORE INTO chat_dropped(entry_id) VALUES (?)', entryId)
+      }
+      if (write.op === 'set') {
+        const pending = write.value as PendingEntry
+        if (pending.type === 'message' && pending.payload.role === 'user') {
+          const row = this.durable.sql.exec<{ submission_id: string }>('SELECT submission_id FROM pi_steer_submissions WHERE created_at = ?', String(pending.payload.timestamp)).toArray()[0]
+          if (row) this.replaceForAdmission(row.submission_id)
+        }
+      }
+    }
     for (const write of writes) {
       if (write.kind !== 'value' || write.op !== 'set' || write.namespace !== address.namespace || !write.key.startsWith(address.key)) continue
       const pending = write.value as PendingEntry
@@ -131,6 +207,7 @@ export class PiSessionStorage extends PiV4Storage {
   async replace(metadata: PiSessionMetadata, entries: Entry[]): Promise<void> {
     this.reset()
     this.durable.sql.exec('DELETE FROM pi_prompt_submissions')
+    for (const table of ['chat_inputs', 'chat_replaced', 'chat_dropped', 'chat_submissions']) this.durable.sql.exec(`DELETE FROM ${table}`)
     this.durable.sql.exec('DELETE FROM pi_steer_submissions')
     this.durable.sql.exec('DELETE FROM conversation_photos')
     this.durable.sql.exec('DELETE FROM conversation_photo_groups')
@@ -278,6 +355,8 @@ export class PiSessionStorage extends PiV4Storage {
     }
     for (const id of ids) {
       const photo = this.photo(id)
+      // Deleted media does not invalidate an already proven native admission.
+      if (!photo && this.inputEntry(operationId) === entryId) continue
       if (!photo || photo.operationId !== operationId || (photo.entryId && photo.entryId !== entryId)) throw new Error('Photo entry correlation conflict.')
       this.durable.sql.exec('UPDATE conversation_photos SET entry_id = ? WHERE id = ? AND operation_id = ? AND ready = 1', entryId, id, operationId)
     }
