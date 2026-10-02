@@ -9,10 +9,7 @@ import type { CompanionImageDraft } from "./image-drafts.js";
 import type { PendingSubmissionRetirement } from "./contracts.js";
 import type { CompanionReadiness } from "./readiness.js";
 import type { CompanionStateRecord } from "../domain.js";
-import type {
-  CompanionVoiceTranscription,
-  VoiceRecording,
-} from "./voice-input.js";
+
 
 export interface CompanionIdentityView {
   companionName: string;
@@ -37,11 +34,8 @@ export interface CompanionActions {
   stop?: () => Promise<void>;
   loadOlder?: () => Promise<void>;
   attachmentUrl?: (attachment: unknown) => Promise<string>;
-  /** Authenticated Worker transcription; recording bytes never enter Session attachments. */
-  transcribeVoice?: (
-    recording: VoiceRecording,
-    signal?: AbortSignal,
-  ) => Promise<CompanionVoiceTranscription>;
+  /** Same-origin authenticated normalized WebSocket endpoint. */
+  voiceStreamUrl?: () => string;
   loadEarlierHistory?: () => Promise<void>;
   retryHistory?: () => void;
   listTimedWakes?: () => Promise<import('../../../../../src/shared/timed-wake').TimedWake[]>;

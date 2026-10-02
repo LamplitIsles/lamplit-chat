@@ -29,7 +29,7 @@ export default {
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
     }
     if (new URL(request.url).pathname === '/api/web-search/test') return respond(await handleSearchTest(request, env, instanceId))
-    if (['/api/voice/capability', '/api/voice/transcribe'].includes(new URL(request.url).pathname)) return respond(await handleVoice(request, env, instanceId))
+    if (['/api/voice/capability', '/api/voice/stream'].includes(new URL(request.url).pathname)) return respond(await handleVoice(request, env, instanceId))
     const materialResponse = await handleCompanionMaterials(request, env, instanceId)
     if (materialResponse) return respond(materialResponse)
     const historyResponse = await handleHistory(request, env, instanceId)

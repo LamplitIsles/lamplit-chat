@@ -2,7 +2,6 @@
   import { onMount } from 'svelte';
   import { updated } from '$app/stores';
   import { AgentClient } from 'agents/client';
-  import { normalizeVoiceTranscription, voiceBlobToBase64 } from '$lib/companion/client/voice-input';
   import Companion from '$lib/companion/client/Companion.svelte';
   import { companionTranslate } from '$lib/companion/client/locale';
   import { APPEARANCE_STORAGE_KEY, LANGUAGE_STORAGE_KEY, initialPreferences, resolveScheme, writePreference, type CompanionAppearance, type CompanionLanguage } from '$lib/companion/client/preferences';
@@ -278,13 +277,10 @@
   }
 
   const actions: CompanionActions = {
-    async transcribeVoice(recording, signal) {
-      const audioBase64 = await voiceBlobToBase64(recording.blob, recording.mediaType);
-      if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
-      const response = await fetch('/api/voice/transcribe', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ audioBase64, mediaType: recording.mediaType, durationMs: recording.durationMs }) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Recognition unavailable');
-      return normalizeVoiceTranscription(result);
+    voiceStreamUrl() {
+      const url = new URL('/api/voice/stream', location.href);
+      url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return url.href;
     },
     async send(text, images, onRetire) {
       if (!canStartSubmission(optimistic, uploading)) {

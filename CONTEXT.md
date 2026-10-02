@@ -117,5 +117,6 @@ The companion's ability to obtain readable content from a specific public webpag
 _Avoid_: Web search, browser operation, reading private account content
 
 **Voice input（语音输入）**:
+Fixed Beijing `qwen-audio-3.1-asr-flash-streaming`: actual16kHz PCM AudioWorklet → authenticated `/api/voice/stream` → final-only cursor draft. [Wire/limits/privacy/fixture ownership](docs/voice-input.md) is authoritative. Existing independent `VOICE_API_KEY`/hosted encrypted settings stay unchanged. Audio streams while speaking; cancellation closes processing but cannot undo billing. Both chat/platform merges wait for Owner joint gate.
 Dictation that contributes editable text to the user's unsent chat draft, including further speech added to an existing draft. The user decides when to send the resulting message.
 _Avoid_: Voice message, automatic message sending, voice call

@@ -92,8 +92,6 @@
     canCaptureVoice,
     VoiceRecordingController,
     VoiceRecordingError,
-    type CompanionVoiceTranscription,
-    type VoiceRecording,
     type VoiceRecordingStatus,
   } from "./voice-input.js";
 
@@ -119,10 +117,7 @@
     stop?: () => Promise<void>;
     loadOlder?: () => Promise<void>;
     attachmentUrl?: (attachment: unknown) => Promise<string>;
-    transcribeVoice?: (
-      recording: VoiceRecording,
-      signal?: AbortSignal,
-    ) => Promise<CompanionVoiceTranscription>;
+    voiceStreamUrl?: () => string;
     loadEarlierHistory?: () => Promise<void>;
     retryHistory?: () => void;
     listTimedWakes?: () => Promise<import('../../../../../src/shared/timed-wake').TimedWake[]>;
@@ -329,6 +324,7 @@
       if (status === "transcribing") liveAnnouncement = { key: "voice.transcribing" };
     },
     onError: (error) => {
+      voiceStarting = false;
       clearVoiceClock();
       voiceElapsedMs = 0;
       if (error.code !== "cancelled") {
@@ -338,18 +334,17 @@
     },
   });
   let voiceSessionId: string | undefined;
-  let voiceTranscriptionAbort: AbortController | undefined;
 
   $: updateSafe = !pendingSubmissions && !composer.draft.length && !composer.composing && !imageDrafts.length && !voiceBusy && !projection.running && !detailOpen && !preferencesOpen && !lightbox && !attachmentsOpen;
   $: hasDraft = Boolean(composer.draft.trim() || imageDrafts.length);
   $: voiceBusy = voiceStarting || voiceStatus === "recording" || voiceStatus === "stopping" || voiceStatus === "transcribing";
-  $: voiceAvailable = voiceCapability === "available" && Boolean(actions.transcribeVoice) && voiceCaptureAvailable;
+  $: voiceAvailable = voiceCapability === "available" && Boolean(actions.voiceStreamUrl) && voiceCaptureAvailable;
   $: if (!voiceAvailable && voiceBusy) {
     void cancelVoiceInput();
   }
   $: unavailableVoiceText = voiceCapability === "loading"
     ? t("voice.wait")
-    : voiceCapability !== "available" || !actions.transcribeVoice
+    : voiceCapability !== "available" || !actions.voiceStreamUrl
       ? t("voice.notEnabled")
       : t("voice.unavailable");
 
@@ -1145,7 +1140,7 @@
   function voiceErrorKey(error: unknown): CompanionLocaleKey {
     if (error instanceof VoiceRecordingError) {
       if (error.code === "insecure-context") return "voice.secure";
-      if (error.code === "unsupported" || error.code === "media-type")
+      if (error.code === "unsupported")
         return "voice.unsupported";
       if (error.code === "permission-denied") return "voice.permission";
       if (error.code === "duration-limit") return "voice.duration";
@@ -1165,8 +1160,6 @@
     voiceInputGeneration += 1;
     voiceStarting = false;
     clearVoiceClock();
-    voiceTranscriptionAbort?.abort();
-    voiceTranscriptionAbort = undefined;
     try {
       await voiceController.cancel();
     } catch {
@@ -1180,34 +1173,11 @@
     if (voiceStatus !== "recording" || voiceStarting) return;
     clearVoiceClock();
     const generation = voiceInputGeneration;
-    let recording: VoiceRecording | undefined;
-    try {
-      recording = await voiceController.stopAndGet();
-    } catch (error) {
-      if (generation !== voiceInputGeneration || (error instanceof VoiceRecordingError && error.code === "cancelled")) return;
-      voiceFailure = voiceErrorKey(error);
-      liveAnnouncement = { key: voiceFailure };
-      voiceElapsedMs = 0;
-      return;
-    }
-    voiceElapsedMs = 0;
-    voiceFailure = "";
-    if (
-      generation !== voiceInputGeneration ||
-      !recording ||
-      !actions.transcribeVoice ||
-      !voiceController.markTranscribing()
-    )
-      return;
-    const abort = new AbortController();
     const originSessionId = sessionId;
-    voiceTranscriptionAbort = abort;
     try {
-      const transcription = await actions.transcribeVoice(
-        recording,
-        abort.signal,
-      );
-      if (abort.signal.aborted || generation !== voiceInputGeneration || sessionId !== originSessionId) return;
+      const transcription = await voiceController.stopAndGet();
+      if (!transcription) return;
+      if (generation !== voiceInputGeneration || sessionId !== originSessionId) return;
       if (draftRevision !== voiceDraftRevision || composer.draft !== voiceDraftSnapshot) {
         voiceFailure = "voice.discarded";
         liveAnnouncement = { key: "voice.discarded" };
@@ -1218,18 +1188,15 @@
       setDraft(composer.draft.slice(0, voiceSelectionStart) + text + composer.draft.slice(voiceSelectionEnd));
       liveAnnouncement = { key: "voice.draftReady" };
       void tick().then(() => {
+        if (generation !== voiceInputGeneration || sessionId !== originSessionId) return;
         composerInput?.focus();
         composerInput?.setSelectionRange(cursor, cursor);
       });
     } catch (error) {
-      if (!abort.signal.aborted && generation === voiceInputGeneration) {
+      if (generation === voiceInputGeneration) {
         voiceFailure = voiceErrorKey(error);
         liveAnnouncement = { key: voiceFailure };
       }
-    } finally {
-      if (voiceTranscriptionAbort === abort)
-        voiceTranscriptionAbort = undefined;
-      if (generation === voiceInputGeneration) voiceController.finishTranscribing();
     }
   }
 
@@ -1241,11 +1208,11 @@
     }
     if (
       voiceCapability !== "available" ||
-      !actions.transcribeVoice ||
+      !actions.voiceStreamUrl ||
       !voiceCaptureAvailable
     ) {
       liveAnnouncement = {
-        key: voiceCapability !== "available" || !actions.transcribeVoice ? "voice.notEnabled" : "voice.unavailable",
+        key: voiceCapability !== "available" || !actions.voiceStreamUrl ? "voice.notEnabled" : "voice.unavailable",
       };
       return;
     }
@@ -1260,7 +1227,7 @@
     const generation = ++voiceInputGeneration;
     voiceStarting = true;
     try {
-      await voiceController.start();
+      await voiceController.start(actions.voiceStreamUrl!());
       if (generation !== voiceInputGeneration) return;
       voiceStarting = false;
       await tick();
@@ -1695,9 +1662,7 @@
     clearWaitingTimers();
     clearContinuityStatusTimer();
     clearVoiceClock();
-    voiceTranscriptionAbort?.abort();
     diaryRequest?.abort();
-    voiceTranscriptionAbort = undefined;
     voiceController.dispose();
     for (const audio of document.querySelectorAll<HTMLAudioElement>(
       "#dsh-companion .companion-voice audio",

@@ -3,7 +3,6 @@
   import Companion from '../../src/lib/companion/client/Companion.svelte'
   import { companionTranslate } from '../../src/lib/companion/client/locale'
   import { companionProjection } from '../../src/lib/companion/pi-projection'
-  import { normalizeVoiceTranscription, voiceBlobToBase64 } from '../../src/lib/companion/client/voice-input'
   import '../../src/lib/companion/client/daisy.css'
   import '../../src/lib/companion/client/companion.css'
   import '@fontsource/noto-sans-sc/400.css'
@@ -26,14 +25,7 @@
   Object.assign(state, { switchSession() { sessionId += '-next' }, dark() { scheme = 'dark' }, capability(value: boolean) { available = value }, running(value: boolean) { busy = value }, recover(text: string) { recoveredDraft = { key: String(Date.now()), sourceIds: [], input: text, images: [] } } })
   const actions: CompanionActions = {
     async send(text, images) { state.sends.push({ text, images: images.length }) },
-    async transcribeVoice(recording, signal) {
-      const audioBase64 = await voiceBlobToBase64(recording.blob, recording.mediaType)
-      if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError')
-      const response = await fetch('/api/voice/transcribe', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ audioBase64, mediaType: recording.mediaType, durationMs: recording.durationMs }) })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error)
-      return normalizeVoiceTranscription(data)
-    },
+    voiceStreamUrl() { return `ws://${location.host}/api/voice/stream` },
   }
 </script>
 <Companion {t} locale="zh" {projection} {scheme} {actions} {sessionId} {recoveredDraft} sessions={[]}

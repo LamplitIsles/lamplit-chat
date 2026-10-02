@@ -16,18 +16,30 @@ config.main = join(directory, 'entry.ts')
 writeFileSync(config.main, `
 import worker from ${JSON.stringify(join(repo, 'src/server.ts'))};
 export { PiSession, PiRegistry } from ${JSON.stringify(join(repo, 'src/server-test-entry.ts'))};
-let state = { enabled: true, apiKey: 'fixture-voice-key', text: '明天我们一起去散步吧。', status: 200, delayMs: 0, calls: 0, lastAuthorization: '', lastRequest: null };
+let state = { enabled: true, apiKey: 'fixture-voice-key', text: '明天我们一起去散步吧。', status: 200, delayMs: 0, startDelayMs: 0, calls: 0, frames: 0, bytes: 0, events: [], closes: 0, lastAuthorization: '', lastRequest: null };
 globalThis.fetch = async (url, init) => {
-  if (String(url) !== 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions') throw new Error('Fixture forbids external network');
+  if (String(url) !== 'https://dashscope.aliyuncs.com/api-ws/v1/inference') throw new Error('Fixture forbids external network');
   state.calls++;
-  state.lastAuthorization = new Headers(init?.headers).get("authorization");
-  const data = JSON.parse(init?.body);
-  state.lastRequest = { model: data.model, stream: data.stream, dataUrlChars: data.messages?.[0]?.content?.[0]?.input_audio?.data?.length };
-  if (state.delayMs) await new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, state.delayMs);
-    init?.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+  state.lastAuthorization = new Headers(init?.headers).get('authorization');
+  if (state.status !== 200) return new Response('Synthetic provider error', { status: state.status });
+  const pair = new WebSocketPair(); const socket = pair[1]; socket.binaryType = 'arraybuffer'; socket.accept();
+  let taskId;
+  socket.addEventListener('close', () => state.closes++);
+  const send = (event, payload = {}) => { try { socket.send(JSON.stringify({ header: { event, task_id: taskId }, payload })); } catch {} };
+  socket.addEventListener('message', event => {
+    if (typeof event.data !== 'string') { state.frames++; state.bytes += event.data.byteLength; state.events.push({ type: 'pcm', bytes: event.data.byteLength, at: Date.now() }); return; }
+    const data = JSON.parse(event.data);
+    state.events.push({ type: data.header.action, at: Date.now() });
+    taskId = data.header.task_id;
+    if (data.header.action === 'run-task') {
+      state.lastRequest = data;
+      if (state.startDelayMs) setTimeout(() => send('task-started'), state.startDelayMs); else send('task-started');
+    } else if (data.header.action === 'finish-task') {
+      const finish = () => { send('result-generated', { output: { sentence: { sentence_id: 1, sentence_end: true, text: state.text } } }); send('task-finished'); };
+      if (state.delayMs) setTimeout(finish, state.delayMs); else finish();
+    }
   });
-  return state.status === 200 ? Response.json({ choices: [{ message: { content: state.text } }] }) : new Response('Synthetic provider error', { status: state.status });
+  return new Response(null, { status: 101, webSocket: pair[0] });
 };
 export default { async fetch(request, env) {
   if (new URL(request.url).pathname === '/__fixture/state') {

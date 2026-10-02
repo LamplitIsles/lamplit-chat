@@ -1,52 +1,59 @@
 # Voice input
 
-Click the microphone to start recording, then click it again to stop and recognize. The microphone remains available with an existing text draft alongside Send. Recognition inserts at the selection captured when recording starts (replacing selected text), then places the cursor after the insertion for another take. The draft is read-only and Send is disabled during capture/recognition. Cancel or failure preserves the original text and attachments. Results remain editable; recognition never sends a chat message.
+Tap the microphone to start, then tap Stop to finish. Audio is recognized while you speak; only the final text enters the editable draft, at the selection captured on start. The microphone remains alongside Send with existing text. Surrounding text and attachments remain intact; another take inserts after the restored cursor. Recognition never sends a message. During setup, capture and finishing the draft is read-only and Send/command completion are locked. Cancel/Escape returns silently. Failures leave text available for retry. Space/Enter activate the focused button normally.
 
-Space and Enter activate the focused recording button normally; Escape cancels. Capture requires HTTPS or localhost, microphone permission and MediaRecorder with an allowlisted audio format. Denial/unsupported capture leaves text available. Five minutes stops capture and recognizes with a limit notice. Size failures retain the draft and permit retry. Cancellation, tab hide, browser back, session change or unmount releases capture and discards stale results. Cancellation during pending permission discards the late stream without starting a recorder. Session and draft guards discard stale transcription results.
+Capture requires HTTPS or localhost, microphone permission, AudioWorklet and an actual 16kHz AudioContext. Unsupported sample rates fail back to text without codec/resampling fallbacks. Five minutes flushes the last frame and finishes. Cancel, tab hide, pagehide, browser navigation, session change and unmount close capture/socket; late permission grants release their tracks. Captured session, draft revision and string snapshot reject results after draft recovery or change. There is no partial transcript, success/cancel banner, voice mode switch or artificial delay after Stop.
 
-## Self-host setup
+## Configuration and installation
 
-Voice has its own **Beijing-region Alibaba Model Studio key**, separate from `MODEL_API_KEY`. Add the optional Worker secret using the same Wrangler configuration as your self-host deployment:
+Self-host voice uses the existing optional **`VOICE_API_KEY` Worker secret**, a Beijing Alibaba Model Studio key separate from `MODEL_API_KEY`:
 
 ```sh
 npx wrangler secret put VOICE_API_KEY
+npm run build
+npx wrangler deploy
 ```
 
-The fixed provider is Alibaba Model Studio, model `qwen3-asr-flash`, at `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions` (Beijing). There is no provider/region/URL variable or SDK. Unset the secret to disable voice. Use the normal documented build/deploy procedure for installation. Model Studio usage may incur charges. Real paid provider/codec recognition has not been verified by the isolated fixture tests.
+The fixed model is `qwen-audio-3.1-asr-flash-streaming`, upstream `https://dashscope.aliyuncs.com/api-ws/v1/inference` upgraded to WebSocket with server-side Bearer authorization. This uses run-task/binary PCM/finish-task; it is different from `qwen3-asr-flash-realtime`. No SDK, model selector, new secret or configuration schema is needed. Unset the secret to disable self-host voice. The bundled worklet is emitted as a local Vite asset in the normal build.
 
-Hosted chat obtains only the actual instance's current config from the authenticated `PLATFORM` binding at `GET /internal/chat-voice/<instanceId>`. The contract returns `{enabled:false}` or `{enabled:true,apiKey:string}`. An unavailable/malformed/redirecting config fails closed, including when a self-host key exists. The browser receives availability only. Instance owners configure voice at hosted `/settings#voice`; the platform stores the key encrypted and relays recognition through the authenticated chat proxy. Enable, key replacement and disable changes apply to the next recognition request.
+Hosted chat resolves fresh owner-instance settings for each connection through `PLATFORM GET /internal/chat-voice/<instanceId>`, authenticated with `x-lamplit-internal-secret`. Its unchanged response is `{enabled:false}` or `{enabled:true,apiKey:string}`. Missing/malformed/redirecting settings fail closed, without self-host fallback. Hosted owners configure the encrypted independent key at `/settings#voice`. Key replacement/enable/disable applies to the next connection. Hosted installation uses the repository's normal `npm run build` then `npx wrangler deploy --config wrangler.hosted.jsonc`; merging does not deploy. This implementation run does not deploy or merge.
 
-## HTTP and limits
+## Pinned normalized wire contract (spec #3008)
 
-Existing password auth protects self-host endpoints; trusted instance/internal-secret headers protect hosted endpoints. Cross-origin POST is rejected. Responses use `Cache-Control: no-store`.
+Existing self-host password auth and hosted instance/internal-secret auth protect the routes. The platform proxy must preserve 101 and inject the authorized instance/internal secret. WebSocket **Origin must exactly equal the request URL origin**, including on hosted routes; missing Origin is rejected. Proxy implementations that rewrite the request URL must preserve this same-origin check correctly. Authentication/Origin errors are HTTP 401/403, missing upgrade 426. Capability and HTTP errors use `Cache-Control: no-store`.
 
-- `GET /api/voice/capability` → `{available:boolean}`. No ASR call. The browser refreshes on load, window focus and pageshow.
-- `POST /api/voice/transcribe` accepts `{audioBase64:string,mediaType:string,durationMs:number}` and returns `{text:string}`. Every invocation resolves the current config again.
-- Base64 must be canonical, nonempty RFC 4648, including padding bits. MIME is allowlisted by `voice-contract.ts`; parameters such as `codecs=opus` are retained. Duration must be finite and positive, at most 300,000ms.
-- The complete ASCII data URL, including MIME/prefix/padding, is at most **10,000,000 bytes**. JSON is streamed and bounded to **10,001,024 bytes**, independently of Content-Length. Malformed audio returns `invalid_audio` (400), oversize 413.
-- Provider JSON is bounded to **128KiB**, with nonempty trimmed text up to **20,000 Unicode characters**. Configuration has a 5s deadline within the 60s recognition deadline. Redirects are rejected.
-- Safe errors are `{code,error}`: `voice_disabled` (409), `config_unavailable` (503), `invalid_key`, `rate_limited`, `upstream_error`, `transcript_invalid` (502), `timeout` (504), `cancelled` (499). Authentication remains 401/403. Raw provider payloads and keys are never relayed.
+- `GET /api/voice/capability` → `{available:boolean}`; no provider call. Browser refreshes on load/focus/pageshow.
+- `GET /api/voice/stream` with WebSocket upgrade. Browser sends binary **PCM16 little-endian, mono, actual 16000Hz**. Normal frames are 100ms/3200 bytes; every frame is nonempty, even, at most 16KiB. No whole-take audio buffer.
+- Browser text commands are exactly `{"type":"finish"}` or `{"type":"cancel"}`, with no other fields and at most 128 UTF-8 bytes. Flush all PCM before finish. Send PCM only after ready.
+- Server sends `{"type":"ready"}`, then exactly one `{"type":"result","text":"…"}` after successful task-finished, or terminal `{"type":"error","code":"…"}`. Codes: `voice_disabled`, `config_unavailable`, `invalid_key`, `rate_limited`, `upstream_error`, `timeout`, `cancelled`, `invalid_audio`, `transcript_invalid`. No result follows cancel/error. Raw provider frames, keys, usage and intermediate text never reach the browser.
+- Raw PCM cap **9,600,000 bytes**, five-minute browser capture. Worklet caps sample count too. Browser aborts at a **256KiB** send queue. Startup deadline 15s including a 5s config deadline; finish deadline 20s; server absolute lifetime **320s from ready**, including idle/no-finish connections. Every terminal path closes sockets/capture/timers.
+- Provider frames are bounded to 128KiB; finalized nonempty text to 20,000 Unicode characters. Validate task ID/event shape. Deduplicate finalized `sentence_end:true` text by positive integer `sentence_id`, sort by ID, ignore intermediate/heartbeat text, and reject missing/invalid final or abnormal close.
+
+Chat emits run-task with a unique task_id, streaming:duplex, task_group:audio/task:asr/function:recognition, model above, parameters `{format:"pcm",sample_rate:16000,semantic_punctuation_enabled:false,max_sentence_silence:400}`, input `{}`. Matching task-started gates ready/audio. Finish emits finish-task with the same task_id, streaming:duplex, payload input `{}`. The obsolete whole-file `/api/voice/transcribe` and `/api/voice-test` contracts are removed.
 
 ## Privacy and cancellation
 
-Recording stays in browser memory and is sent only for recognition. The Worker forwards a complete Base64 data URL to the fixed provider; it does not persist or log audio, keys or recognized text. A transcript enters normal chat persistence only after explicit Send. Consult the provider's data/retention policy for its processing.
+While recording, PCM streams through the Worker to Alibaba for processing. Cancellation closes an already streaming call and discards its result; **it cannot undo processing or guarantee avoided billing**. Permission/worklet setup occurs before opening the provider stream. Capability/settings save/skip make no recognition calls. The Worker does not persist or log audio, keys or recognized text. Recognized text enters normal chat persistence only after explicit Send. Consult Alibaba's retention/data policies; usage may incur charges. Fixture timings are pipeline evidence, not vendor latency guarantees.
 
-Cancellation before submission makes no recognition request. After submission, cancellation releases local capture and discards the result; it cannot guarantee avoidance of provider processing or billing. Configuration/capability checks do not incur ASR calls.
+## Committed local fixture and platform handoff
 
-## Isolated verification and joint fixture
-
-Install the existing root/frontend npm dependencies, then run these in the checkout:
+Install the existing npm dependencies in root and frontend. Run in separate shells, using free test-only ports (defaults 8898/5198):
 
 ```sh
-node scripts/voice-input-local.mjs
-node frontend/node_modules/vite/bin/vite.js --config frontend/fixtures/voice/vite.config.mjs
-node scripts/voice-input-ui-check.mjs
+VOICE_FIXTURE_PORT=8896 node scripts/voice-input-local.mjs
+VOICE_FIXTURE_PORT=8896 VOICE_UI_PORT=5196 node frontend/node_modules/vite/bin/vite.js --config frontend/fixtures/voice/vite.config.mjs
+VOICE_FIXTURE_PORT=8896 VOICE_UI_PORT=5196 node scripts/voice-input-ui-check.mjs
+npx vitest run --config vitest.worker.config.ts src/server/voice.worker.test.ts
 ```
 
-The local Worker at `127.0.0.1:8898` runs the actual Worker fetch path with test-owned temporary storage, fictional secrets, isolated Wrangler config/cache/log directories, a child environment without inherited Cloudflare credentials, and a fake provider; no repository `.env`/`.dev.vars` or external network is used. The real Companion renders at `127.0.0.1:5198`, with synthetic media and the actual Worker transcription endpoint through a local proxy. The browser check requires `agent-browser`; it uses one isolated browser session and records checks/screenshots under untracked `.scratch/voice-input/`. It does not access a user's browser, microphone, account or connected phone.
+The actual workerd Worker fetch uses fixture-owned temporary storage, config/cache/logs, fictional credentials and a fake WebSocket upstream, with inherited Cloudflare credentials and repository env loading excluded. The actual Companion/browser uses a test-owned oscillator, real AudioContext/AudioWorklet and actual normalized WebSocket through the Vite proxy. It does not use a user tab, physical microphone, live account or paid provider. Browser checks require `agent-browser`, use an isolated session, and save checks/screenshots under untracked `.scratch/voice-streaming/`.
 
-Fixture owner A is `11111111-1111-4111-8111-111111111111` (enabled); B is `22222222-2222-4222-8222-222222222222` (disabled). Use `x-lamplit-instance` and `x-lamplit-internal-secret: fixture-voice-internal-secret`. Local-only `GET/POST /__fixture/state` inspects/changes `{enabled,apiKey,text,status,delayMs,calls}`; `calls` counts fake paid-provider submissions. This control endpoint is only in the temporary fixture entry, never in the production Worker.
+Stable ownership: `frontend/src/lib/companion/voice-contract.ts` owns normalized limits/types; `client/voice-input.ts` owns local streaming capture/transport; `client/voice-worklet.js` owns PCM framing/flush; `src/server/voice.ts` owns config/3.1 upstream normalization. Platform can import the contract/controller/worklet with its own bundler and same-origin URL, or implement the same wire; ensure `?url&no-inline` worklet asset is emitted by its normal build. `CompanionActions.voiceStreamUrl()` supplies the authenticated same-origin endpoint. No shared package/provider abstraction is required.
 
-For the joint fixture start `node scripts/voice-input-local.mjs --platform-service=<test-owned-local-platform-worker-name>`. Its `PLATFORM` binding then uses that real local service rather than the fake internal config. Configure the platform's actual chatProxy to service `lamplit-chat-voice-fixture` with the fictional shared internal secret. The fake provider remains mandatory and all non-provider external fetches are rejected. The platform worker must use fresh temporary D1/encryption fixtures with two owners. Verify save/skip/capability make zero provider calls; key replacement/disable affects the next call; owner isolation, safe relay/bounds/auth/deadline/cancel work; and chat result still requires explicit Send.
+Fixture owner A `11111111-1111-4111-8111-111111111111` is enabled; B `22222222-2222-4222-8222-222222222222` disabled. Internal secret: `fixture-voice-internal-secret`. Local-only `GET/POST /__fixture/state` reads/updates `{enabled,apiKey,text,status,delayMs,startDelayMs,calls,frames,bytes,events,closes}`. Status controls fake upgrade failure; delayMs holds final; startDelayMs holds task-started; calls counts provider upgrades; events records PCM byte counts and run-task/finish-task timestamps. Only synthetic fixture keys/text appear there. This control route exists only in the temporary fixture entry.
 
-Runtime tests: `src/server/voice.worker.test.ts` exercises authenticated Worker fetch; `src/companion/composer-voice.test.ts` exercises capture/composer admission and cleanup. UI checks exercise click/keyboard recording, cancellation, permission races, stale session/draft guards, draft-only recognition, explicit send, responsive/dark rendering and browser back. Physical Android touch/software-keyboard behavior remains unverified when no test-owned device is available.
+Joint gate: start chat with `--platform-service=<test-owned-local-platform-worker-name>` and optional `VOICE_FIXTURE_NAME`, `VOICE_REGISTRY_PATH`, `VOICE_INSPECTOR_PORT`. PLATFORM then targets the real local platform service. Configure platform chatProxy to service `lamplit-chat-voice-fixture` with the fictional shared secret. Use fresh temporary D1/encryption fixtures and two owners; demonstrate auth/101/owner isolation, immediate settings changes, zero paid calls on save/skip/capability, no key in browser, normal PCM→finish→draft/test result, cancel/failure/stale behavior. Both PR merges wait for Owner to run and accept this cross-repository gate. Chat local verification alone does not satisfy it.
+
+Native Android microphone/software-keyboard behavior and real 3.1 vendor latency are unverified in this isolated run. Tests cover actual workerd protocol and actual browser/worklet behavior with synthetic audio.
+
+Primary references: [3.1 client events](https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events), [server events](https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events), [guide](https://help.aliyun.com/zh/model-studio/real-time-speech-recognition-user-guide), [Cloudflare WebSockets](https://developers.cloudflare.com/workers/runtime-apis/websockets/).

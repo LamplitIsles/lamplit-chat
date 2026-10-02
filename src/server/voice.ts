@@ -1,13 +1,13 @@
-import { isCanonicalBase64, MAX_VOICE_DATA_URL_BYTES, MAX_VOICE_DURATION_MS, normalizeVoiceMediaType, voiceDataUrlPrefix } from '../../frontend/src/lib/companion/voice-contract'
-import { boundedRequest, isOperationAborted, isRequestTimeout, readResponseText, ResponseBodyLimitError } from './web-request'
+import { MAX_VOICE_PCM_BYTES, MAX_VOICE_FRAME_BYTES, VOICE_TRANSCRIPT_MAX_CHARS } from '../../frontend/src/lib/companion/voice-contract'
+import { boundedRequest, isOperationAborted, isRequestTimeout, readResponseText } from './web-request'
 
 export type VoiceEnvironment = Pick<Env, 'HOSTED_MODE' | 'PLATFORM_ORIGIN' | 'CHAT_INTERNAL_SECRET' | 'VOICE_API_KEY'> & { PLATFORM?: Pick<Fetcher, 'fetch'> }
-export const VOICE_PROVIDER_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
-export const VOICE_BODY_MAX_BYTES = 10_001_024
+export const VOICE_PROVIDER_URL = 'https://dashscope.aliyuncs.com/api-ws/v1/inference'
+export const VOICE_MODEL = 'qwen-audio-3.1-asr-flash-streaming'
 class VoiceError extends Error {
-  constructor(readonly code: string, message: string, readonly status: number) { super(message) }
+  constructor(readonly code: string) { super(code) }
 }
-const configError = () => new VoiceError('config_unavailable', 'Voice settings unavailable. Try again later.', 503)
+const configError = () => new VoiceError('config_unavailable')
 function validKey(value: unknown): value is string {
   // oxlint-disable-next-line no-control-regex -- keys must exclude control characters.
   return typeof value === 'string' && value === value.trim() && value.length > 0 && value.length <= 512 && !/[\x00-\x1f\x7f]/u.test(value)
@@ -27,70 +27,135 @@ export async function voiceKey(env: VoiceEnvironment, instanceId: string | null,
     })
   } catch (error) {
     if (isOperationAborted(error) || signal?.aborted) throw error
-    if (isRequestTimeout(error)) throw new VoiceError("timeout", "Voice settings timed out. Please retry.", 504)
+    if (isRequestTimeout(error)) throw new VoiceError('timeout')
     throw configError()
   }
 }
-function audioDataUrl(input: unknown): string {
-  const invalid = () => new VoiceError('invalid_audio', 'Provide valid audio of up to five minutes.', 400)
-  if (!input || typeof input !== 'object') throw invalid()
-  const { audioBase64, mediaType, durationMs } = input as Record<string, unknown>
-  const mime = normalizeVoiceMediaType(mediaType)
-  if (!mime || typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs <= 0 || durationMs > MAX_VOICE_DURATION_MS || !isCanonicalBase64(audioBase64)) throw invalid()
-  const prefix = voiceDataUrlPrefix(mime)!
-  if (prefix.length + audioBase64.length > MAX_VOICE_DATA_URL_BYTES) throw new VoiceError('invalid_audio', 'Audio exceeds the 10 MB data URL limit.', 413)
-  return prefix + audioBase64
-}
-/** One executor shared by chat and the platform's authenticated chat proxy. */
-export async function transcribeVoice(env: VoiceEnvironment, instanceId: string | null, input: unknown, signal?: AbortSignal): Promise<{ text: string }> {
-  const data = audioDataUrl(input)
-  const controller = new AbortController()
-  let expired = false
-  const abort = () => controller.abort()
-  signal?.addEventListener('abort', abort, { once: true })
-  if (signal?.aborted) abort()
-  const timer = setTimeout(() => { expired = true; abort() }, 60_000)
-  const started = Date.now()
-  try {
-    const key = await voiceKey(env, instanceId, controller.signal)
-    if (!key) throw new VoiceError('voice_disabled', 'Voice input is not configured.', 409)
-    return await boundedRequest(undefined, VOICE_PROVIDER_URL, {
-      method: 'POST', redirect: 'manual', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'qwen3-asr-flash', messages: [{ role: 'user', content: [{ type: 'input_audio', input_audio: { data } }] }], stream: false }),
-    }, { callerSignal: controller.signal, timeoutMs: Math.max(1, 60_000 - (Date.now() - started)), timeoutMessage: 'Recognition timed out' }, async (response, requestSignal) => {
-      if (!response.ok) {
-        await response.body?.cancel()
-        throw new VoiceError(response.status === 401 || response.status === 403 ? 'invalid_key' : response.status === 429 ? 'rate_limited' : 'upstream_error', 'Recognition unavailable. Check voice settings or try again later.', 502)
+/** One bounded relay per authenticated connection; no audio or transcript persistence. */
+function relay(client: WebSocket, env: VoiceEnvironment, instanceId: string | null): void {
+  const abort = new AbortController()
+  const taskId = crypto.randomUUID()
+  let upstream: WebSocket | undefined
+  let terminal = false
+  let ready = false
+  let finishing = false
+  let bytes = 0
+  let chars = 0
+  const sentences = new Map<number, string>()
+  const unfinished = new Set<number>()
+  let setupTimer: ReturnType<typeof setTimeout> | undefined
+  let lifetimeTimer: ReturnType<typeof setTimeout> | undefined
+  let finishTimer: ReturnType<typeof setTimeout> | undefined
+  const close = (socket?: WebSocket) => { try { socket?.close(1000) } catch { /* Already closed. */ } }
+  const end = (message?: unknown) => {
+    if (terminal) return
+    terminal = true
+    clearTimeout(setupTimer); clearTimeout(lifetimeTimer); clearTimeout(finishTimer)
+    abort.abort()
+    try { if (message) client.send(JSON.stringify(message)) } catch { /* Disconnected client. */ }
+    close(client); close(upstream)
+    sentences.clear(); unfinished.clear()
+  }
+  const fail = (code = 'upstream_error') => end({ type: 'error', code })
+  setupTimer = setTimeout(() => fail('timeout'), 15_000)
+  client.addEventListener('close', () => end())
+  client.addEventListener('error', () => end())
+  client.addEventListener('message', event => {
+    if (terminal) return
+    try {
+      if (typeof event.data === 'string') {
+        if (new TextEncoder().encode(event.data).length > 128) return fail('invalid_audio')
+        const command = JSON.parse(event.data)
+        if (!command || Object.keys(command).length !== 1) return fail('invalid_audio')
+        if (command.type === 'cancel') return fail('cancelled')
+        if (command.type !== 'finish' || !ready || finishing || !bytes) return fail('invalid_audio')
+        finishing = true
+        upstream!.send(JSON.stringify({ header: { action: 'finish-task', task_id: taskId, streaming: 'duplex' }, payload: { input: {} } }))
+        finishTimer = setTimeout(() => fail('timeout'), 20_000)
+      } else {
+        const data = event.data
+        if (!(data instanceof ArrayBuffer) || !ready || finishing || !data.byteLength || data.byteLength % 2 || data.byteLength > MAX_VOICE_FRAME_BYTES || bytes + data.byteLength > MAX_VOICE_PCM_BYTES) return fail('invalid_audio')
+        bytes += data.byteLength
+        upstream!.send(data)
       }
-      let raw
-      try { raw = JSON.parse(await readResponseText(response, 128 * 1024, requestSignal)) }
-      catch (error) { if (requestSignal.aborted) throw error; throw new VoiceError('transcript_invalid', 'Recognition returned an invalid result. Please retry.', 502) }
-      const text = raw?.choices?.[0]?.message?.content
-      if (typeof text !== 'string' || !text.trim() || Array.from(text.trim()).length > 20_000) throw new VoiceError('transcript_invalid', 'Recognition returned an invalid result. Please retry.', 502)
-      return { text: text.trim() }
-    })
-  } catch (error) {
-    if (expired || isRequestTimeout(error)) throw new VoiceError('timeout', 'Recognition timed out. Please retry.', 504)
-    if (signal?.aborted || isOperationAborted(error)) throw new VoiceError('cancelled', 'Recognition cancelled.', 499)
-    throw error
-  } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort) }
+    } catch { fail('invalid_audio') }
+  })
+  void (async () => {
+    try {
+      const key = await voiceKey(env, instanceId, abort.signal)
+      if (terminal) return
+      if (!key) return fail('voice_disabled')
+      const response = await fetch(VOICE_PROVIDER_URL, { headers: { Upgrade: 'websocket', Authorization: `Bearer ${key}` }, redirect: 'manual', signal: abort.signal })
+      upstream = response.webSocket ?? undefined
+      if (terminal) { if (upstream) { upstream.accept(); close(upstream) } return }
+      if (response.status !== 101 || !upstream) {
+        await response.body?.cancel()
+        return fail(response.status === 401 || response.status === 403 ? 'invalid_key' : response.status === 429 ? 'rate_limited' : 'upstream_error')
+      }
+      upstream.accept()
+      upstream.addEventListener('close', () => { if (!terminal) fail() })
+      upstream.addEventListener('error', () => fail())
+      upstream.addEventListener('message', event => {
+        if (terminal) return
+        try {
+          if (typeof event.data !== 'string' || new TextEncoder().encode(event.data).length > 128 * 1024) return fail('transcript_invalid')
+          const data = JSON.parse(event.data)
+          if (!data?.header || data.header.task_id !== taskId || !data.payload || typeof data.payload !== 'object' || Array.isArray(data.payload)) return fail('transcript_invalid')
+          switch (data.header.event) {
+            case 'task-started':
+              if (ready) return fail('transcript_invalid')
+              ready = true
+              clearTimeout(setupTimer)
+              lifetimeTimer = setTimeout(() => fail('timeout'), 320_000)
+              client.send(JSON.stringify({ type: 'ready' }))
+              break
+            case 'result-generated': {
+              if (!ready) return fail('transcript_invalid')
+              const sentence = data.payload.output?.sentence
+              if (!sentence || typeof sentence !== 'object') return fail('transcript_invalid')
+              if (sentence.heartbeat === true) return
+              if (typeof sentence.sentence_end !== 'boolean' || !Number.isSafeInteger(sentence.sentence_id) || sentence.sentence_id < 1 || typeof sentence.text !== 'string') return fail('transcript_invalid')
+              if (!sentence.sentence_end) {
+                if (!sentences.has(sentence.sentence_id)) unfinished.add(sentence.sentence_id)
+                if (unfinished.size > VOICE_TRANSCRIPT_MAX_CHARS) return fail('transcript_invalid')
+                return
+              }
+              unfinished.delete(sentence.sentence_id)
+              const text = sentence.text
+              if (!text.trim()) return fail('transcript_invalid')
+              const length = Array.from(text).length
+              chars += length - Array.from(sentences.get(sentence.sentence_id) ?? '').length
+              if (chars > VOICE_TRANSCRIPT_MAX_CHARS) return fail('transcript_invalid')
+              sentences.set(sentence.sentence_id, text)
+              break
+            }
+            case 'task-finished': {
+              if (!ready || !finishing || !sentences.size || unfinished.size) return fail('transcript_invalid')
+              const text = [...sentences].sort(([a], [b]) => a - b).map(([, text]) => text).join('').trim()
+              end({ type: 'result', text })
+              break
+            }
+            case 'task-failed': return fail()
+            default: fail('transcript_invalid')
+          }
+        } catch { fail('transcript_invalid') }
+      })
+      upstream.send(JSON.stringify({ header: { action: 'run-task', task_id: taskId, streaming: 'duplex' }, payload: { task_group: 'audio', task: 'asr', function: 'recognition', model: VOICE_MODEL, parameters: { format: 'pcm', sample_rate: 16000, semantic_punctuation_enabled: false, max_sentence_silence: 400 }, input: {} } }))
+    } catch (error) { if (!terminal) fail(error instanceof VoiceError ? error.code : 'upstream_error') }
+  })()
 }
 export async function handleVoice(request: Request, env: VoiceEnvironment, instanceId: string | null): Promise<Response> {
   const respond = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } })
-  const capability = new URL(request.url).pathname === '/api/voice/capability'
-  if (request.method !== (capability ? 'GET' : 'POST')) return respond({ code: 'method_not_allowed', error: 'Method not allowed' }, 405)
-  if (!capability && request.headers.get('origin') && request.headers.get('origin') !== new URL(request.url).origin) return respond({ code: 'forbidden', error: 'Forbidden' }, 403)
-  try {
-    if (capability) return respond({ available: Boolean(await voiceKey(env, instanceId, request.signal)) })
-    let input
-    try { input = JSON.parse(await readResponseText(request, VOICE_BODY_MAX_BYTES, request.signal)) }
-    catch (error) {
-      if (request.signal.aborted) throw new VoiceError('cancelled', 'Recognition cancelled.', 499)
-      throw new VoiceError('invalid_audio', 'Provide bounded audio JSON.', error instanceof ResponseBodyLimitError ? 413 : 400)
-    }
-    return respond(await transcribeVoice(env, instanceId, input, request.signal))
-  } catch (error) {
-    const failure = error instanceof VoiceError ? error : new VoiceError('upstream_error', 'Recognition unavailable. Please retry.', 502)
-    return respond({ code: failure.code, error: failure.message }, failure.status)
+  if (request.method !== 'GET') return respond({ code: 'method_not_allowed' }, 405)
+  if (new URL(request.url).pathname === '/api/voice/capability') {
+    try { return respond({ available: Boolean(await voiceKey(env, instanceId, request.signal)) }) }
+    catch (error) { return respond({ code: error instanceof VoiceError ? error.code : 'config_unavailable' }, 503) }
   }
+  if (request.headers.get('origin') !== new URL(request.url).origin) return respond({ code: 'forbidden' }, 403)
+  if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return respond({ code: 'upgrade_required' }, 426)
+  const pair = new WebSocketPair()
+  pair[1].binaryType = 'arraybuffer'
+  pair[1].accept()
+  relay(pair[1], env, instanceId)
+  return new Response(null, { status: 101, webSocket: pair[0] })
 }

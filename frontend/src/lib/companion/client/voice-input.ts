@@ -1,636 +1,135 @@
-import {
-  MAX_VOICE_DATA_URL_BYTES,
-  MAX_VOICE_DURATION_MS,
-  isVoiceAudioWithinDataUrlLimit,
-  maxVoiceAudioBytesForMediaType,
-  normalizeVoiceMediaType,
-} from "../voice-contract.ts";
-
-export {
-  MAX_VOICE_DATA_URL_BYTES,
-  MAX_VOICE_DURATION_MS,
-  VOICE_AUDIO_MEDIA_TYPES,
-  isCanonicalBase64,
-} from "../voice-contract.ts";
-export type {
-  VoiceAudioMediaType,
-} from "../voice-contract.ts";
-
-export const VOICE_TRANSCRIPT_MAX_CHARS = 20_000;
-
-export type VoiceRecordingStatus =
-  | "idle"
-  | "recording"
-  | "stopping"
-  | "transcribing"
-  | "unavailable";
-
-export interface VoiceRecording {
-  blob: Blob;
-  mediaType: string;
-  bytes: number;
-  durationMs: number;
-}
-
-export interface CompanionVoiceTranscription {
-  text: string;
-}
-
+import workletUrl from './voice-worklet.js?url&no-inline';
+import { MAX_VOICE_DURATION_MS, MAX_VOICE_PCM_BYTES, MAX_VOICE_FRAME_BYTES, MAX_VOICE_QUEUE_BYTES, VOICE_TRANSCRIPT_MAX_CHARS, VOICE_ERROR_CODES } from '../voice-contract';
+export type VoiceRecordingStatus = 'idle' | 'recording' | 'stopping' | 'transcribing' | 'unavailable';
+export interface CompanionVoiceTranscription { text: string }
 export class VoiceRecordingError extends Error {
-  readonly code:
-    | "insecure-context"
-    | "unsupported"
-    | "permission-denied"
-    | "capture-failed"
-    | "cancelled"
-    | "duration-limit"
-    | "size-limit"
-    | "empty"
-    | "media-type"
-    | "transcript-empty"
-    | "transcript-invalid";
-
-  constructor(code: VoiceRecordingError["code"], message?: string) {
-    super(message ?? code);
-    this.name = "VoiceRecordingError";
-    this.code = code;
-  }
+  constructor(readonly code: string) { super(code); this.name = 'VoiceRecordingError'; }
 }
-
-interface MediaTrackLike {
-  stop?: () => void;
+export function canCaptureVoice(): boolean {
+  return globalThis.isSecureContext !== false && typeof globalThis.navigator?.mediaDevices?.getUserMedia === 'function' && typeof globalThis.AudioContext === 'function' && typeof globalThis.AudioWorkletNode === 'function' && typeof globalThis.WebSocket === 'function';
 }
-
-interface MediaStreamLike {
-  getTracks?: () => readonly MediaTrackLike[];
-}
-
-interface MediaRecorderEventLike {
-  data?: Blob;
-  error?: unknown;
-}
-
-interface MediaRecorderLike {
-  readonly mimeType?: string;
-  start(timeslice?: number): void;
-  stop(): void;
-  ondataavailable: ((event: MediaRecorderEventLike) => void) | null;
-  onstop: (() => void) | null;
-  onerror: ((event: MediaRecorderEventLike) => void) | null;
-}
-
-interface MediaRecorderConstructorLike {
-  new (
-    stream: MediaStreamLike,
-    options?: { mimeType?: string },
-  ): MediaRecorderLike;
-  isTypeSupported?: (mimeType: string) => boolean;
-}
-
-interface MediaDevicesLike {
-  getUserMedia(constraints: { audio: true }): Promise<MediaStreamLike>;
-}
-
-export interface VoiceCaptureEnvironment {
-  mediaDevices?: MediaDevicesLike;
-  mediaRecorder?: MediaRecorderConstructorLike;
-  isSecureContext?: boolean;
-  now?: () => number;
-  setTimeout?: typeof globalThis.setTimeout;
-  clearTimeout?: typeof globalThis.clearTimeout;
-}
-
-export interface VoiceRecordingControllerOptions extends VoiceCaptureEnvironment {
-  maxDurationMs?: number;
-  maxBytes?: number;
-  onStatus?: (status: VoiceRecordingStatus) => void;
-  onError?: (error: VoiceRecordingError) => void;
-  onDurationLimit?: () => void;
-}
-
-function browserEnvironment(): VoiceCaptureEnvironment {
-  const scope = globalThis as typeof globalThis & {
-    MediaRecorder?: MediaRecorderConstructorLike;
-    isSecureContext?: boolean;
-    navigator?: { mediaDevices?: MediaDevicesLike };
-  };
-  return {
-    mediaDevices: scope.navigator?.mediaDevices,
-    mediaRecorder: scope.MediaRecorder,
-    ...(typeof scope.isSecureContext === "boolean"
-      ? { isSecureContext: scope.isSecureContext }
-      : {}),
-  };
-}
-
-function activeTimer(
-  options: VoiceCaptureEnvironment,
-): NonNullable<VoiceCaptureEnvironment["setTimeout"]> {
-  return options.setTimeout ?? globalThis.setTimeout.bind(globalThis);
-}
-
-function clearActiveTimer(
-  options: VoiceCaptureEnvironment,
-  timer: ReturnType<typeof setTimeout> | undefined,
-): void {
-  if (timer !== undefined)
-    (options.clearTimeout ?? globalThis.clearTimeout.bind(globalThis))(timer);
-}
-
-function stopTracks(stream: MediaStreamLike | undefined): void {
-  let tracks: readonly MediaTrackLike[];
-  try { tracks = stream?.getTracks?.() ?? []; } catch { return; }
-  for (const track of tracks) {
-    try { track.stop?.(); } catch { /* Release the remaining tracks too. */ }
-  }
-}
-
-function secureCaptureAvailable(options: VoiceCaptureEnvironment): boolean {
-  return (
-    options.isSecureContext !== false &&
-    typeof options.mediaDevices?.getUserMedia === "function" &&
-    Boolean(options.mediaRecorder)
-  );
-}
-
-/** Whether this browser can request and record a microphone stream. */
-export function canCaptureVoice(
-  options: VoiceCaptureEnvironment = browserEnvironment(),
-): boolean {
-  return secureCaptureAvailable(options);
-}
-
-/** Pick the first provider-compatible MIME type advertised by MediaRecorder. */
-export function selectVoiceMimeType(
-  recorder: MediaRecorderConstructorLike | undefined = browserEnvironment()
-    .mediaRecorder,
-): string | undefined {
-  if (!recorder) return undefined;
-  const candidates = [
-    "audio/webm;codecs=opus",
-    "audio/webm",
-    "audio/ogg;codecs=opus",
-    "audio/ogg",
-    "audio/mp4",
-    "audio/mpeg",
-  ];
-  for (const candidate of candidates) {
-    try {
-      if (!recorder.isTypeSupported || recorder.isTypeSupported(candidate)) {
-        if (normalizeVoiceMediaType(candidate)) return candidate;
-      }
-    } catch {
-      // Treat a throwing browser capability probe as unsupported.
-    }
-  }
-  return undefined;
-}
-
-/** Validate the emitted Blob's actual media type and complete Data URL bound. */
-export function validateVoiceRecording(
-  blob: Blob,
-  declaredMediaType?: string,
-  maxBytes?: number,
-): VoiceRecording {
-  if (!(blob instanceof Blob))
-    throw new VoiceRecordingError("empty", "录音内容无效。");
-  const mediaType = normalizeVoiceMediaType(blob.type || declaredMediaType);
-  if (!mediaType)
-    throw new VoiceRecordingError(
-      "media-type",
-      "浏览器生成了不支持的录音格式。",
-    );
-  if (!Number.isSafeInteger(blob.size) || blob.size <= 0)
-    throw new VoiceRecordingError("empty", "没有录到声音，请再试一次。");
-  const dataUrlMaxBytes = maxVoiceAudioBytesForMediaType(mediaType);
-  const effectiveMaxBytes =
-    dataUrlMaxBytes === undefined
-      ? 0
-      : maxBytes === undefined
-        ? dataUrlMaxBytes
-        : Math.min(dataUrlMaxBytes, maxBytes);
-  if (
-    blob.size > effectiveMaxBytes ||
-    !isVoiceAudioWithinDataUrlLimit(mediaType, blob.size)
-  ) {
-    throw new VoiceRecordingError("size-limit", "录音超过语音大小限制。");
-  }
-  return { blob, mediaType, bytes: blob.size, durationMs: 0 };
-}
-
-/** Convert an admitted Blob to canonical Base64 without persisting it. */
-export async function voiceBlobToBase64(
-  blob: Blob,
-  declaredMediaType?: string,
-): Promise<string> {
-  const mediaType = normalizeVoiceMediaType(blob.type || declaredMediaType);
-  if (!mediaType)
-    throw new VoiceRecordingError(
-      "media-type",
-      "浏览器生成了不支持的录音格式。",
-    );
-  if (!Number.isSafeInteger(blob.size) || blob.size <= 0)
-    throw new VoiceRecordingError("empty", "没有录到声音，请再试一次。");
-  if (!isVoiceAudioWithinDataUrlLimit(mediaType, blob.size))
-    throw new VoiceRecordingError("size-limit", "录音超过语音大小限制。");
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  if (bytes.byteLength === 0)
-    throw new VoiceRecordingError("empty", "没有录到声音，请再试一次。");
-  if (!isVoiceAudioWithinDataUrlLimit(mediaType, bytes.byteLength))
-    throw new VoiceRecordingError("size-limit", "录音超过语音大小限制。");
-  const maybeBuffer = (
-    globalThis as {
-      Buffer?: {
-        from(value: Uint8Array): { toString(encoding: string): string };
-      };
-    }
-  ).Buffer;
-  if (maybeBuffer) return maybeBuffer.from(bytes).toString("base64");
-  let output = "";
-  // Keep chunks divisible by three so concatenated Base64 remains canonical.
-  const chunkSize = 0x6000;
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    const chunk = bytes.subarray(
-      offset,
-      Math.min(bytes.length, offset + chunkSize),
-    );
-    let binary = "";
-    for (const byte of chunk) binary += String.fromCharCode(byte);
-    output += btoa(binary);
-  }
-  return output;
-}
-
-/** Admit only clean draft text; provider annotations do not enter the composer. */
-export function normalizeVoiceTranscription(
-  raw: unknown,
-): CompanionVoiceTranscription {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    throw new VoiceRecordingError("transcript-invalid", "语音转写结果无效。");
-  const record = raw as Record<string, unknown>;
-  const text = typeof record.text === "string" ? record.text.trim() : "";
-  if (!text)
-    throw new VoiceRecordingError(
-      "transcript-empty",
-      "没有听清内容，请再试一次。",
-    );
-  if (Array.from(text).length > VOICE_TRANSCRIPT_MAX_CHARS)
-    throw new VoiceRecordingError("transcript-invalid", "语音转写内容过长。");
+export function normalizeVoiceTranscription(raw: unknown): CompanionVoiceTranscription {
+  const text = raw && typeof raw === 'object' && 'text' in raw && typeof raw.text === 'string' ? raw.text.trim() : '';
+  if (!text || Array.from(text).length > VOICE_TRANSCRIPT_MAX_CHARS) throw new VoiceRecordingError('transcript-invalid');
   return { text };
 }
-
-interface ActiveRecording {
-  generation: number;
-  mediaType: string;
-  maxBytes: number;
-  stream?: MediaStreamLike;
-  recorder?: MediaRecorderLike;
-  chunks: Blob[];
-  bytes: number;
-  startedAt: number;
-  timer?: ReturnType<typeof setTimeout>;
-  stopReason?: "user" | "duration-limit" | "size-limit" | "cancelled";
-  completion: Promise<VoiceRecording>;
-  resolve: (recording: VoiceRecording) => void;
-  reject: (error: unknown) => void;
+interface Take {
+  stream?: MediaStream; context?: AudioContext; source?: MediaStreamAudioSourceNode; node?: AudioWorkletNode; socket?: WebSocket;
+  startedAt: number; bytes: number; finishing: boolean; terminal: boolean;
+  timers: ReturnType<typeof setTimeout>[]; flushTimer?: ReturnType<typeof setTimeout>;
+  ready: Promise<boolean>; resolveReady: (value: boolean) => void; rejectReady: (error: unknown) => void;
+  result: Promise<CompanionVoiceTranscription>; resolve: (value: CompanionVoiceTranscription) => void; reject: (error: unknown) => void;
 }
-
-/**
- * Browser recording state machine. It owns the stream, recorder, timer, and
- * all cleanup; transcription remains an injected caller concern.
- */
+/** Owns one bounded capture/transport lifecycle; keeps no whole-take audio buffer. */
 export class VoiceRecordingController {
-  private readonly options: VoiceRecordingControllerOptions;
-  private readonly maxDurationMs: number;
-  private readonly configuredMaxBytes: number;
-  private statusValue: VoiceRecordingStatus = "idle";
-  private operation?: ActiveRecording;
-  private generation = 0;
+  private take?: Take;
   private disposed = false;
-
-  constructor(options: VoiceRecordingControllerOptions = {}) {
-    this.options = { ...browserEnvironment(), ...options };
-    this.maxDurationMs =
-      Number.isFinite(options.maxDurationMs) && (options.maxDurationMs ?? 0) > 0
-        ? options.maxDurationMs!
-        : MAX_VOICE_DURATION_MS;
-    this.configuredMaxBytes =
-      Number.isSafeInteger(options.maxBytes) && (options.maxBytes ?? 0) > 0
-        ? options.maxBytes!
-        : MAX_VOICE_DATA_URL_BYTES;
+  private statusValue: VoiceRecordingStatus = 'idle';
+  constructor(private options: { onStatus?: (status: VoiceRecordingStatus) => void; onError?: (error: VoiceRecordingError) => void; onDurationLimit?: () => void } = {}) {}
+  get status() { return this.statusValue; }
+  get elapsedMs() { return this.take?.startedAt ? Math.max(0, Date.now() - this.take.startedAt) : 0; }
+  private setStatus(next: VoiceRecordingStatus) { this.statusValue = next; this.options.onStatus?.(next); }
+  private releaseCapture(take: Take) {
+    for (const node of [take.source, take.node]) { try { node?.disconnect(); } catch { /* Already released. */ } }
+    for (const track of take.stream?.getTracks() ?? []) { try { track.stop(); } catch { /* Release the rest too. */ } }
+    take.stream = undefined; take.source = undefined; take.node = undefined;
+    if (take.context) { void take.context.close().catch(() => undefined); take.context = undefined; }
   }
-
-  get status(): VoiceRecordingStatus {
-    return this.statusValue;
+  private end(take: Take, error?: VoiceRecordingError, result?: CompanionVoiceTranscription) {
+    if (take.terminal) return;
+    take.terminal = true;
+    take.timers.forEach(clearTimeout);
+    this.releaseCapture(take);
+    try { take.socket?.close(1000); } catch { /* Closing connecting sockets can throw. */ }
+    if (this.take === take) { this.take = undefined; this.setStatus('idle'); }
+    if (error) { take.rejectReady(error); take.reject(error); if (error.code !== 'cancelled') this.options.onError?.(error); }
+    else if (result) take.resolve(result);
   }
-  get busy(): boolean {
-    return (
-      this.statusValue === "recording" ||
-      this.statusValue === "stopping" ||
-      this.statusValue === "transcribing"
-    );
-  }
-  get elapsedMs(): number {
-    const active = this.operation;
-    if (!active) return 0;
-    return Math.max(0, (this.options.now ?? Date.now)() - active.startedAt);
-  }
-
-  private setStatus(next: VoiceRecordingStatus): void {
-    this.statusValue = next;
+  async start(url: string): Promise<boolean> {
+    if (this.disposed || this.take) return false;
+    if (!canCaptureVoice()) throw new VoiceRecordingError(globalThis.isSecureContext === false ? 'insecure-context' : 'unsupported');
+    let resolveReady!: Take['resolveReady'], rejectReady!: Take['rejectReady'], resolve!: Take['resolve'], reject!: Take['reject'];
+    const ready = new Promise<boolean>((a, b) => { resolveReady = a; rejectReady = b; });
+    const result = new Promise<CompanionVoiceTranscription>((a, b) => { resolve = a; reject = b; });
+    void ready.catch(() => undefined); void result.catch(() => undefined);
+    const take: Take = { startedAt: 0, bytes: 0, terminal: false, finishing: false, timers: [], ready, result, resolveReady, rejectReady, resolve, reject };
+    this.take = take;
+    take.timers.push(setTimeout(() => this.end(take, new VoiceRecordingError('timeout')), 15_000));
     try {
-      this.options.onStatus?.(next);
-    } catch {
-      /* UI observers must not break recorder cleanup. */
-    }
-  }
-
-  async start(): Promise<boolean> {
-    if (this.disposed || this.busy) return false;
-    if (!secureCaptureAvailable(this.options)) {
-      this.setStatus("unavailable");
-      throw new VoiceRecordingError(
-        this.options.isSecureContext === false
-          ? "insecure-context"
-          : "unsupported",
-        "当前环境不支持麦克风录音。",
-      );
-    }
-    const mimeType = selectVoiceMimeType(this.options.mediaRecorder);
-    if (!mimeType) {
-      this.setStatus("unavailable");
-      throw new VoiceRecordingError(
-        "unsupported",
-        "当前浏览器没有可用的录音格式。",
-      );
-    }
-    const declaredMediaType = normalizeVoiceMediaType(mimeType);
-    const dataUrlMaxBytes =
-      declaredMediaType === undefined
-        ? undefined
-        : maxVoiceAudioBytesForMediaType(declaredMediaType);
-    const maxBytes =
-      dataUrlMaxBytes === undefined
-        ? 0
-        : Math.min(this.configuredMaxBytes, dataUrlMaxBytes);
-    if (maxBytes <= 0) {
-      this.setStatus("unavailable");
-      throw new VoiceRecordingError(
-        "unsupported",
-        "当前浏览器没有可用的录音格式。",
-      );
-    }
-    const generation = ++this.generation;
-    let resolve!: (recording: VoiceRecording) => void;
-    let reject!: (error: unknown) => void;
-    const completion = new Promise<VoiceRecording>(
-      (resolveValue, rejectValue) => {
-        resolve = resolveValue;
-        reject = rejectValue;
-      },
-    );
-    // `start()` resolves when the recorder is ready; a caller may never ask
-    // for the stop result, so prevent an expected capture failure from being
-    // reported as an unhandled rejection.
-    void completion.catch(() => undefined);
-    const active: ActiveRecording = {
-      generation,
-      mediaType: declaredMediaType!,
-      maxBytes,
-      chunks: [],
-      bytes: 0,
-      startedAt: 0,
-      completion,
-      resolve,
-      reject,
-    };
-    this.operation = active;
-    this.setStatus("recording");
-    try {
-      active.stream = await this.options.mediaDevices!.getUserMedia({
-        audio: true,
-      });
-      if (
-        this.disposed ||
-        this.operation !== active ||
-        generation !== this.generation
-      ) {
-        stopTracks(active.stream);
-        throw new VoiceRecordingError("cancelled", "录音已取消。");
-      }
-      const Recorder = this.options.mediaRecorder!;
-      active.recorder = new Recorder(active.stream, { mimeType });
-      active.recorder.ondataavailable = (event) =>
-        this.onData(active, event.data);
-      active.recorder.onerror = (event) =>
-        this.fail(
-          active,
-          new VoiceRecordingError(
-            "capture-failed",
-            event.error instanceof Error
-              ? event.error.message
-              : "录音失败，请重试。",
-          ),
-        );
-      active.recorder.onstop = () => this.finish(active);
-      active.recorder.start(1000);
-      active.startedAt = (this.options.now ?? Date.now)();
-      active.timer = activeTimer(this.options)(
-        () => {
-          try { this.options.onDurationLimit?.(); } catch { /* Always stop even if a UI observer fails. */ }
-          if (this.operation === active && !active.stopReason) this.requestStop(active, "duration-limit");
-        },
-        this.maxDurationMs,
-      );
-      return true;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
+      if (take.terminal) { stream.getTracks().forEach(track => track.stop()); return ready; }
+      take.stream = stream;
+      const context = new AudioContext({ sampleRate: 16000 }); take.context = context;
+      if (context.sampleRate !== 16000) throw new VoiceRecordingError('unsupported');
+      await context.audioWorklet.addModule(workletUrl);
+      if (take.terminal) return ready;
+      await context.resume();
+      if (take.terminal) return ready;
+      const node = new AudioWorkletNode(context, 'voice-pcm', { channelCount: 1, channelCountMode: 'explicit' }); take.node = node;
+      take.source = context.createMediaStreamSource(stream);
+      node.onprocessorerror = () => this.end(take, new VoiceRecordingError('capture-failed'));
+      const socket = new WebSocket(url); take.socket = socket;
+      socket.binaryType = 'arraybuffer';
+      node.port.onmessage = event => {
+        if (take.terminal) return;
+        try {
+          if (event.data instanceof ArrayBuffer) {
+            const frame = event.data;
+            if (!frame.byteLength || frame.byteLength % 2 || frame.byteLength > MAX_VOICE_FRAME_BYTES || take.bytes + frame.byteLength > MAX_VOICE_PCM_BYTES || socket.readyState !== WebSocket.OPEN || socket.bufferedAmount + frame.byteLength > MAX_VOICE_QUEUE_BYTES) throw new VoiceRecordingError('size-limit');
+            take.bytes += frame.byteLength; socket.send(frame);
+          } else if (event.data?.type === 'duration-limit' && !take.finishing) {
+            this.options.onDurationLimit?.();
+            if (!take.finishing) void this.stopAndGet().catch(() => undefined);
+          } else if (event.data?.type === 'flushed' && take.finishing) {
+            clearTimeout(take.flushTimer);
+            this.releaseCapture(take);
+            if (socket.bufferedAmount + 17 > MAX_VOICE_QUEUE_BYTES) throw new VoiceRecordingError('size-limit');
+            socket.send(JSON.stringify({ type: 'finish' }));
+            this.setStatus('transcribing');
+            take.timers.push(setTimeout(() => this.end(take, new VoiceRecordingError('timeout')), 20_000));
+          }
+        } catch (error) { this.end(take, error instanceof VoiceRecordingError ? error : new VoiceRecordingError('capture-failed')); }
+      };
+      socket.onmessage = event => {
+        if (take.terminal) return;
+        try {
+          if (typeof event.data !== 'string' || event.data.length > 128 * 1024) throw new VoiceRecordingError('transcript-invalid');
+          const data = JSON.parse(event.data);
+          if (data.type === 'ready' && !take.startedAt) {
+            clearTimeout(take.timers[0]);
+            take.startedAt = Date.now();
+            take.source!.connect(node); node.connect(context.destination);
+            this.setStatus('recording'); take.resolveReady(true);
+            take.timers.push(setTimeout(() => { if (!take.finishing && !take.terminal) { this.options.onDurationLimit?.(); if (!take.finishing) void this.stopAndGet().catch(() => undefined); } }, MAX_VOICE_DURATION_MS));
+          } else if (data.type === 'result' && take.finishing) this.end(take, undefined, normalizeVoiceTranscription(data));
+          else if (data.type === 'error' && VOICE_ERROR_CODES.includes(data.code)) this.end(take, new VoiceRecordingError(data.code));
+          else throw new VoiceRecordingError('transcript-invalid');
+        } catch (error) { this.end(take, error instanceof VoiceRecordingError ? error : new VoiceRecordingError('transcript-invalid')); }
+      };
+      socket.onerror = socket.onclose = () => { if (!take.terminal) this.end(take, new VoiceRecordingError('upstream_error')); };
     } catch (error) {
-      const errorName =
-        error instanceof Error
-          ? error.name
-          : typeof error === "object" &&
-              error !== null &&
-              "name" in error &&
-              typeof (error as { name?: unknown }).name === "string"
-            ? (error as { name: string }).name
-            : "";
-      const failure =
-        error instanceof VoiceRecordingError
-          ? error
-          : errorName === "NotAllowedError" ||
-              errorName === "PermissionDeniedError"
-            ? new VoiceRecordingError(
-                "permission-denied",
-                "麦克风权限被拒绝，请允许后重试。",
-              )
-            : new VoiceRecordingError(
-                "capture-failed",
-                "无法开始录音，请重试。",
-              );
-      this.fail(active, failure);
-      throw failure;
+      this.end(take, error instanceof VoiceRecordingError ? error : new VoiceRecordingError(error instanceof Error && error.name === 'NotAllowedError' ? 'permission-denied' : 'capture-failed'));
     }
+    return ready;
   }
-
-  async stop(): Promise<VoiceRecording | undefined> {
-    return this.stopAndGet();
-  }
-
-  /** Stop and return the completed recording, if any. */
-  async stopAndGet(): Promise<VoiceRecording | undefined> {
-    const active = this.operation;
-    if (!active) return undefined;
-    if (this.statusValue === "stopping") return active.completion;
-    if (this.statusValue === "recording") this.setStatus("stopping");
-    active.stopReason ??= "user";
-    if (!active.recorder) {
-      this.fail(active, new VoiceRecordingError("cancelled", "录音已取消。"));
-    } else {
-      try {
-        active.recorder.stop();
-      } catch {
-        this.fail(
-          active,
-          new VoiceRecordingError("capture-failed", "录音失败，请重试。"),
-        );
-      }
+  async stopAndGet(): Promise<CompanionVoiceTranscription | undefined> {
+    const take = this.take;
+    if (!take) return undefined;
+    if (!take.finishing) {
+      if (!take.startedAt) { this.end(take, new VoiceRecordingError('cancelled')); return undefined; }
+      take.finishing = true; this.setStatus('stopping');
+      // Port ordering guarantees every final PCM frame arrives before the flush acknowledgement.
+      take.node!.port.postMessage({ type: 'flush' });
+      take.flushTimer = setTimeout(() => this.end(take, new VoiceRecordingError('timeout')), 20_000);
+      take.timers.push(take.flushTimer);
     }
-    return active.completion;
+    return take.result;
   }
-
-  markTranscribing(): boolean {
-    if (
-      this.disposed ||
-      this.operation ||
-      this.statusValue === "recording" ||
-      this.statusValue === "stopping" ||
-      this.statusValue === "transcribing"
-    )
-      return false;
-    this.setStatus("transcribing");
-    return true;
-  }
-
-  finishTranscribing(): void {
-    if (this.statusValue === "transcribing") this.setStatus("idle");
-  }
-
   async cancel(): Promise<void> {
-    const active = this.operation;
-    if (!active) {
-      if (this.statusValue === "transcribing") this.setStatus("idle");
-      return;
-    }
-    active.stopReason = "cancelled";
-    if (this.statusValue === "recording") this.setStatus("stopping");
-    if (active.recorder) {
-      try {
-        active.recorder.stop();
-      } catch {
-        this.fail(active, new VoiceRecordingError("cancelled", "录音已取消。"));
-      }
-    } else {
-      this.fail(active, new VoiceRecordingError("cancelled", "录音已取消。"));
-    }
+    const take = this.take;
+    if (!take) return;
+    try { if (take.socket?.readyState === WebSocket.OPEN) take.socket.send(JSON.stringify({ type: 'cancel' })); } catch { /* Still close locally. */ }
+    this.end(take, new VoiceRecordingError('cancelled'));
   }
-
-  dispose(): void {
-    this.disposed = true;
-    void this.cancel();
-    this.setStatus("idle");
-  }
-
-  private requestStop(
-    active: ActiveRecording,
-    reason: "duration-limit" | "size-limit",
-  ): void {
-    if (this.operation !== active || active.stopReason) return;
-    active.stopReason = reason;
-    if (this.statusValue === "recording") this.setStatus("stopping");
-    try {
-      active.recorder?.stop();
-    } catch {
-      this.fail(
-        active,
-        new VoiceRecordingError("capture-failed", "录音失败，请重试。"),
-      );
-    }
-  }
-
-  private onData(active: ActiveRecording, chunk: Blob | undefined): void {
-    if (this.operation !== active || !chunk || chunk.size <= 0) return;
-    const emittedMediaType = normalizeVoiceMediaType(chunk.type);
-    const emittedMaxBytes =
-      emittedMediaType === undefined
-        ? undefined
-        : maxVoiceAudioBytesForMediaType(emittedMediaType);
-    if (emittedMaxBytes !== undefined)
-      active.maxBytes = Math.min(active.maxBytes, emittedMaxBytes);
-    active.bytes += chunk.size;
-    active.chunks.push(chunk);
-    if (active.bytes > active.maxBytes) this.requestStop(active, "size-limit");
-  }
-
-  private finish(active: ActiveRecording): void {
-    if (this.operation !== active) return;
-    const reason = active.stopReason;
-    if (reason === "cancelled") {
-      this.fail(active, new VoiceRecordingError("cancelled", "录音已取消。"));
-      return;
-    }
-    if (reason === "size-limit" || active.bytes > active.maxBytes) {
-      this.fail(
-        active,
-        new VoiceRecordingError("size-limit", "录音超过语音大小限制，已停止。"),
-      );
-      return;
-    }
-    try {
-      const emittedMediaType =
-        active.chunks.find((chunk) => chunk.type)?.type ||
-        active.recorder?.mimeType ||
-        active.mediaType;
-      const blob = new Blob(active.chunks, { type: emittedMediaType ?? "" });
-      const admitted = validateVoiceRecording(
-        blob,
-        emittedMediaType,
-        active.maxBytes,
-      );
-      this.complete(active, {
-        ...admitted,
-        durationMs: Math.min(this.maxDurationMs, Math.max(
-          0,
-          (this.options.now ?? Date.now)() - active.startedAt,
-        )),
-      });
-    } catch (error) {
-      this.fail(active, error);
-    }
-  }
-
-  private complete(active: ActiveRecording, recording: VoiceRecording): void {
-    if (this.operation !== active) return;
-    clearActiveTimer(this.options, active.timer);
-    stopTracks(active.stream);
-    this.operation = undefined;
-    this.setStatus("idle");
-    active.resolve(recording);
-  }
-
-  private fail(active: ActiveRecording, error: unknown): void {
-    if (this.operation !== active) return;
-    const failure =
-      error instanceof VoiceRecordingError
-        ? error
-        : new VoiceRecordingError("capture-failed", "录音失败，请重试。");
-    clearActiveTimer(this.options, active.timer);
-    stopTracks(active.stream);
-    this.operation = undefined;
-    this.setStatus("idle");
-    try {
-      this.options.onError?.(failure);
-    } catch {
-      /* UI observers must not break the rejected capture promise. */
-    }
-    active.reject(failure);
-  }
+  dispose() { this.disposed = true; void this.cancel(); }
 }
