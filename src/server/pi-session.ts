@@ -1,3 +1,5 @@
+import { createPiPanelBackend, PanelCursors } from './companion-panels'
+import { PANEL_LIMITS, type AlbumPage } from '@lamplit/contracts'
 import { createChatHost } from '@lamplit/contracts/server'
 import { createPiChatBackend, stopPiChatTurn, type ChatAdmission } from './chat-adapter'
 import { createWakeTools } from './timed-wake-tools'
@@ -118,6 +120,14 @@ export class PiSession extends HostedAgent {
   }
   private getChatHost() {
     return this.chatHost ??= createChatHost(createPiChatBackend({
+      panels: createPiPanelBackend({
+        sessionId: () => this.sessionStorage.getMetadataSync().id,
+        scope: `pi-registry:${this.instanceId() ?? PI_REGISTRY_INSTANCE}`,
+        cursorSecret: () => this.panelCursorSecret(),
+        relationship: input => this.registry().getRelationshipSnapshot(input),
+        diaryList: () => this.listDiary(), diaryRead: name => this.readDiary(name),
+        album: input => this.readPanelAlbum(input.cursor), reminders: () => this.listTimedWakes(),
+      }),
       branch: () => this.getBranch(),
       identity: async () => {
         await this.waitUntilInitialized()
@@ -545,11 +555,13 @@ export class PiSession extends HostedAgent {
   async listDiary(): Promise<string[]> {
     await this.waitUntilInitialized()
     const directory = `${WORKSPACE_ROOT}/memory`
-    if (!(await this.workspace.stat(directory))) return []
+    if (!(await this.workspace.stub().fs.lstatOrNull(directory))?.isDirectory) return []
     const names: string[] = []
     for (let offset = 0; ; offset += WORKSPACE_PAGE_SIZE) {
       const entries = await this.workspace.readDir(directory, { limit: WORKSPACE_PAGE_SIZE, offset })
-      names.push(...entries.filter((entry) => entry.type === 'file' && DIARY_NAME.test(entry.path.slice(directory.length + 1))).map((entry) => entry.path.slice(directory.length + 1)))
+      const candidates = entries.filter(entry => entry.type === 'file' && DIARY_NAME.test(entry.path.slice(directory.length + 1)))
+      const regular = await Promise.all(candidates.map(async entry => (await this.workspace.stub().fs.lstatOrNull(entry.path))?.isFile ? entry.path.slice(directory.length + 1) : null))
+      names.push(...regular.filter((name): name is string => name !== null))
       if (entries.length < WORKSPACE_PAGE_SIZE) break
     }
     return names.sort().reverse()
@@ -560,11 +572,12 @@ export class PiSession extends HostedAgent {
     await this.waitUntilInitialized()
     if (!DIARY_NAME.test(name)) return null
     const path = `${WORKSPACE_ROOT}/memory/${name}`
-    const stat = await this.workspace.stat(path)
-    if (stat?.type !== 'file') return null
+    if (!(await this.workspace.stub().fs.lstatOrNull(`${WORKSPACE_ROOT}/memory`))?.isDirectory) return null
+    const stat = await this.workspace.stub().fs.lstatOrNull(path)
+    if (!stat?.isFile) return null
     if (stat.size > DIARY_ENTRY_MAX_BYTES) return { tooLarge: true }
     const text = await this.workspace.readFile(path)
-    return text === null ? null : { name, text }
+    return text === null ? null : new TextEncoder().encode(text).byteLength > DIARY_ENTRY_MAX_BYTES ? { tooLarge: true } : { name, text }
   }
 
   @hostedCallable({ streaming: true })
@@ -681,6 +694,30 @@ export class PiSession extends HostedAgent {
   @hostedCallable()
   async listConversationPhotos(input?: { cursor?: string; limit?: number }): Promise<ConversationPhotoPage> {
     return this.sessionStorage.listPhotos(input?.cursor, input?.limit)
+  }
+
+  private panelCursorSecret(): string {
+    let secret = this.sessionStorage.getSetting<string>('panelCursorSecret')
+    if (!secret) { secret = crypto.randomUUID(); this.sessionStorage.setSetting('panelCursorSecret', secret) }
+    return secret
+  }
+
+  private async readPanelAlbum(cursor: string | null): Promise<AlbumPage> {
+    await this.waitUntilInitialized()
+    const sessionId = this.sessionStorage.getMetadataSync().id
+    const cursors = new PanelCursors(() => sessionId, () => this.panelCursorSecret())
+    const before = await cursors.decode('album', cursor)
+    const page = this.sessionStorage.listPanelPhotos(before, PANEL_LIMITS.album)
+    const images = await Promise.all(page.images.map(async photo => {
+      const [preview, original] = this.env.COMPUTER_R2 ? await Promise.all([
+        this.env.COMPUTER_R2.head(this.photoKey(photo.id, 'preview')),
+        this.env.COMPUTER_R2.head(this.photoKey(photo.id, 'original')),
+      ]) : [null, null]
+      const base = `/api/conversation-images/${sessionId}/${photo.id}`
+      return { id: photo.id, filename: photo.name, createdAt: photo.created, origin: 'human' as const,
+        available: Boolean(preview && original), previewUrl: preview ? `${base}/preview` : null, originalUrl: original ? `${base}/original` : null }
+    }))
+    return { images, nextCursor: page.nextCursor ? await cursors.encode('album', page.nextCursor) : null }
   }
 
   async readConversationPhoto(id: string, variant: 'original' | 'preview', operationId?: string): Promise<Response> {

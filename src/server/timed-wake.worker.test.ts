@@ -344,6 +344,62 @@ describe('timed wakes in local workerd', () => {
       schedule.mockRestore(); mock.mockRestore()
     })
   })
+  it('keeps 59/60/>60 second once and repeat admission receipts and projects persisted source in public history', async () => {
+    const stub = await fresh()
+    await runInDurableObject(stub, async instance => {
+      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
+      const fixed = Date.now()
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(fixed)
+      const drain = vi.spyOn(instance as unknown as { schedulePendingDrain(): Promise<void> }, 'schedulePendingDrain').mockResolvedValue()
+      const accepted: WakeSource[] = []
+      try {
+        for (const seconds of [59, 60, 60.001]) for (const repeat of [false, true]) {
+          const future = new Date(fixed + 120000).toISOString()
+          const wake = await instance.saveTimedWake({ title: 'Boundary fixture', reminder: 'Immutable reminder input', plan: repeat ? { type: 'interval', anchor: future, seconds: 90 } : { type: 'once', at: future } })
+          const due = { ...wake, nextAt: new Date(fixed - seconds * 1000).toISOString() }
+          storage.setSetting('timedWakes', [due])
+          const original = source(due)
+          await instance.acceptTimedWake(original)
+          const receipt = storage.wakeReceipt(original)
+          if (seconds <= 60) {
+            expect(receipt).toBeTruthy(); accepted.push(original)
+            await instance.acceptTimedWake(original)
+            expect(storage.wakeReceipt(original)).toBe(receipt)
+            const pending = storage.getValueSync(pendingEntry(receipt!))?.value
+            expect(pending?.type === 'message' ? pending.payload : undefined).toMatchObject({ details: original })
+            if (repeat) await instance.saveTimedWake({ title: 'Changed definition', reminder: 'Changed body', plan: wake.plan }, wake.id)
+            await instance.cancelTimedWake(wake.id)
+            expect(storage.getValueSync(pendingEntry(receipt!))?.value).toEqual(pending)
+          } else {
+            expect(receipt).toBeUndefined()
+            const remaining = await instance.listTimedWakes()
+            if (repeat) { expect(remaining).toHaveLength(1); expect(Date.parse(remaining[0].nextAt)).toBeGreaterThan(fixed); expect(remaining[0].plan).toEqual(wake.plan) }
+            else expect(remaining).toEqual([])
+          }
+        }
+      } finally { clock.mockRestore(); drain.mockRestore() }
+      await instance.drainPendingWork()
+      const branch = await instance.getBranch()
+      expect(branch.entries.filter(e => e.wakeSource)).toHaveLength(4)
+      const host = await (instance as unknown as { getChatHost(): Promise<Awaited<ReturnType<typeof import('@lamplit/contracts/server')['createChatHost']>>> }).getChatHost()
+      const frames: Array<{ id: string; result: import('@lamplit/contracts').HistoryPage }> = []
+      const channel = host.connect({ send: raw => { frames.push(JSON.parse(raw)) }, close() {} }, async () => true)
+      const call = async (member: string, args: unknown[]) => {
+        const id = crypto.randomUUID()
+        await channel.receive(JSON.stringify({ type: 'call', version: 1, id, call: { serviceId: 'lamplit.chat.v1', member, args } }))
+        await vi.waitFor(() => expect(frames.some(frame => frame.id === id)).toBe(true))
+        return frames.find(frame => frame.id === id)!.result
+      }
+      const view = await call('history', [branch.entries.at(-1)!.id])
+      const projected = view.messages.filter(m => m.source)
+      expect(projected).toHaveLength(4)
+      expect(projected.every(m => m.role === 'agent' && m.source?.kind === 'reminder' && m.text.includes('Immutable reminder input'))).toBe(true)
+      expect(projected.map(m => m.id)).toEqual(branch.entries.filter(e => e.wakeSource).map(e => e.id))
+      expect(projected.map(m => m.source?.reminderId)).toEqual(accepted.map(a => a.wakeId))
+      channel.close()
+      host.close()
+    })
+  })
   it('calculates real timezone and DST dates in workerd without a timer', () => {
     expect(nextWake({ type: 'daily', time: '09:00', timeZone: 'Asia/Shanghai' }, Date.parse('2026-01-01T00:00:00Z'))).toBe('2026-01-01T01:00:00.000Z')
     expect(nextWake({ type: 'daily', time: '02:30', timeZone: 'America/New_York' }, Date.parse('2026-03-08T05:00:00Z'))).toBe('2026-03-08T07:30:00.000Z')

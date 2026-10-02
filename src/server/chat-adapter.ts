@@ -1,11 +1,14 @@
 import type { AgentLane } from '@earendil-works/pi-agent-core'
 import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
 import { capabilities, PAGE_SIZE, type ChatMessage, type ChatView, type Submission, type Receipt } from '@lamplit/contracts'
+import { occurrenceKey } from '../shared/timed-wake'
+import type { PanelBackend } from '@lamplit/contracts'
 import type { ChatBackend } from '@lamplit/contracts/server'
 import type { SessionBranch, PromptAdmissionStatus, SteerAdmissionStatus } from '../shared/pi-contract'
 
 export type ChatAdmission = { text: string; kind: 'prompt' | 'steer'; turnId: string | null }
 export interface PiChatSource {
+  panels: PanelBackend
   branch(): Promise<SessionBranch>
   identity(): Promise<{ id: string; name: string; turnId: string | null }>
   records(): Promise<Map<string, ChatAdmission>>
@@ -25,14 +28,14 @@ export function createPiChatBackend(source: PiChatSource): ChatBackend {
     const admissions = await Promise.all([...records].map(async ([id, r]) => [id, r, r.kind === 'prompt' ? await source.promptReceipt(id) : await source.steerReceipt(id)] as const));
     const entryOperations = new Map(admissions.flatMap(([id, r, a]) => 'entryId' in a ? [[a.entryId, { id, turnId: r.turnId }]] as const : []));
     const history = branch.entries.flatMap(entry => {
-      if (entry.type !== 'message' || !['user', 'assistant'].includes(entry.message?.role ?? '')) return [];
+      if (entry.type !== 'message' || !(['user', 'assistant'].includes(entry.message?.role ?? '') || entry.wakeSource)) return [];
       const content = entry.message?.content;
       const text = typeof content === 'string' ? content : Array.isArray(content) ? content.flatMap(part => part && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string' ? [part.text] : []).join('\n') : '';
       const stopReason = entry.message && 'stopReason' in entry.message ? entry.message.stopReason : null;
       const failed = stopReason === 'aborted' || stopReason === 'error';
       if (entry.message?.role === 'assistant' && !text && !failed) return [];
       const operation = entryOperations.get(entry.id);
-      return [{ id: entry.id, role: failed ? 'notice' : entry.message!.role === 'user' ? 'user' : 'agent', text: failed ? stopReason === 'aborted' ? '已停止回复' : '回复失败' : text || '[媒体消息]', createdAt: Date.parse(entry.timestamp), operationId: operation?.id ?? null, turnId: operation?.turnId ?? null } satisfies ChatMessage];
+      return [{ ...(entry.wakeSource ? { source: { kind: 'reminder' as const, reminderId: entry.wakeSource.wakeId, occurrenceId: occurrenceKey(entry.wakeSource) } } : {}), id: entry.id, role: failed ? 'notice' : !entry.wakeSource && entry.message!.role === 'user' ? 'user' : 'agent', text: failed ? stopReason === 'aborted' ? '已停止回复' : '回复失败' : text || '[媒体消息]', createdAt: Date.parse(entry.timestamp), operationId: operation?.id ?? null, turnId: operation?.turnId ?? null } satisfies ChatMessage];
     });
     return [...history, ...await source.outcomes()].sort((a, b) => a.createdAt - b.createdAt);
   }
@@ -51,6 +54,7 @@ export function createPiChatBackend(source: PiChatSource): ChatBackend {
     return { operationId: id, state: committed ? 'consumed' : messageId && source.unconsumed(messageId) ? 'unconsumed' : native.state === 'accepted' ? 'accepted' : 'uncertain', messageId, turnId: record.turnId, error: null };
   }
   return {
+    ...source.panels,
     async read(): Promise<ChatView> {
       const [identity, all] = await Promise.all([source.identity(), messages()]);
       return { version: 1, sessionId: identity.id, name: identity.name, activeTurnId: identity.turnId, ...page(all), capabilities };

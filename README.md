@@ -209,3 +209,19 @@ See [the tool contract and isolated chat checks](docs/platform-feedback-tool.md)
 for trusted identity, existing bindings, stable submission keys, result validation
 and uncertain outcomes. A timeout or disconnect is unconfirmed and may already
 have been saved; replay the same call identity to avoid duplicates.
+
+## Shared companion panels
+
+The authenticated shared-app socket exposes bounded relationship/history, diary,
+album and reminder reads from the existing PiRegistry/PiSession stores. Public
+schemas come from `@lamplit/contracts` in the adjacent app; panel reads do not
+start Agent turns. Images retain authenticated same-origin HTTP resources and
+instance/session membership. Timed-wake input is shown as an application reminder;
+the native 60-second lateness window and immutable admission receipts remain.
+
+See [protocol, security, native scheduling and operator acceptance commands](docs/companion-panels.md).
+Run `node scripts/companion-panels-local.mjs .scratch/companion-panels/acceptance`
+with the reviewed adjacent app handoff for an isolated actual-workerd host on
+port 8951. The guide includes native seeding and read-only browser verification at
+390/1280 with synthetic model/ASR responses. The existing native frontend remains
+available pending full shared-app parity.

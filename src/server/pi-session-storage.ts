@@ -298,6 +298,19 @@ export class PiSessionStorage extends PiV4Storage {
     return { images, ...(rows.length > capped ? { nextCursor: images.at(-1)!.id } : {}) }
   }
 
+  listPanelPhotos(cursor: string | undefined, limit: number): ConversationPhotoPage {
+    const before = cursor ? this.photo(cursor) : undefined
+    if (cursor && !before?.entryId) throw new Error('Invalid album cursor.')
+    const rows = this.durable.sql.exec<{ id: string; operation_id: string; name: string; media_type: string; created_at: number; ordinal: number; entry_id: string | null }>(
+      `SELECT id, operation_id, name, media_type, created_at, ordinal, entry_id FROM conversation_photos
+       WHERE entry_id IS NOT NULL AND ready = 1 AND (created_at < ? OR (created_at = ? AND id < ?))
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+      before?.created ?? Number.MAX_SAFE_INTEGER, before?.created ?? Number.MAX_SAFE_INTEGER, cursor ?? '', limit + 1,
+    ).toArray()
+    const images = rows.slice(0, limit).map(photoRow)
+    return { images, ...(rows.length > limit ? { nextCursor: images.at(-1)!.id } : {}) }
+  }
+
   deletePhoto(id: string): void {
     this.durable.sql.exec('DELETE FROM conversation_photos WHERE id = ?', id)
   }

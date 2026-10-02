@@ -28,3 +28,9 @@ from LamplitIsles/lamplit-app, Apache-2.0, verified at
 ebbf0c90aa343e9966510385d5c74d71166266a5 (spec #3043).
 Its package retains its own LICENSE. The original Lamplit Chat capture/relay
 remains in this repository; no additional third-party capture source was copied.
+
+The companion-panels integration consumes the compiled @lamplit/contracts package
+from LamplitIsles/lamplit-app, Apache-2.0, verified at
+0075e3c0887a30a6b19f63852ab20c103f13c79e (spec #3062).
+Its package retains its own LICENSE. Public schemas remain owned by that package;
+the Pi native-store projections and local acceptance harness are authored here.
