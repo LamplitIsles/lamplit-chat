@@ -1,3 +1,4 @@
+import { nativeSearchNode } from './conversation-search'
 import { WAKE_CUSTOM_TYPE, occurrenceKey, type TimedWake, type WakeSource } from '../shared/timed-wake'
 import { nextWake } from './timed-wake'
 import { branchTip, laneState, operationMeta, setValue, pendingEntry, type CommittedWrite, type Entry, type PendingEntry, type SessionMetadata } from '@earendil-works/pi-agent-core/harness/session'
@@ -416,11 +417,10 @@ export class PiSessionStorage extends PiV4Storage {
     const pending = this.entriesInOrder().filter((entry) => entry.seq > cursor)
     const events: SessionIndexEvent[] = []
     for (const entry of pending) {
-      if (entry.type !== 'message' || (entry.message.role !== 'user' && entry.message.role !== 'assistant')) continue
-      const text = messageText(entry.message)
-      if (text) events.push({
+      const node = nativeSearchNode(entry)
+      if (node.record?.content) events.push({
         eventId: `${sessionId}:message:${entry.seq}`, type: 'message', entryId: entry.id, entrySeq: entry.seq,
-        role: entry.message.role, timestamp: new Date(entry.timestamp).toISOString(), text,
+        role: node.record.kind === 'compaction' ? 'compaction' : node.record.role!, timestamp: node.createdAt, text: node.record.content,
       })
     }
     if (pending.length) {
@@ -444,12 +444,4 @@ export class PiSessionStorage extends PiV4Storage {
       JSON.stringify(metadata),
     )
   }
-}
-
-function messageText(message: { content: unknown }): string {
-  if (typeof message.content === 'string') return message.content
-  if (!Array.isArray(message.content)) return ''
-  return message.content
-    .filter((part): part is { type: 'text'; text: string } => part?.type === 'text' && typeof part.text === 'string')
-    .map((part) => part.text).join('\n')
 }

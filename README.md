@@ -256,3 +256,17 @@ This exposes the existing native projection through the public facade without an
 SDK upgrade or algorithm change. See [quiet-compaction.md](docs/quiet-compaction.md)
 for protocol, admission, exact frozen-artifact validation and isolated native browser
 commands. Native/frontend checks remain unchanged, and this change does not deploy.
+
+## Shared conversation archive search
+
+The shared App searches individual native user/assistant records and compaction
+summaries across current/past sessions, preserved originals, branches and existing
+imports. Pi retains FTS5 matching and BM25 ranking, with record-recency ties and
+20 results total; there is no per-session quota. The separate agent-facing
+`session_search` keeps its existing behavior. The read-only reader follows native
+parents and unique successors without switching chat or clearing drafts. Selected
+text is complete within the existing transport; nearby context is bounded to
+eight eligible records per side and 12,000 Unicode code points. Ordinary read
+failures support retry. See [protocol, ownership, summary indexing and exact
+frozen native acceptance](docs/conversation-search.md). Both native hosts and joint
+user approval gate merge; this feature does not deploy.

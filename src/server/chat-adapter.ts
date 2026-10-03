@@ -10,6 +10,7 @@ export type ChatAdmission = Submission & { kind: 'prompt' | 'steer'; turnId: str
 export interface PiChatSource {
   observation(): Promise<{ sessionId: string; name: string; activeTurnId: string | null; contextUsage: ContextUsage; compaction: Compaction }>
   compact(input: CompactInput): Promise<CompactResult>
+  search: import('@lamplit/contracts').SearchBackend
   panels: PanelBackend
   branch(): Promise<SessionBranch>
   identity(): Promise<{ id: string; name: string; turnId: string | null }>
@@ -65,6 +66,7 @@ export function createPiChatBackend(source: PiChatSource): ChatBackend {
   }
   return {
     ...source.panels,
+    ...source.search,
     async read(): Promise<ChatView> {
       for (;;) {
         const identity = await source.identity();

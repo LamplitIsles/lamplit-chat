@@ -1,3 +1,4 @@
+import { nativeSearchNode, readSearchNodes } from './conversation-search'
 import { createPiPanelBackend, PanelCursors } from './companion-panels'
 import { PI_IMAGE_LIMITS, imageRef, checkUpload, nativePhotoId } from './chat-images'
 import { validateSubmission, validateRecovery, type Submission, type InputRecovery, type ImageUpload, type ImageRef } from '@lamplit/contracts'
@@ -84,6 +85,8 @@ const PHOTO_ROW_BUDGET = 1_500_000
 type MemoryRegistry = {
   getUserTimeZone(): Promise<string>
   getReportedTimeZone(): Promise<string | undefined>
+  search(input: import('@lamplit/contracts').SearchInput): Promise<import('@lamplit/contracts').SearchResult>
+  searchRead(input: import('@lamplit/contracts').SearchReadInput): Promise<import('@lamplit/contracts').SearchReadResult>
   searchSessions(input: { query: string; limit?: number }): Promise<import('../shared/pi-contract').SessionSearchResult[]>
   getMemoryContext(): Promise<string>
   getRelationshipContext(): Promise<string>
@@ -126,6 +129,7 @@ export class PiSession extends HostedAgent {
   }
   private getChatHost() {
     return this.chatHost ??= createChatHost(createPiChatBackend({
+      search: { search: input => this.registry().search(input), searchRead: input => this.registry().searchRead(input) },
       panels: createPiPanelBackend({
         sessionId: () => this.sessionStorage.getMetadataSync().id,
         scope: `pi-registry:${this.instanceId() ?? PI_REGISTRY_INSTANCE}`,
@@ -975,7 +979,21 @@ export class PiSession extends HostedAgent {
     await this.destroy()
   }
 
-  // TODO: push these to PiRegistry when that binding is present in the generated Env type.
+  // Internal registry reads; browser calls enter through the authenticated chat host.
+  async compactionSearchEntries(): Promise<SessionIndexEvent[]> {
+    const sessionId = this.sessionStorage.getMetadataSync().id
+    return this.sessionStorage.entriesInOrder().filter(entry => entry.type === 'compaction').map(entry => {
+      const node = nativeSearchNode(entry)
+      return { eventId: `${sessionId}:summary:${entry.seq}`, type: 'message', entryId: entry.id, entrySeq: entry.seq,
+        role: 'compaction', timestamp: node.createdAt, text: node.record!.content }
+    })
+  }
+
+  async readSearchRecord(entryId: string): Promise<import('@lamplit/contracts').SearchReadResult> {
+    const metadata = this.sessionStorage.getMetadataSync()
+    return readSearchNodes(metadata.id, await this.session.getName(BACKGROUND_CONTEXT), this.sessionStorage.entriesInOrder().map(nativeSearchNode), entryId)
+  }
+
   async flushOutbox(): Promise<SessionIndexEvent[]> {
     return this.sessionStorage.getOutbox() as SessionIndexEvent[]
   }

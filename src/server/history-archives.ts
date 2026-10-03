@@ -1,3 +1,5 @@
+import { readSearchNodes } from './conversation-search'
+import type { SearchReadResult } from '@lamplit/contracts'
 import { Value } from 'typebox/value'
 import type { TSchema, Static } from 'typebox'
 import {
@@ -222,6 +224,20 @@ export class HistoryArchives {
     const rows = this.storage.sql.exec<NodeRow>('SELECT * FROM history_nodes WHERE archive_id=? AND seq>? ORDER BY seq LIMIT ?', id, after, limit + 1).toArray()
     const visible = rows.slice(0, limit)
     return { id, conversation: JSON.parse(archive.metadata), messageCount: archive.node_count, nodes: visible.map(r => { const node: HistoryNode = JSON.parse(r.data); return { ...node, message: piMessage(node) } }), ...(rows.length > limit ? { nextCursor: visible.at(-1)!.seq } : {}) }
+  }
+  hasArchive(id: string): boolean {
+    return this.storage.sql.exec('SELECT id FROM history_archives WHERE id=?', id).toArray().length > 0
+  }
+  readSearchRecord(id: string, entryId: string): SearchReadResult {
+    const archive = this.storage.sql.exec<ArchiveRow>('SELECT * FROM history_archives WHERE id=?', id).toArray()[0]
+    if (!archive) throw new Error('Archive not found')
+    const nodes = this.storage.sql.exec<NodeRow>('SELECT * FROM history_nodes WHERE archive_id=? ORDER BY seq', id).toArray().map(row => {
+      const node: HistoryNode = JSON.parse(row.data)
+      const content = node.parts.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n')
+      return { id: node.id, parentId: node.parentId, index: row.seq, createdAt: node.time.raw,
+        record: content && (node.role === 'user' || node.role === 'assistant') ? { kind: 'message' as const, role: node.role, content } : null }
+    })
+    return readSearchNodes(id, (JSON.parse(archive.metadata) as HistoryConversation).title, nodes, entryId)
   }
   failureContext(id: string): { source?: string; nodeCount?: number; bytes?: number } {
     const row = this.storage.sql.exec<StageRow>('SELECT * FROM history_staging WHERE id=?', id).toArray()[0]

@@ -1,3 +1,6 @@
+import type { SearchBackend } from '@lamplit/contracts'
+import { nativeSearchNode, parseSearchId, searchId, searchSnippet } from './conversation-search'
+import type { Entry } from '@earendil-works/pi-agent-core/harness/session'
 import { MaterialFailure, materialCheck, materialReply } from './companion-materials'
 import { MemoryUpdateSchema, MemoryDeleteSchema, type MaterialRequest, type MaterialReply } from '../shared/companion-materials'
 import { HistoryArchives, HistoryFailure } from './history-archives'
@@ -72,6 +75,8 @@ type PiSessionInternal = {
   revokePersonalSession(tokenHash: string): Promise<void>
   initialize(metadata: InitializeMetadata): Promise<SessionOverview>
   getOverview(): Promise<SessionOverview>
+  compactionSearchEntries(): Promise<SessionIndexEvent[]>
+  readSearchRecord(entryId: string): ReturnType<SearchBackend['searchRead']>
   getBranch(leafId?: string): Promise<SessionBranch>
   setSessionName(name: string): Promise<SessionOverview>
   exportSession(entryId?: string): Promise<SessionSnapshot>
@@ -348,7 +353,7 @@ export class PiRegistry extends HostedAgent {
     const limit = boundedLimit(input.limit)
     const query = input.query?.trim()
     if (query) {
-      const matches = this.search({ ...input, limit }, false)
+      const matches = this.groupedSearch({ ...input, limit }, false)
       const matchedIds = new Set(matches.map(({ session }) => session.id))
       const nameRows = this.ctx.storage.sql.exec<SessionRow>(
         `SELECT * FROM pi_registry_sessions
@@ -374,10 +379,10 @@ export class PiRegistry extends HostedAgent {
 
   @hostedCallable()
   async searchSessions(input: SessionListInput): Promise<SessionSearchResult[]> {
-    return this.search(input, true)
+    return this.groupedSearch(input, true)
   }
 
-  private search(input: SessionListInput, includeArchives: boolean): SessionSearchResult[] {
+  private groupedSearch(input: SessionListInput, includeArchives: boolean): SessionSearchResult[] {
     const query = input.query?.trim()
     if (!query) return []
     const limit = boundedLimit(input.limit)
@@ -387,6 +392,39 @@ export class PiRegistry extends HostedAgent {
     const grouped = groupSearchRows(rows, limit)
     if (input.sort === 'recent') grouped.sort((a, b) => b.session.updatedAt.localeCompare(a.session.updatedAt))
     return grouped
+  }
+
+  private summaryRefresh?: Promise<void>
+  private refreshStoredSummaries(): Promise<void> {
+    return this.summaryRefresh ??= (async () => {
+      const sessions = this.ctx.storage.sql.exec<SessionRow>("SELECT * FROM pi_registry_sessions WHERE status = 'ready'").toArray()
+      for (const row of sessions) {
+        const key = `searchSummaries:${row.id}`
+        if (await this.ctx.storage.get(key)) continue
+        const events = await this.session(row.id).compactionSearchEntries()
+        await this.applyIndexEvents(row.id, events)
+        await this.ctx.storage.put(key, true)
+      }
+    })().finally(() => { this.summaryRefresh = undefined })
+  }
+
+  async search(input: Parameters<SearchBackend['search']>[0]): ReturnType<SearchBackend['search']> {
+    await this.refreshStoredSummaries()
+    const rows = this.ftsSearch(ftsQuery(input.query), 21, false, true, true)
+    return { hits: rows.slice(0, 20).map(row => ({
+      id: searchId(row.id, row.entry_id), sessionId: row.id, ...(row.name ? { sessionName: row.name } : {}),
+      kind: row.role === 'compaction' ? 'compaction' : 'message',
+      ...(row.role === 'user' || row.role === 'assistant' ? { role: row.role } : {}),
+      createdAt: row.timestamp, snippet: searchSnippet(row.text, input.query),
+    })), estimatedTotalHits: null, limited: rows.length > 20 }
+  }
+
+  async searchRead(input: Parameters<SearchBackend['searchRead']>[0]): ReturnType<SearchBackend['searchRead']> {
+    const [sessionId, entryId] = parseSearchId(input.id)
+    // Resolve imports only in this registry, and native sessions only after membership.
+    if (this.history.hasArchive(sessionId)) return this.history.readSearchRecord(sessionId, entryId)
+    this.requireSession(sessionId)
+    return this.session(sessionId).readSearchRecord(entryId)
   }
 
   @hostedCallable()
@@ -777,8 +815,9 @@ export class PiRegistry extends HostedAgent {
 
   private indexSnapshot(sessionId: string, entries: unknown[]): void {
     entries.forEach((value, index) => {
-      if (!isMessageEntry(value)) return
-      this.upsertSearchEntry(sessionId, value.id, index + 1, value.message.role, new Date(value.timestamp).toISOString(), messageText(value.message))
+      const node = nativeSearchNode(value as Entry)
+      if (!node.record?.content) return
+      this.upsertSearchEntry(sessionId, node.id, index + 1, node.record.kind === 'compaction' ? 'compaction' : node.record.role!, node.createdAt, node.record.content)
     })
   }
 
@@ -819,7 +858,7 @@ export class PiRegistry extends HostedAgent {
     )
   }
 
-  private ftsSearch(query: string, sessionLimit: number, namedOnly: boolean, includeArchives: boolean): SearchRow[] {
+  private ftsSearch(query: string, sessionLimit: number, namedOnly: boolean, includeArchives: boolean, records = false): SearchRow[] {
     return this.ctx.storage.sql.exec<SearchRow>(
       `SELECT s.*, f.entry_id, f.role, f.timestamp, e.text
        FROM pi_registry_search_fts AS f
@@ -830,12 +869,13 @@ export class PiRegistry extends HostedAgent {
          node_count AS message_count, json_extract(metadata,'$.selectedLeafId') AS active_leaf_id,
          'new' AS lineage_type, NULL AS parent_session_id, NULL AS source_entry_id, metadata AS archive_metadata FROM history_archives) AS s ON s.id = f.session_id
        WHERE pi_registry_search_fts MATCH ? AND s.status = 'ready' AND (? = 0 OR s.name IS NOT NULL) AND (? = 1 OR s.archive_metadata IS NULL)
-       ORDER BY bm25(pi_registry_search_fts), s.updated_at DESC
+         ${records ? "AND f.role IN ('user', 'assistant', 'compaction')" : "AND f.role <> 'compaction'"}
+       ORDER BY bm25(pi_registry_search_fts), ${records ? 'f.timestamp DESC, e.entry_seq DESC, f.session_id, f.entry_id' : 's.updated_at DESC'}
        LIMIT ?`,
       query,
       namedOnly ? 1 : 0,
       includeArchives ? 1 : 0,
-      Math.min(MAX_FTS_ROWS, sessionLimit * 20),
+      records ? sessionLimit : Math.min(MAX_FTS_ROWS, sessionLimit * 20),
     ).toArray()
   }
 
@@ -856,7 +896,7 @@ export class PiRegistry extends HostedAgent {
          json_extract(metadata,'$.createdAt.raw') AS created_at, json_extract(metadata,'$.updatedAt.raw') AS updated_at,
          node_count AS message_count, json_extract(metadata,'$.selectedLeafId') AS active_leaf_id,
          'new' AS lineage_type, NULL AS parent_session_id, NULL AS source_entry_id, metadata AS archive_metadata FROM history_archives) AS s ON s.id = e.session_id
-       WHERE s.status = 'ready' AND (? = 0 OR s.name IS NOT NULL) AND (? = 1 OR s.archive_metadata IS NULL)
+       WHERE e.role <> 'compaction' AND s.status = 'ready' AND (? = 0 OR s.name IS NOT NULL) AND (? = 1 OR s.archive_metadata IS NULL)
        ORDER BY e.timestamp DESC LIMIT ?`,
       namedOnly ? 1 : 0,
       includeArchives ? 1 : 0,
@@ -959,31 +999,6 @@ function groupSearchRows(rows: SearchRow[], limit: number): SessionSearchResult[
 
 function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, '\\$&')
-}
-
-function isMessageEntry(value: unknown): value is {
-  type: 'message'
-  id: string
-  timestamp: number
-  message: { role: string; content?: unknown }
-} {
-  if (typeof value !== 'object' || value === null) return false
-  const entry = value as { type?: unknown; id?: unknown; timestamp?: unknown; message?: unknown }
-  if (entry.type !== 'message' || typeof entry.id !== 'string' || typeof entry.timestamp !== 'number' ||
-      typeof entry.message !== 'object' || entry.message === null) return false
-  return typeof (entry.message as { role?: unknown }).role === 'string'
-}
-
-function messageText(message: { content?: unknown }): string {
-  const content = message.content
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
-  return content
-    .filter((part): part is { type: 'text'; text: string } =>
-      typeof part === 'object' && part !== null && (part as { type?: unknown }).type === 'text' &&
-      typeof (part as { text?: unknown }).text === 'string')
-    .map((part) => part.text)
-    .join('\n')
 }
 
 function nextMemoryTimestamp(previous: string): string {
