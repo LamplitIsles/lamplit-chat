@@ -55,7 +55,9 @@ it('serves the shared Chord protocol from the real Pi DO, admits once and recove
     let view: ChatView | undefined
     const client = await openChat(socket, value => { view = value }, () => {})
     try {
-      await vi.waitFor(() => expect(view?.messages.some(m => m.role === 'notice' && m.text === '回复完成')).toBe(true))
+      await vi.waitFor(() => expect(view?.activeTurnId).toBeNull())
+      expect(view?.messages.some(m => m.role === 'agent' && m.text === 'Complete Pi reply')).toBe(true)
+      expect(view?.messages.some(m => m.text === '回复完成')).toBe(false)
       const turnId = crypto.randomUUID()
       await runInDurableObject(stub, async instance => {
         const lane = await (instance as unknown as { getLane(): Promise<AgentLane> }).getLane()

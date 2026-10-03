@@ -7,6 +7,12 @@ identical HTML; `/assets/*` and `/icons/*` use root-relative URLs. There is no
 and assets return 404. Native registry/domain, tools, import, storage, management
 routes, instance authentication and SDK 0.99.1 export patch are retained.
 
+`GET /api/chat/appearance` reads instance-scoped display names and the existing
+R2 avatar, user-avatar and background slots. Background uses the same stored image
+in both orientations; missing assets are omitted. The shared UI loads this on page
+entry. Successful replies clear the active turn without adding a completion notice;
+failed and stopped notices remain visible, including after reconnect.
+
 Platform independently owns hosted manifests, service worker, auth and `/settings`.
 The standalone manifest has `/` identity/start/scope; App registers no service worker.
 Licenses remain in NOTICE, LICENSES and frontend/LICENSE.codex-for-love. Retained

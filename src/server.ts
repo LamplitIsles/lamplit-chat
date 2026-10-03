@@ -1,3 +1,5 @@
+import { APPEARANCE_PATH } from '@lamplit/contracts'
+import { readChatAppearance } from './server/chat-appearance'
 import { VOICE_CAPABILITY_PATH, VOICE_STREAM_PATH } from '@lamplit/contracts/voice'
 import { handleChatImages } from './server/chat-images-api'
 import { handleVoice } from './server/voice'
@@ -29,6 +31,10 @@ export default {
       const headers = new Headers(response.headers)
       headers.set('set-cookie', auth.setCookie)
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
+    }
+    if (new URL(request.url).pathname === APPEARANCE_PATH) {
+      if (request.method !== 'GET') return respond(new Response('Method not allowed', { status: 405 }))
+      return respond(Response.json(await readChatAppearance(env.COMPUTER_R2, instanceId), { headers: { 'cache-control': 'private, no-store' } }))
     }
     const imageResponse = await handleChatImages(request, env, instanceId)
     if (imageResponse) return respond(imageResponse)

@@ -172,8 +172,8 @@ export class PiSession extends HostedAgent {
         const results = await Promise.all([...ids].map(id => this.session.getValue(operationResult(id), BACKGROUND_CONTEXT)))
         return results.flatMap(stored => {
           const result = stored?.value
-          if (!result || result.kind !== 'run') return []
-          return [{ id: `turn:${result.operationId}:status`, role: 'notice' as const, text: result.status === 'completed' ? '回复完成' : result.status === 'aborted' ? '已停止回复' : '回复失败', createdAt: result.endedAt, operationId: null, turnId: result.operationId }]
+          if (!result || result.kind !== 'run' || result.status === 'completed') return []
+          return [{ id: `turn:${result.operationId}:status`, role: 'notice' as const, text: result.status === 'aborted' ? '已停止回复' : '回复失败', createdAt: result.endedAt, operationId: null, turnId: result.operationId }]
         })
       },
       stop: async turnId => stopPiChatTurn(await this.getLane(), turnId),
