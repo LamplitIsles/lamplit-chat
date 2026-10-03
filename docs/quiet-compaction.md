@@ -1,3 +1,6 @@
+> Current default build/native acceptance: [default-shared-frontend.md](default-shared-frontend.md).
+> Earlier artifact commands below are historical evidence, not the current delivery gate.
+
 # Quiet native compaction
 
 Chat spec #3120 consumes the Owner-reviewed App #3119 handoff at
@@ -65,7 +68,7 @@ curl -X POST http://127.0.0.1:8976/__fixture/seed
 ```
 
 Run unchanged `compact-browser.mjs`, `images-browser.mjs`, `panels-browser.mjs` from
-extracted acceptance with `APP_ACCEPTANCE_URL` pointing at the relevant `/slice/`,
+extracted acceptance with `APP_ACCEPTANCE_URL` pointing at the relevant `/`,
 `APP_ACCEPTANCE_USERNAME=owner`, and the fictional
 `APP_ACCEPTANCE_PASSWORD=fixture-password-long-enough`. Set separate absolute
 `APP_ACCEPTANCE_EVIDENCE` directories. Compact's control URL is
@@ -83,7 +86,7 @@ an App fixture. A held-result scenario seeds a new native user entry if Pi's tip
 already compacted, allowing the next deliberate operation to traverse native
 admission. This is test setup, not a product retry or ordinary shared submission.
 
-`npm test`, `npm run typecheck`, `npm run lint`, `npm run check:frontend` and
+`npm test`, `npm run typecheck`, `npm run lint` and
 `npm run build` remain the repository checks. Browser coverage is desktop Chrome
 at 390/1280/320 widths (panels 390/1280), not a physical mobile keyboard/safe-area
 or deployment check. The full historical Composer/attachment design is superseded;

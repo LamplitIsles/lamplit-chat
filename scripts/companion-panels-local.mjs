@@ -4,33 +4,17 @@ import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn, execFileSync } from 'node:child_process'
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const quiet = process.env.QUIET_COMPACTION_ACCEPTANCE === 'true'
-if (quiet) (await import('./quiet-compaction-artifacts.mjs')).verifyQuietArtifacts()
-const root = resolve(process.argv[2] ?? '.scratch/companion-panels/acceptance')
-if (!root.startsWith(join(repo, quiet ? '.scratch/quiet-compaction' : '.scratch/companion-panels') + '/')) throw new Error('Fixture root must be inside this repo .scratch/companion-panels/')
+const { verifyDefaultArtifacts, artifactRoot } = await import('./default-shared-artifacts.mjs')
+verifyDefaultArtifacts()
+const root = resolve(process.argv[2] ?? `.scratch/default-shared-frontend/panels-${Date.now()}`)
+if (!root.startsWith(join(repo, '.scratch/default-shared-frontend') + '/')) throw new Error('Use a test-owned default-shared-frontend scratch root')
 mkdirSync(root, { recursive: true })
-const handoff = join(repo, quiet ? '../lamplit-app/.scratch/quiet-compaction/frozen-95f0f06' : '../lamplit-app/.scratch/companion-panels/artifacts')
-const suffix = quiet ? 'compact' : 'panels'
-const identity = JSON.parse(readFileSync(join(handoff, 'identity.json')))
-for (const [archive, expected] of [[`lamplit-web-${suffix}.tgz`, identity.browserArchiveSHA256], [`lamplit-contracts-${suffix}.tgz`, identity.contractsArchiveSHA256]]) {
-  if (!execFileSync('shasum', ['-a', '256', join(handoff, archive)], { encoding: 'utf8' }).startsWith(expected + ' ')) throw new Error('Artifact archive mismatch')
-}
-for (const [manifest, expected] of [['browser.sha256', identity.browserManifestSHA256], ['contracts.sha256', identity.contractsManifestSHA256]]) {
-  if (!execFileSync('shasum', ['-a', '256', join(handoff, manifest)], { encoding: 'utf8' }).startsWith(expected + ' ')) throw new Error('Artifact manifest mismatch')
-}
-execFileSync('shasum', ['-a', '256', '-c', join(handoff, 'contracts.sha256')], { cwd: join(repo, 'node_modules/@lamplit/contracts') })
-for (const [folder, archive, manifest] of [['web', `lamplit-web-${suffix}.tgz`, 'browser.sha256'], ['contracts', `lamplit-contracts-${suffix}.tgz`, 'contracts.sha256']]) {
-  mkdirSync(join(root, folder), { recursive: true })
-  execFileSync('tar', ['-xzf', join(handoff, archive), '-C', join(root, folder)])
-  writeFileSync(join(root, `${folder}-manifest.log`), execFileSync('shasum', ['-a', '256', '-c', join(handoff, manifest)], { cwd: join(root, folder, ...(folder === 'contracts' ? ['package'] : [])) }))
-}
-const data = JSON.parse(execFileSync('bun', ['--eval', `import {panelsFixture,fixtureImage} from ${JSON.stringify(join(repo, quiet ? '.scratch/quiet-compaction/frozen/acceptance/panels-fixture.ts' : '../lamplit-app/tests/panels-fixture.ts'))}; const f=panelsFixture(); console.log(JSON.stringify({dates:f.dates,images:f.images,records:f.records,reminders:f.reminders,image:Array.from(fixtureImage)}))`], { encoding: 'utf8' }))
+const data = JSON.parse(execFileSync('bun', ['--eval', `import {panelsFixture,fixtureImage} from ${JSON.stringify(join(artifactRoot, 'acceptance/panels-fixture.ts'))}; const f=panelsFixture(); console.log(JSON.stringify({dates:f.dates,images:f.images,records:f.records,reminders:f.reminders,image:Array.from(fixtureImage)}))`], { encoding: 'utf8' }))
 writeFileSync(join(root, 'fixture.json'), JSON.stringify(data, null, 2))
-writeFileSync(join(root, 'identity.json'), JSON.stringify(identity, null, 2))
-const config = JSON.parse(readFileSync(join(repo, 'wrangler.slice.jsonc')))
+const config = JSON.parse(readFileSync(join(repo, 'wrangler.jsonc')))
 config.name = 'lamplit-panels-local-fixture'
 config.main = join(root, 'entry.ts')
-config.assets.directory = join(root, 'web')
+config.assets.directory = join(artifactRoot, 'browser')
 config.r2_buckets = [{ binding: 'COMPUTER_R2', bucket_name: 'panels-test-owned' }]
 delete config.secrets
 config.vars = { ...config.vars, AI_MODEL: 'fixture-model', AI_MEMORY_MODEL: 'fixture-model', MODEL_BASE_URL: 'https://example.invalid/v1', MODEL_API_KEY: 'fixture-key', AUTH_PASSWORD: 'fixture-password-long-enough', VOICE_API_KEY: 'fixture-voice-key' }
@@ -100,7 +84,7 @@ export class PiSession extends NativeSession {
     await this.drainPendingWork();
     for(const reminder of fixture.reminders){
       const s=reminder.schedule;
-      const plan=s.kind==='once'?{type:'once',at:new Date(s.at).toISOString()}:s.kind==='interval'?{type:'interval',seconds:s.everySeconds,anchor:new Date(s.anchor).toISOString()}:{type:s.kind,time:String(s.hour).padStart(2,'0')+':'+String(s.minute).padStart(2,'0'),timeZone:s.timeZone,...(s.kind==='weekly'?{weekday:s.weekday}:{})};
+      const plan=s.kind==='once'?{type:'once',at:new Date(Math.max(s.at,Date.now()+3600000)).toISOString()}:s.kind==='interval'?{type:'interval',seconds:s.everySeconds,anchor:new Date(s.anchor).toISOString()}:{type:s.kind,time:String(s.hour).padStart(2,'0')+':'+String(s.minute).padStart(2,'0'),timeZone:s.timeZone,...(s.kind==='weekly'?{weekday:s.weekday}:{})};
       await this.saveTimedWake({title:reminder.title||'Fixture reminder',reminder:reminder.message,plan});
     }
     return metadata.id;
@@ -123,4 +107,4 @@ const child = spawn(join(repo, 'node_modules/.bin/wrangler'), ['dev', '--config'
   cwd: root, stdio: 'inherit', env: { PATH: process.env.PATH, TMPDIR: root, XDG_CONFIG_HOME: join(root, 'config'), XDG_CACHE_HOME: join(root, 'cache'), XDG_DATA_HOME: join(root, 'data'), WRANGLER_REGISTRY_PATH: join(root, 'registry'), WRANGLER_LOG_PATH: join(root, 'logs'), WRANGLER_SEND_METRICS: 'false', CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: 'false' },
 })
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal))
-child.on('exit', code => { process.exitCode = code ?? 0 })
+child.on('exit', code => { verifyDefaultArtifacts(); process.exitCode = code ?? 0 })

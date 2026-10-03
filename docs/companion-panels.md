@@ -1,10 +1,12 @@
+> Current default build/native acceptance: [default-shared-frontend.md](default-shared-frontend.md).
+
 # Shared companion panels
 
 The shared app reads the original Pi stores through `lamplit.chat.v1` on the
 existing authenticated `/api/chat/socket`. `@lamplit/contracts`, maintained in
 `lamplit-app/packages/contracts`, owns the compiled schemas and public types.
-There is no additional transport or content replica. The native frontend and its
-interfaces remain available until the shared app has full feature parity.
+There is no additional transport or content replica. The shared App is the
+default frontend; native adapters and their domain consumers remain in place.
 
 All six methods take one object with the selected `sessionId`. It is a stale
 request check, not permission to select another session. The shared host validates
@@ -73,10 +75,9 @@ against the installed package as well as the extracted browser assets.
 
 ```sh
 npm ci --install-links
-npm run typecheck
 npm run lint
+npm run typecheck
 npm test
-npm run check:frontend
 npm run build
 ```
 
@@ -85,31 +86,29 @@ an authenticated public socket. `timed-wake.worker.test.ts` covers the 59/60/>60
 second once/repeat boundaries, native receipts, immutable inputs and persisted
 source. Existing relationship, photos and chat worker tests remain relevant.
 
-For actual frozen-browser acceptance, place the reviewed app handoff at the
-adjacent app's `.scratch/companion-panels/artifacts`. The harness validates archive
-identity and per-file manifests and extracts both archives to the caller-owned
-root. It reads app `tests/panels-fixture.ts` to seed native relationship history,
-35 diary names/photos, all four schedules and an admitted reminder message.
-Only the fixture simulates a directory/detail deletion race for the missing diary.
-Fake providers return `fixture reply` and `recognized final`; no credentials,
-`.dev.vars`, deployed services or real model/ASR endpoints are used. Wrangler
-config, logs, persistent storage and synthetic keys remain under the fixture root.
-Use a fresh root per seed run, and reserve port 8951 for this Pi harness.
+For current actual frozen-browser acceptance, follow
+[default-shared-frontend.md](default-shared-frontend.md). The panels host verifies
+the approved parent archive, manifests and installed contracts, then loads its
+unchanged `acceptance/panels-fixture.ts` facts into native stores: relationship
+history, 35 diary names/photos, all four schedules and an admitted reminder
+message. Only the fixture simulates the missing-diary race. A past historical
+one-time timestamp is seeded in the future so native admission remains valid.
 
 ```sh
-node scripts/companion-panels-local.mjs .scratch/companion-panels/acceptance
-# In a second terminal after Wrangler reports ready:
-curl --fail -X POST http://127.0.0.1:8951/__fixture/seed
-APP_ACCEPTANCE_URL=http://127.0.0.1:8951/slice/ \
+PANELS_FIXTURE_PORT=8985 \
+  node scripts/companion-panels-local.mjs .scratch/default-shared-frontend/panels-unique
+curl --fail -X POST http://127.0.0.1:8985/__fixture/seed
+# From the test-owned artifact/acceptance extraction:
+APP_ACCEPTANCE_URL=http://127.0.0.1:8985/ \
 APP_ACCEPTANCE_USERNAME=owner \
 APP_ACCEPTANCE_PASSWORD=fixture-password-long-enough \
-APP_ACCEPTANCE_EVIDENCE="$PWD/.scratch/companion-panels/browser" \
-  bun ../lamplit-app/tests/panels-browser.mjs
+APP_ACCEPTANCE_EVIDENCE=/absolute/test-owned/evidence/panels \
+  bun panels-browser.mjs
 ```
 
-The read-only app runner uses Chrome at 390 and 1280, checks panels, original PNG
-save bytes, application source after reload, completed text chat and genuine
-microphone PCM to draft. Keep the evidence path absolute and inside this repo;
-record runner HEAD separately from frozen artifact HEAD. Recheck the extracted
-browser and contracts manifests afterward. Stop the local harness with Ctrl-C;
-its fixture data remains for inspection. These commands do not deploy.
+The unchanged runner passes at 390/1280 against actual native storage and public
+methods, including original PNG save bytes, reminder source after reload, text
+chat and microphone PCM to draft. Use a fresh owned root and free port; inherited
+Cloudflare credentials and dotenv loading are excluded. Recheck the parent and
+replacement hashes after acceptance. Stop only this harness with Ctrl-C; its
+fixture evidence remains for inspection. These commands do not deploy.

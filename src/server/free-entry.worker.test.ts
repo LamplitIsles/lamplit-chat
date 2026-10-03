@@ -15,6 +15,36 @@ describe('Free entry Worker', () => {
     expect(response.status).toBe(401)
   })
 
+  it('serves only current app entries and shared assets while retaining authentication', async () => {
+    const paths: string[] = []
+    const assets = { fetch: async (request: Request) => {
+      const path = new URL(request.url).pathname
+      paths.push(path)
+      return new Response(path === '/index.html' ? '<title>shared app</title>' : 'asset', { headers: { 'content-type': path === '/index.html' ? 'text/html' : 'application/octet-stream' } })
+    } }
+    const workerEnv = { ...minimalEnv, ASSETS: assets } as unknown as Env
+    const headers = { authorization: `Basic ${btoa(`owner:${password}`)}` }
+    for (const path of ['/', '/chat', '/assets/app.js', '/icons/app.png', '/manifest.webmanifest']) {
+      expect((await worker.fetch(new Request(`https://example.test${path}`), workerEnv)).status).toBe(401)
+      const response = await worker.fetch(new Request(`https://example.test${path}`, { headers }), workerEnv)
+      expect(response.status).toBe(200)
+      if (path === '/' || path === '/chat') expect(await response.text()).toBe('<title>shared app</title>')
+    }
+    const count = paths.length
+    for (const path of ['/slice', '/slice/', '/slice/assets/app.js', '/management', '/missing.js', '/service-worker.js']) {
+      expect((await worker.fetch(new Request(`https://example.test${path}`, { headers }), workerEnv)).status).toBe(404)
+    }
+    expect(paths.length).toBe(count)
+    expect(paths.slice(0, 2)).toEqual(['/index.html', '/index.html'])
+    const hostedEnv = { ...workerEnv, HOSTED_MODE: 'true', CHAT_INTERNAL_SECRET: 'test-owned-internal' } as Env
+    expect((await worker.fetch(new Request('https://example.test/chat'), hostedEnv)).status).toBe(403)
+    const trusted = { 'x-lamplit-instance': crypto.randomUUID(), 'x-lamplit-internal-secret': 'test-owned-internal' }
+    expect((await worker.fetch(new Request('https://example.test/chat', { headers: trusted }), hostedEnv)).status).toBe(200)
+    for (const path of ['/manifest.webmanifest', '/service-worker.js', '/slice']) {
+      expect((await worker.fetch(new Request(`https://example.test${path}`, { headers: trusted }), hostedEnv)).status).toBe(404)
+    }
+  })
+
   it('sets an authenticated cookie and reports photos unavailable without R2', async () => {
     const response = await worker.fetch(new Request('https://example.test/api/companion-config', {
       headers: { authorization: `Basic ${btoa(`owner:${password}`)}` },

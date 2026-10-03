@@ -7,9 +7,8 @@
     "#/*": "./src/*"
   },
   "scripts": {
-    "dev": "npm run build --prefix frontend && wrangler dev",
-    "build": "npm run build --prefix frontend",
-    "check:frontend": "npm run check --prefix frontend",
+    "dev": "npm run build && wrangler dev",
+    "build": "bun run --cwd ../lamplit-app build",
     "test": "vitest run && vitest run --config vitest.worker.config.ts",
     "test:worker": "vitest run --config vitest.worker.config.ts",
     "lint": "oxlint --deny-warnings src",

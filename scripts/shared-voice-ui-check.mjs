@@ -28,7 +28,7 @@ try {
     const page = await context.newPage()
     const errors = []
     page.on('pageerror', error => errors.push(String(error)))
-    await page.goto(`${origin}/slice/`)
+    await page.goto(`${origin}/`)
     const input = page.locator('#companion-textarea'), mic = page.locator('.companion-microphone'), send = page.locator('.companion-send')
     await expect(input).toBeVisible()
     const release = () => expect.poll(() => page.evaluate(() => window.voiceProbe.tracks.every(t => t.readyState === 'ended'))).toBe(true)

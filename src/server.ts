@@ -60,9 +60,6 @@ export default {
       await registry.revokePersonalSession(tokenHash)
       return new Response(null, { status: 204 })
     }
-    if (hosted && new URL(request.url).pathname === '/manifest.webmanifest') {
-      return Response.json({ name: 'Lamplit Companion', short_name: 'Lamplit', start_url: '/chat', display: 'standalone', background_color: '#f3f6f8', theme_color: '#f3f6f8', icons: [{ src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' }, { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }] }, { headers: { 'content-type': 'application/manifest+json' } })
-    }
     if (new URL(request.url).pathname === '/api/companion-config') {
       const registry = instanceId ? env.PiRegistry.getByName(instanceId) as unknown as { ensureDefaultSession(): Promise<{ id: string }> } : null
       const sessionId = registry ? (await registry.ensureDefaultSession()).id : env.COMPANION_SESSION_ID || null
@@ -118,13 +115,17 @@ export default {
       url.pathname = parts.join('/')
       request = new Request(url, request)
     }
-    if (new URL(request.url).pathname === '/slice' || new URL(request.url).pathname.startsWith('/slice/')) {
-      const assetUrl = new URL(request.url)
-      assetUrl.pathname = assetUrl.pathname.slice('/slice'.length) || '/'
-      return respond(await env.ASSETS.fetch(new Request(assetUrl, request)))
-    }
     const agentResponse = await routeAgentRequest(request, env, { prefix: PI_AGENT_PREFIX })
-    return respond(agentResponse ?? await env.ASSETS.fetch(request))
+    if (agentResponse) return respond(agentResponse)
+    const assetUrl = new URL(request.url)
+    const path = assetUrl.pathname
+    // Only the two current entries receive the shared shell. Missing routes/assets
+    // must never become HTML, including the retired /slice mount.
+    if (path === '/' || path === '/chat') assetUrl.pathname = '/index.html'
+    else if (!path.startsWith('/assets/') && !path.startsWith('/icons/') && !(path === '/manifest.webmanifest' && !hosted)) {
+      return respond(new Response('Not found', { status: 404, headers: { 'cache-control': 'no-store' } }))
+    }
+    return respond(await env.ASSETS.fetch(new Request(assetUrl, request)))
   },
 } satisfies ExportedHandler<Env>
 

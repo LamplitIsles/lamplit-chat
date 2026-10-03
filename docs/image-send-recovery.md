@@ -1,3 +1,6 @@
+> Current default build/native acceptance: [default-shared-frontend.md](default-shared-frontend.md).
+> Earlier artifact commands below are historical evidence, not the current delivery gate.
+
 # Shared image sending and submitted-input recovery
 
 Spec #3097 adapts the reviewed app #3096 protocol to the existing Pi/workerd host.
@@ -98,7 +101,7 @@ npm test
 node scripts/image-send-recovery-local.mjs .scratch/image-send-recovery/native-FRESH
 ```
 
-The fixture serves the extracted browser at `/slice/` on isolated port 8973
+The fixture serves the extracted browser at `/` on isolated port 8973
 (`IMAGE_FIXTURE_PORT` overrides it), real workerd/DO/SQLite/R2 with a synthetic
 OpenAI-compatible model and voice provider. It reads no repository credentials;
 config/cache/logs/state/registry belong to the specified scratch root. Its control
@@ -113,7 +116,7 @@ retain their HTTPS transport requirement.
 In another terminal, run the unmodified archived acceptance:
 
 ```sh
-APP_ACCEPTANCE_URL=http://127.0.0.1:8973/slice/ \
+APP_ACCEPTANCE_URL=http://127.0.0.1:8973/ \
 APP_ACCEPTANCE_CONTROL_URL=http://127.0.0.1:8973/__test/image-send-recovery \
 APP_ACCEPTANCE_EVIDENCE="$PWD/.scratch/image-send-recovery/review2/evidence" \
 APP_ACCEPTANCE_USERNAME=owner \

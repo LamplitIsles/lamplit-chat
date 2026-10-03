@@ -1,7 +1,7 @@
 // Additional retained text/voice/four-panel checks on the same reviewed browser and native host.
 import { chromium, expect } from '../.scratch/image-send-recovery/acceptance/node_modules/@playwright/test/index.mjs'
 import { mkdir, writeFile } from 'node:fs/promises'
-const origin = process.env.APP_ACCEPTANCE_URL ?? 'http://127.0.0.1:8973/slice/'
+const origin = process.env.APP_ACCEPTANCE_URL ?? 'http://127.0.0.1:8973/'
 const evidence = new URL('../.scratch/image-send-recovery/regressions/', import.meta.url).pathname
 await mkdir(evidence, { recursive: true })
 const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] })

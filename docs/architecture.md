@@ -1,7 +1,7 @@
 # Pi on Cloudflare Architecture
 
 The Worker combines Pi, Cloudflare Agents SDK, SQLite-backed Durable Objects,
-Computer's workspace file API, and a static SvelteKit Companion frontend.
+Computer's workspace file API, and the shared Framework7 App built by adjacent `lamplit-app`.
 `src/server.ts` routes authenticated Agent RPC/WebSockets, private photos,
 Companion materials, history archives/import and bounded web tools. Static
 requests use the assets binding. Hosted and independent self-host deployments
@@ -29,11 +29,24 @@ The registry also owns source-keyed `history_archives`, immutable nodes and boun
 
 ## Companion boundary
 
-The browser connects to `PiRegistry` once to resolve its Companion session, then connects to that `PiSession` through `AgentClient`. A configured `COMPANION_SESSION_ID` takes priority. Otherwise it uses the browser's stored ID or finds/creates a named `霁霁` session.
+The shared browser connects to authenticated `/api/chat/socket`. The Worker selects
+PiRegistry's default Companion session, or the personal deployment's configured
+`COMPANION_SESSION_ID`; hosted DO names retain the instance prefix. Management can
+still use the existing native Agent RPC routes independently.
 
-`getOverview()` supplies active-turn status and `getBranch()` supplies the durable transcript. `frontend/src/lib/companion/pi-projection.ts` maps settled user and assistant text into Companion's timeline with a quiet compaction marker. The controller in `frontend/src/routes/+page.svelte` shows a temporary outgoing echo while `agent.call('prompt')` runs. The browser's operation ID is passed to Pi `accept()`; after that durable commit, an `accepted` stream event carries the canonical user entry ID and clears the sending state. Branch refresh replaces the echo by entry ID, including when two prompts have identical text. Pi `drive()` then runs the model; other stream events drive only the waiting box's semantic activity. Raw reasoning, tool details, and partial assistant text stay out of chat. Completion or reconnect refreshes the durable branch, and `abort()` handles stop while `compact()` handles `/compact`. The imported CFL appearance preference applies the resolved light or dark Daisy theme to the document root.
+`getOverview()` and `getBranch()` retain the native management API. The default
+browser uses `@lamplit/contracts` through authenticated `/api/chat/socket`; Pi's
+adapter projects native durable entries, operation receipts, panels and FTS results.
+Shared browser code and UI belong to `lamplit-app`. Retained native registry domain
+logic still imports `frontend/src/lib/companion/domain.ts`; retained client/domain
+modules also support existing behavior checks. The old frontend has no serving or
+build entry. No fallback UI or `/slice` route remains.
 
-`Companion.svelte` and its domain/projection, composer, Markdown, preferences, localization, DaisyUI styles, and responsive layout were brought from Codex for Love. The old Node/Codex host is not deployed. The relationship drawer reads paged SQLite events from `PiRegistry`; its latest state is added to each Pi turn, and Pi has tools to update the state and read recent changes. Its diary tab reads dated Markdown files from the current `PiSession` workspace through read-only RPC calls, with the same 128 KiB entry limit as CFL. The imported photo picker, timeline image display, lightbox, and album are enabled for web conversation photos. The composer exposes a microphone alongside Send backed by authenticated Worker streaming recognition, with capability refreshed by the root route. Telemetry remains hidden. The imported frontend source is Apache 2.0 licensed.
+Personal HTTP/WebSocket routing requires AUTH_PASSWORD. Hosted routing requires
+Platform's trusted instance/secret headers and validates session tokens against
+Platform on each delivery. Platform owns management, hosted manifest/service worker
+and public authentication. Both app entries use the same root-relative assets.
+
 
 ## Timed wakes
 
@@ -73,11 +86,11 @@ The browser accepts up to six PNG, JPEG, WebP, or GIF originals (8 MB each, 24 M
 
 ## Boundaries and limitations
 
-The UI opens one conversation. Other registry and tree operations still exist on the Worker API but are not presented in this slice. When a page reconnects during an active turn, it polls durable state until the turn completes; it cannot replay missed token deltas. Personal-deployment HTTP/WebSocket entry requires AUTH_PASSWORD authentication; hosted entry requires trusted platform instance/secret headers and instance-scoped session ownership. Read-only archive IDs cannot enter runnable-session routes.
+The UI opens one conversation. Other registry and tree operations still exist on the Worker API but are not presented in the shared App. Reconnect reads the durable snapshot and current native turn; it does not resubmit an uncertain input automatically. Personal-deployment HTTP/WebSocket entry requires AUTH_PASSWORD authentication; hosted entry requires trusted platform instance/secret headers and instance-scoped session ownership. Read-only archive IDs cannot enter runnable-session routes.
 
 ## Verification
 
-`npm run check:frontend` checks Svelte, `npm run typecheck` checks Worker TypeScript, `npm test` runs unit and Workers tests, and `npm run build` creates the static site. `npm run deploy` builds and deploys the self-hosted Worker; hosted deployment uses `wrangler.hosted.jsonc` after the same frontend build. No deployment is performed by local verification.
+`npm run lint`, `npm run typecheck` and `npm test` check the native core. `npm run build` runs the adjacent App build. See [default shared frontend](default-shared-frontend.md) for exact-artifact native/browser checks. `npm run deploy` builds and deploys the self-hosted Worker; hosted deployment uses `wrangler.hosted.jsonc` after the same shared App build. No deployment is performed by local verification.
 
 ## Shared image and recovery adapter
 

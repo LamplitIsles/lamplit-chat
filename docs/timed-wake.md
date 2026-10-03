@@ -1,3 +1,6 @@
+> Current default build/native acceptance: [default-shared-frontend.md](default-shared-frontend.md).
+> Earlier artifact commands below are historical evidence, not the current delivery gate.
+
 # Timed wakes
 
 Ask your companion in chat to return at an agreed time, for example “Tomorrow
@@ -110,8 +113,6 @@ admission-start cutoff and non-faulting expiry, anchored skipping, actual DST,
 busy answer ordering, model failure, storage reconstruction and accepted-operation recovery.
 
 For screenshots, start
-`node frontend/node_modules/vite/bin/vite.js --config frontend/fixtures/timed-wake/vite.config.mjs`
-and run `node scripts/timed-wake-ui-check.mjs`. Port 5199 is reserved only for
 that isolated fixture and fails if already occupied. It mounts the real
 Companion with synthetic arrangements/actions and uses an isolated agent-browser
 session; screenshots and checks go to untracked `.scratch/timed-wake/`. Seven
@@ -119,6 +120,6 @@ session; screenshots and checks go to untracked `.scratch/timed-wake/`. Seven
 presentation and interaction; the workerd tests establish backend integration.
 It reads no user tabs, model credentials, microphone or production state.
 
-The full relevant checks are `npm run check:frontend`, `npm run lint`,
+The full relevant checks are `npm run lint`,
 `npm run typecheck`, `npm test`, and `npm run build`. Production account/provider
 and device tests remain outside this isolated acceptance.

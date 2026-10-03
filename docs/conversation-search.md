@@ -1,11 +1,13 @@
+> Current default build/native acceptance: [default-shared-frontend.md](default-shared-frontend.md).
+> Earlier artifact commands below are historical evidence, not the current delivery gate.
+
 # Shared conversation search · spec #3143
 
 The authenticated shared App exposes `lamplit.chat.v1.search({query})` and
 `searchRead({id})` through `/api/chat/socket`. Schemas and transport validation
 come from `@lamplit/contracts`; the App owns the Framework7 card and reader UI.
 These reads use the current instance's PiRegistry, without navigating, resuming,
-changing the active branch or submitting a draft. The native frontend remains
-available. This feature does not deploy either edition.
+changing the active branch or submitting a draft. Retained native domain modules remain consumed. This feature does not deploy either edition.
 
 ## Native search and reader
 
@@ -72,7 +74,7 @@ adjacent contract dependency. No dependency or SDK patch upgrade is required.
 node --input-type=module -e "import { verifySearchArtifacts } from './scripts/conversation-search-artifacts.mjs'; verifySearchArtifacts()"
 node scripts/conversation-search-local.mjs .scratch/conversation-search/native
 # In artifacts/acceptance, with the isolated host running:
-APP_ACCEPTANCE_URL=http://127.0.0.1:8975/slice/ \
+APP_ACCEPTANCE_URL=http://127.0.0.1:8975/ \
 APP_ACCEPTANCE_CONTROL_URL=http://127.0.0.1:8975/__test/conversation-search \
 APP_ACCEPTANCE_USERNAME=fixture \
 APP_ACCEPTANCE_PASSWORD=fixture-password-long-enough \
@@ -94,6 +96,6 @@ and `results.json`. This entry/control route is never production routing.
 Run `npm run test:worker -- src/server/conversation-search.worker.test.ts` for
 native ranking, stored/new summaries, branch/import context, unknown-zone time,
 record selection, owner isolation, full selected text and context limits. Finish
-with the existing lint, typecheck, frontend check, `npm test` and frontend build.
+with the existing lint, typecheck, `npm test` and frontend build.
 The SDK 0.99.1 export-only quiet-compaction patch and licenses remain unchanged.
 Repository AGENTS.md is absent; no agent workflow change requires a new file.
