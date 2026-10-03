@@ -6,9 +6,9 @@ Lamplit Chat is distributed under the Apache License, Version 2.0.
 This project derives from pi-on-cf by Harshil Agrawal. Its original MIT
 copyright and permission notice is preserved in LICENSES/pi-on-cf-MIT.txt.
 
-Companion frontend portions originate from Codex for Love (Apache-2.0).
-Their license is retained in frontend/LICENSE.codex-for-love; existing
-source notices remain in place.
+Native relationship validation in src/server/relationship-validation.ts
+originates from the former Codex for Love Companion domain (Apache-2.0).
+Its license is retained in LICENSES/codex-for-love-Apache-2.0.txt.
 
 Third-party dependencies retain their respective licenses.
 

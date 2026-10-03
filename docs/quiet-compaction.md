@@ -4,8 +4,8 @@
 # Quiet native compaction
 
 Chat spec #3120 consumes the Owner-reviewed App #3119 handoff at
-`95f0f06fc00fd4e7fa3e664ca2b1fe12fe8d10b8`. The native frontend remains available;
-this integration does not deploy or replace either frontend.
+`95f0f06fc00fd4e7fa3e664ca2b1fe12fe8d10b8`. The shared App is now the only frontend;
+the handoff below records the original integration evidence.
 
 The exact bare `/compact` without images invokes `compact({sessionId})`, returning
 `{sessionId,accepted}`. Ordinary `submit` rejects that exact text. Arguments remain

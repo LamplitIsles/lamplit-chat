@@ -37,10 +37,10 @@ still use the existing native Agent RPC routes independently.
 `getOverview()` and `getBranch()` retain the native management API. The default
 browser uses `@lamplit/contracts` through authenticated `/api/chat/socket`; Pi's
 adapter projects native durable entries, operation receipts, panels and FTS results.
-Shared browser code and UI belong to `lamplit-app`. Retained native registry domain
-logic still imports `frontend/src/lib/companion/domain.ts`; retained client/domain
-modules also support existing behavior checks. The old frontend has no serving or
-build entry. No fallback UI or `/slice` route remains.
+Shared browser code, UI and browser behavior tests belong to `lamplit-app`.
+Native relationship validation lives in `src/server/relationship-validation.ts`.
+The retired frontend source, resources and tests are removed. No fallback UI or
+`/slice` route remains.
 
 Personal HTTP/WebSocket routing requires AUTH_PASSWORD. Hosted routing requires
 Platform's trusted instance/secret headers and validates session tokens against

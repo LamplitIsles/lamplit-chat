@@ -15,9 +15,11 @@ failed and stopped notices remain visible, including after reconnect.
 
 Platform independently owns hosted manifests, service worker, auth and `/settings`.
 The standalone manifest has `/` identity/start/scope; App registers no service worker.
-Licenses remain in NOTICE, LICENSES and frontend/LICENSE.codex-for-love. Retained
-frontend domain/client modules are runtime/test consumers, with no build or route
-entry. No repository AGENTS.md exists; portable/host instructions govern this work.
+Licenses and source attribution remain in NOTICE and LICENSES, including
+LICENSES/codex-for-love-Apache-2.0.txt for native relationship validation.
+The retired frontend source, resources and tests are removed; native validation
+lives in `src/server/relationship-validation.ts`, and browser behavior tests live
+in `lamplit-app`. No repository AGENTS.md exists; portable/host instructions govern this work.
 
 ## Build and checks, in order
 

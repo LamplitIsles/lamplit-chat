@@ -4,8 +4,8 @@
 # Shared image sending and submitted-input recovery
 
 Spec #3097 adapts the reviewed app #3096 protocol to the existing Pi/workerd host.
-The public contract remains owned by `@lamplit/contracts`; the native frontend and
-its private RPC/photo routes remain available pending full shared-app coverage.
+The public contract remains owned by `@lamplit/contracts`; the shared App is the
+only frontend. Native RPC/photo routes remain available for management and tools.
 
 ## HTTP and native storage
 
@@ -60,7 +60,7 @@ IDs and stored image bytes retain their original values. At the main
 lane's commit boundary it records cancellation only when a known human inbox entry
 is deleted without becoming a committed message in that transaction. Queueing,
 turn end and socket loss never imply non-consumption. This also covers inputs
-submitted through the retained native frontend.
+submitted through native RPC.
 
 `view.recovery` exposes at most 20 source/operation identities, text, image refs,
 state (`rejected`, `unconsumed`, `uncertain`) and replacement eligibility. Only

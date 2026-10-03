@@ -25,7 +25,7 @@ import type {
   SessionStatus,
   SessionSummary,
 } from '../shared/pi-contract'
-import { canonicalizeChangeReason, canonicalizeHistoryPageRead, canonicalizeRelationshipUpdate, canonicalizeSignature, clampAffinity } from '../../frontend/src/lib/companion/domain'
+import { canonicalizeChangeReason, canonicalizeHistoryPageRead, canonicalizeRelationshipUpdate, canonicalizeSignature, clampAffinity } from './relationship-validation'
 import { DEFAULT_USER_TIME_ZONE, validUserTimeZone } from './turn-time'
 
 type SessionRow = {

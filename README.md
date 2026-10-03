@@ -107,7 +107,7 @@ Official Cloudflare documentation checked 2026-09-29:
 
 Run local checks with `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build`. On an explicitly authorized isolated Free account, verify: first session and two consecutive turns; close/reopen the browser during a turn; history and FTS query; Markdown write then read after reconnect; memory persistence; and anonymous HTTP and WebSocket rejection. Measure four timings separately: first page open, WebSocket connected, history visible, and model first response. Record network/location, cold or warm start, and sample count. Do not count model wait as page load. A Paid-account deployment does not establish Free compatibility.
 
-The project, including its Companion frontend, is licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for upstream attribution and [LICENSES/pi-on-cf-MIT.txt](LICENSES/pi-on-cf-MIT.txt) for the retained original pi-on-cf notice. The imported Codex for Love license remains in [frontend/LICENSE.codex-for-love](frontend/LICENSE.codex-for-love). Third-party dependencies retain their own licenses.
+The project is licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for upstream attribution and [LICENSES/pi-on-cf-MIT.txt](LICENSES/pi-on-cf-MIT.txt) for the retained original pi-on-cf notice. The imported Codex for Love license remains in [LICENSES/codex-for-love-Apache-2.0.txt](LICENSES/codex-for-love-Apache-2.0.txt). Third-party dependencies retain their own licenses.
 
 ## History import backend
 
@@ -125,9 +125,9 @@ Hosted deployment uses the isolated `lamplit-chat-media` R2 bucket, the Platform
 
 The default Framework7 App is served at standalone `/` and hosted `/chat`, with
 root-relative `/assets/*` and `/icons/*`. `/slice` and missing assets return 404
-rather than a SPA shell. The obsolete frontend routes/build are removed; retained
-`frontend/src/lib` domain and client sources are still used by native registry
-and existing behavior checks, and are not a runnable frontend. Management/native
+rather than a SPA shell. The retired frontend source, resources and tests are
+removed. Native relationship validation lives in `src/server/relationship-validation.ts`;
+shared browser behavior is tested in `lamplit-app`. Management/native
 routes, import, storage, tools, instance/auth boundaries and pinned SDK 0.99.1
 export patch remain. See [the complete build and acceptance workflow](docs/default-shared-frontend.md).
 No live state, provider, service or deployment is part of implementation verification.

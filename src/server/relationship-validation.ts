@@ -1,10 +1,10 @@
-export const MAX_NOTE_CODE_POINTS = 40;
-export const MAX_SIGNATURE_CODE_POINTS = 80;
-export const MAX_CHANGE_REASON_CODE_POINTS = 160;
-export const DEFAULT_HISTORY_LIMIT = 10;
-export const MAX_HISTORY_LIMIT = 20;
+const MAX_NOTE_CODE_POINTS = 40;
+const MAX_SIGNATURE_CODE_POINTS = 80;
+const MAX_CHANGE_REASON_CODE_POINTS = 160;
+const DEFAULT_HISTORY_LIMIT = 10;
+const MAX_HISTORY_LIMIT = 20;
 
-export const MOODS = [
+const MOODS = [
   "neutral",
   "serene",
   "bright",
@@ -14,115 +14,18 @@ export const MOODS = [
   "tired",
   "low",
 ] as const;
-export type Mood = (typeof MOODS)[number];
-export const MOOD_LABELS: Readonly<Record<Mood, string>> = Object.freeze({
-  neutral: "如常",
-  serene: "平静",
-  bright: "愉快",
-  playful: "俏皮",
-  tender: "柔和",
-  pensive: "若有所思",
-  tired: "疲惫",
-  low: "低落",
-});
-
-export interface MoodRecord {
+type Mood = (typeof MOODS)[number];
+interface MoodRecord {
   mood: Mood;
   note?: string;
 }
 
-export interface CompanionState extends MoodRecord {
-  affinity: number;
-  signature: string;
-}
-
-export interface CompanionMoodChange {
-  value: Mood;
-  note?: string;
-  reason?: string;
-}
-
-export interface CompanionAffinityChange {
-  delta: number;
-  value: number;
-  reason?: string;
-}
-
-export interface CompanionSignatureChange {
-  value: string;
-  reason?: string;
-}
-
-export interface CompanionStateChanges {
-  seed?: true;
-  mood?: CompanionMoodChange;
-  affinity?: CompanionAffinityChange;
-  signature?: CompanionSignatureChange;
-}
-
-export interface CompanionStateRecord {
-  at: string;
-  changes: CompanionStateChanges;
-  state: CompanionState;
-}
-
-export interface CompanionHistoryPage {
-  /** Records are newest first within this page. */
-  records: CompanionStateRecord[];
-  /** The next `before` cursor, or undefined when this is the oldest page. */
-  nextBefore?: number;
-  hasEarlier: boolean;
-  /** The complete record immediately before the oldest visible record. */
-  predecessor?: CompanionStateRecord;
-}
-
-export type CompanionHistoryValue =
-  | { value: Mood; note?: string }
-  | { value: number }
-  | { value: string };
-
-export interface CompanionHistoryChange {
-  dimension: "mood" | "affinity" | "signature";
-  before?: CompanionHistoryValue;
-  after: CompanionHistoryValue;
-  delta?: number;
-  reason?: string;
-}
-
-export { companionHistoryChanges } from "./relationship-history.ts";
-
-export interface RelationshipUpdate {
+interface RelationshipUpdate {
   mood?: { value: Mood; note?: string; reason: string };
   affinity?: { delta: number; reason: string };
 }
 
-export interface AvatarInput {
-  data: string;
-  mediaType: AvatarMediaType;
-  width: number;
-  height: number;
-}
-export type AvatarMediaType =
-  | "image/png"
-  | "image/jpeg"
-  | "image/webp"
-  | "image/gif";
-
-export interface CompanionIdentitySettings {
-  workspaceId: string;
-  companionName: string;
-  companionAvatar?: AvatarInput;
-  userName: string;
-  userAvatar?: AvatarInput;
-  preferredAddress: string;
-  defaultAffinity: number;
-}
-
-export const DEFAULT_MOOD: MoodRecord = Object.freeze({
-  mood: "neutral",
-});
-
-export class CompanionValidationError extends TypeError {
+class CompanionValidationError extends TypeError {
   constructor(message: string) {
     super(message);
     this.name = "CompanionValidationError";
@@ -134,14 +37,14 @@ const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/gu;
 const URL_PATTERN = /(?:https?:\/\/|www\.|[a-z][a-z0-9+.-]*:\/\/)/iu;
 const MARKUP_PATTERN = /<[^>]*>|\[\/?[a-z][^\]]*\]/iu;
 
-export function isMood(value: unknown): value is Mood {
+function isMood(value: unknown): value is Mood {
   return (
     typeof value === "string" && (MOODS as readonly string[]).includes(value)
   );
 }
 
 /** Trim a note without changing its meaning; notes are descriptive data. */
-export function canonicalizeMoodNote(value: unknown): string | undefined {
+function canonicalizeMoodNote(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") {
     throw new CompanionValidationError("状态短句必须是文字。");
@@ -153,7 +56,7 @@ export function canonicalizeMoodNote(value: unknown): string | undefined {
   return normalized || undefined;
 }
 
-export function canonicalizeMood(value: unknown): MoodRecord {
+function canonicalizeMood(value: unknown): MoodRecord {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new CompanionValidationError("状态格式无效。");
   }
@@ -183,7 +86,7 @@ export function canonicalizeChangeReason(value: unknown): string {
   return normalized;
 }
 
-export function canonicalizeHistoryLimit(value: unknown): number {
+function canonicalizeHistoryLimit(value: unknown): number {
   if (value === undefined) return DEFAULT_HISTORY_LIMIT;
   if (
     typeof value !== "number" ||
@@ -196,18 +99,7 @@ export function canonicalizeHistoryLimit(value: unknown): number {
   return value;
 }
 
-export function canonicalizeHistoryRead(value: unknown): number {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new CompanionValidationError("历史读取格式无效。");
-  }
-  const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== "limit")) {
-    throw new CompanionValidationError("历史读取包含未知字段。");
-  }
-  return canonicalizeHistoryLimit(record.limit);
-}
-
-export interface CompanionHistoryPageRead {
+interface CompanionHistoryPageRead {
   limit: number;
   /** Absolute exclusive record position, counted from the beginning. */
   before?: number;
@@ -336,27 +228,4 @@ export function canonicalizeSignature(value: unknown): string {
 export function clampAffinity(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, Math.trunc(value)));
-}
-
-export type AffinityStage = "疏离" | "生疏" | "熟悉" | "亲近" | "深厚";
-
-export function affinityStage(value: number): AffinityStage {
-  const affinity = clampAffinity(value);
-  if (affinity < 20) return "疏离";
-  if (affinity < 40) return "生疏";
-  if (affinity < 60) return "熟悉";
-  if (affinity < 80) return "亲近";
-  return "深厚";
-}
-
-export function normalizeDefaultAffinity(value: unknown): number {
-  if (
-    typeof value !== "number" ||
-    !Number.isSafeInteger(value) ||
-    value < 0 ||
-    value > 100
-  ) {
-    throw new CompanionValidationError("默认亲近度必须是 0 到 100 的整数。");
-  }
-  return value;
 }

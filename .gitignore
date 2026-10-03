@@ -13,10 +13,6 @@ wrangler.local.jsonc
 wrangler.*.local.jsonc
 .output
 .vinxi
-frontend/node_modules/
-frontend/.svelte-kit/
-frontend/build/
-frontend/src/lib/paraglide/
 __unconfig*
 todos.json
 
