@@ -9,7 +9,7 @@ import type { LaneCommand, LaneState } from '../../node_modules/@earendil-works/
 async function fixture() {
   const session = await new MemorySessionRepo().create({}, context)
   const harness = await createPiHarness({
-    env: { MODEL_API_KEY: 'fixture', MODEL_BASE_URL: 'https://example.invalid/v1', AI_MODEL: 'fixture', AI_MEMORY_MODEL: 'fixture', MODEL_CONTEXT_WINDOW: '128000', MODEL_MAX_TOKENS: '4096', PI_SYSTEM_PROMPT: '' },
+    env: { provider: 'openrouter', model: 'openai/gpt-4o', apiKey: 'fixture', thinkingLevel: null, maxOutputTokens: null, PI_SYSTEM_PROMPT: '' },
     session, tools: [], memory: { getMemoryContext: async () => '', getRelationshipContext: async () => '' },
     compaction: DEFAULT_COMPACTION_SETTINGS, loadInstructions: async () => null, getUserTimeZone: async () => 'UTC',
   })

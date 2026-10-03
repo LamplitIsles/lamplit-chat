@@ -22,23 +22,23 @@ it('reads 0.87.1 committed writes and preserves branches, state and associations
     const session = new StorageBackedSession(metadata, storage)
     const attach = async (session: StorageBackedSession) => {
       const harness = await createPiHarness({
-        session, env: { MODEL_API_KEY: 'fixture-key', MODEL_BASE_URL: 'https://example.invalid/v1', AI_MODEL: 'fixture-model' } as unknown as Env,
+        session, env: { provider: 'openrouter', model: 'openai/gpt-4o', apiKey: 'fixture-key', thinkingLevel: null, maxOutputTokens: null, PI_SYSTEM_PROMPT: '' },
         tools: [{ name: 'read', label: 'read', description: 'read', parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) }],
         memory: { getMemoryContext: async () => '', getRelationshipContext: async () => '' }, compaction: DEFAULT_COMPACTION_SETTINGS,
         loadInstructions: async () => null, getUserTimeZone: async () => 'Asia/Shanghai',
       })
       const lane = await harness.lane('main', context)
       expect(await lane.getActiveTools(context)).toEqual(['read'])
-      expect(await lane.getThinkingLevel(context)).toBe('medium')
+      expect(await lane.getThinkingLevel(context)).toBe('off')
       expect(await lane.inspectExecution(context)).toMatchObject({ current: null, lastOperationId: null })
       return lane
     }
     const main = await attach(session)
-    expect(state.storage.sql.exec('SELECT seq FROM pi_v4_writes').toArray()).toHaveLength(fixture.writes.length)
+    expect(state.storage.sql.exec('SELECT seq FROM pi_v4_writes').toArray()).toHaveLength(fixture.writes.length + 2)
     expect((await main.findEntries({ order: 'oldestFirst' }, context)).map(entry => entry.id)).toEqual(['old-user', 'old-answer'])
     expect(await (await session.branch('alternate', context))!.getTipId(context)).toBe('other-user')
     expect(await session.getName(context)).toBe('Synthetic 0.87.1 session')
-    expect((await session.getValue(laneConfig('main'), context))?.value).toMatchObject({ thinkingLevel: 'medium', activeToolNames: ['read'] })
+    expect((await session.getValue(laneConfig('main'), context))?.value).toMatchObject({ thinkingLevel: 'off', activeToolNames: ['read'] })
     const id = await main.appendMessage({ role: 'user', content: 'New 0.99.1 prompt', timestamp: fixture.timestamp + 1000 }, context)
     const rebuiltStorage = new PiV4Storage(state.storage)
     const rebuilt = new StorageBackedSession(metadata, rebuiltStorage)

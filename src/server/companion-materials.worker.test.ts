@@ -159,7 +159,7 @@ it('actual PiSession autoloads only AGENTS and compacts with API originals, nati
   const { PiSessionStorage } = await import('./pi-session-storage')
   const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = []
   const fake = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
-    expect(url instanceof Request ? url.url : url.toString()).toBe('https://example.invalid/v1/chat/completions')
+    expect(url instanceof Request ? url.url : url.toString()).toBe('https://openrouter.ai/api/v1/chat/completions')
     bodies.push(JSON.parse(init!.body as string))
     return new Response([
       { choices: [{ index: 0, delta: { role: 'assistant', content: 'Offline continuity summary' }, finish_reason: null }] },

@@ -34,7 +34,7 @@ describe('web tools in the Worker executor', () => {
       const address = url instanceof Request ? url.url : url.toString()
       if (address.includes('exa.ai')) { providerCalls++; return Response.json({ results: [{ title: 'Fixture lighthouse', url: 'https://public.example/source', highlights: ['Fixture excerpt'] }] }) }
       if (address.includes('93.184.216.34')) return markdown('# Fixture public page')
-      expect(address).toBe('https://example.invalid/v1/chat/completions')
+      expect(address).toBe('https://openrouter.ai/api/v1/chat/completions')
       requests.push(JSON.parse(init?.body as string))
       modelCalls++
       const delta = modelCalls === 1 ? { role: 'assistant', tool_calls: [{ index: 0, id: 'search-call', type: 'function', function: { name: 'web_search', arguments: JSON.stringify({ query: 'lighthouse' }) } }] }

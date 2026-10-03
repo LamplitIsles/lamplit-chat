@@ -44,13 +44,13 @@ bun run --cwd ../lamplit-app/packages/contracts build
 npm ci
 cp .env.example .env.free
 # Edit .env.free with your model key and a random, unique AUTH_PASSWORD (at least 24 characters).
-# Edit AI_MODEL and MODEL_BASE_URL in wrangler.jsonc for your provider.
+# Edit MODEL_PROVIDER and AI_MODEL in wrangler.jsonc using native catalog IDs.
 cp .env.free .dev.vars
 npm run build
 npx wrangler dev --config wrangler.jsonc --local-protocol https
 ```
 
-The base URL must be the provider's OpenAI-compatible API root, such as `https://api.openai.com/v1`; do not append `/chat/completions`. Choose a model that supports tool calls. Configure `MODEL_CONTEXT_WINDOW` and `MODEL_MAX_TOKENS` to match the model's actual limits. Set `AI_MEMORY_MODEL` to the same model or another model available at the same base URL and key. An image-capable model is needed only if optional photos are enabled.
+Choose an enabled native provider/model: DeepSeek, OpenAI, Anthropic, Google or OpenRouter with API-key auth. Pi supplies protocol, context/output capacity and image/thinking capabilities. `MODEL_THINKING_LEVEL` and `MODEL_MAX_OUTPUT_TOKENS` are empty for native defaults; set supported values only when you want an explicit override. Chat, memory extraction and compaction use that same selection. Custom endpoints and independent memory models are removed. See [native catalog, options, environment and coordinated release](docs/provider-model-catalog.md) for exact IDs/contracts, scope and existing-account conversion. An image-capable model and optional R2 are needed for new photos; existing albums remain readable after switching to text-only.
 
 The first browser request asks for HTTP Basic credentials. Use any username and your `AUTH_PASSWORD`. The Worker then issues an `HttpOnly`, `Secure`, `SameSite=Strict` cookie so the browser's WebSocket handshake uses the same authentication. The entire site, `/api/agents/*`, album, history, and files require this cookie or Basic auth. Rotate the secret to revoke existing cookies. Use HTTPS in production. Wrangler's local HTTPS uses a development certificate; the browser may ask you to trust it.
 

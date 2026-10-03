@@ -14,7 +14,7 @@ it('serves the shared Chord protocol from the real Pi DO, admits once and recove
   const original = globalThis.fetch
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = input instanceof Request ? input.url : String(input)
-    if (!url.startsWith('https://example.invalid/')) return original(input, init)
+    if (!url.startsWith('https://openrouter.ai/')) return original(input, init)
     if (failProvider) return new Response(JSON.stringify({ error: { message: 'Fixture invalid request', type: 'invalid_request_error' } }), { status: 400, headers: { 'content-type': 'application/json' } })
     return new Response('data: {"id":"fixture","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[{"index":0,"delta":{"role":"assistant","content":"Complete Pi reply"},"finish_reason":null}]}\n\ndata: {"id":"fixture","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
   })

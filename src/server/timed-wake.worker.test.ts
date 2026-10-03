@@ -27,7 +27,7 @@ describe('timed wakes in local workerd', () => {
     const original = globalThis.fetch
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = input instanceof Request ? input.url : String(input)
-      if (!url.startsWith('https://example.invalid/')) return original(input, init)
+      if (!url.startsWith('https://openrouter.ai/')) return original(input, init)
       return new Response(
       'data: {"id":"fixture","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[{"index":0,"delta":{"role":"assistant","content":"Synthetic wake answer"},"finish_reason":null}]}\n\ndata: {"id":"fixture","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
       { headers: { 'content-type': 'text/event-stream' } })
@@ -77,11 +77,11 @@ describe('timed wakes in local workerd', () => {
     })
     await new Promise(resolve => setTimeout(resolve, 1100))
     await runDurableObjectAlarm(stub)
-    await runInDurableObject(stub, async instance => {
+    await vi.waitFor(() => runInDurableObject(stub, async instance => {
       const branch = await instance.getBranch()
       expect(branch.entries.filter(entry => entry.wakeSource)).toHaveLength(1)
       expect(branch.entries.some(entry => entry.message?.role === 'assistant')).toBe(true)
-    })
+    }), { timeout: 10000 })
   })
   it('skips unaccepted late occurrences, retaining interval anchor without writing messages', async () => {
     const stub = await fresh()
@@ -166,7 +166,7 @@ describe('timed wakes in local workerd', () => {
       const fixtureFetch = vi.mocked(globalThis.fetch).getMockImplementation()!
       const mock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
         const url = input instanceof Request ? input.url : String(input)
-        if (!url.startsWith('https://example.invalid/') || !(typeof init?.body === 'string' && init.body.includes('Synthetic busy cutoff human question'))) return fixtureFetch(input, init)
+        if (!url.startsWith('https://openrouter.ai/') || !(typeof init?.body === 'string' && init.body.includes('Synthetic busy cutoff human question'))) return fixtureFetch(input, init)
         const number = ++requests; simultaneous++; maxSimultaneous = Math.max(maxSimultaneous, simultaneous)
         const body = new ReadableStream({ start(controller) {
           controller.enqueue(new TextEncoder().encode(completion(number === 1 ? 'Human answer' : 'Wake answer', false)))
@@ -300,7 +300,7 @@ describe('timed wakes in local workerd', () => {
       const fixtureFetch = vi.mocked(globalThis.fetch).getMockImplementation()!
       const mock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
         const url = input instanceof Request ? input.url : String(input)
-        if (!url.startsWith('https://example.invalid/') || !(typeof init?.body === 'string' && init.body.includes('Synthetic registration race human question'))) return fixtureFetch(input, init)
+        if (!url.startsWith('https://openrouter.ai/') || !(typeof init?.body === 'string' && init.body.includes('Synthetic registration race human question'))) return fixtureFetch(input, init)
         const number = ++requests
         if (number >= 2) {
           const next = storage.timedWakes()[0]

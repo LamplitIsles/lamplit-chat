@@ -1,3 +1,4 @@
+import { accountModels, selectedModel, resolveModelSelection, selfHostModelEnvironment } from './model-catalog'
 import { nativeSearchNode, readSearchNodes } from './conversation-search'
 import { createPiPanelBackend, PanelCursors } from './companion-panels'
 import { PI_IMAGE_LIMITS, imageRef, checkUpload, nativePhotoId } from './chat-images'
@@ -51,7 +52,7 @@ import type {
   WorkspaceFile,
   WorkspaceFileContent,
 } from '../shared/pi-contract'
-import { createPiHarness, getMemoryModel, type ModelEnvironment, type PiHarness } from './create-pi-harness'
+import { createPiHarness, type ModelEnvironment, type PiHarness } from './create-pi-harness'
 import { admitAndDrivePrompt, exactPromptEntryId, getPromptAdmission, prepareOpenOperationResume } from './prompt-lifecycle'
 import { extractMemoryOperations, type MemorySourceEntry } from './memory-extractor'
 import { createMemoryTool } from './memory-tools'
@@ -151,7 +152,7 @@ export class PiSession extends HostedAgent {
       record: async (id, value) => this.sessionStorage.recordChat(id, value),
       images: id => this.sharedImages(this.sessionStorage.photosForEntry(id)),
       recovery: () => this.chatRecovery(),
-      imageLimits: () => this.env.COMPUTER_R2 ? PI_IMAGE_LIMITS : false,
+      imageLimits: () => this.env.COMPUTER_R2 && this.modelSupportsImages ? PI_IMAGE_LIMITS : false,
       validate: input => this.validateChatInput(input),
       rejected: async id => {
         if (!this.sessionStorage.getPromptSubmission(id) && !this.sessionStorage.steerRecord(id)) this.sessionStorage.setChatRejected(id, true)
@@ -204,6 +205,7 @@ export class PiSession extends HostedAgent {
   private promptOperationId?: string
   private harness?: Promise<PiHarness>
   private harnessModelConfig?: string
+  private modelSupportsImages = false
   private memoryExtraction?: Promise<void>
   private readonly sessionStorage = new PiSessionStorage(this.ctx.storage)
   private coreSession?: StorageBackedSession
@@ -328,9 +330,11 @@ export class PiSession extends HostedAgent {
   @hostedCallable()
   async navigateTree(entryId: string, options?: { summarize?: boolean; customInstructions?: string; label?: string }): Promise<{ editorText?: string }> {
     if (this.active) throw new Error('Pi is currently running.')
+    const lane = await this.getLane()
+    if (this.active) throw new Error('Pi is currently running.')
     this.active = true
     try {
-      const result = await (await this.getLane()).navigateTree(entryId, options, BACKGROUND_CONTEXT)
+      const result = await lane.navigateTree(entryId, options, BACKGROUND_CONTEXT)
       if (!result.ok) throw result.error
       await this.flushOutboxToRegistry()
       return {}
@@ -361,6 +365,7 @@ export class PiSession extends HostedAgent {
     await this.waitUntilInitialized()
     const lane = await this.getLane()
     const model = await lane.getModel(BACKGROUND_CONTEXT)
+    this.modelSupportsImages = model?.input.includes('image') ?? false
     const name = await this.session.getName(BACKGROUND_CONTEXT) ?? 'Lamplit'
     // Async preparation must not mix an earlier busy/session observation with
     // newly appended context. Retry the bounded projection if native state moves.
@@ -446,6 +451,7 @@ export class PiSession extends HostedAgent {
     await this.waitUntilInitialized()
     if (!UUID.test(input.submissionId)) throw new Error('A valid submission ID is required.')
     const prompt = validPhotoPrompt(input.prompt, input.photoIds)
+    if (input.photoIds?.length && !await this.acceptsModelImages()) throw new Error('Selected model does not support images.')
     const photos = await this.modelPhotos(input.submissionId, input.photoIds)
     if (JSON.stringify([prompt, photos]).length > PHOTO_ROW_BUDGET) throw new Error('Photo group exceeds the Pi message size limit.')
     const fingerprint = await promptFingerprint(submissionFingerprintInput(prompt, input.photoIds))
@@ -572,10 +578,11 @@ export class PiSession extends HostedAgent {
 
   async drainPendingWork(): Promise<void> {
     if (this.active || !this.sessionStorage.isInitialized()) return
+    const lane = await this.getLane()
+    if (this.active) return
     this.active = true
     try {
       await this.awaitWakeSchedules()
-      const lane = await this.getLane()
       if (!(await lane.inspectExecution(BACKGROUND_CONTEXT)).current) {
         const state = (await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value
         if (state?.inbox.some((item) => item.kind === 'steer' || item.kind === 'followUp')) {
@@ -658,9 +665,7 @@ export class PiSession extends HostedAgent {
 
   @hostedCallable({ streaming: true })
   async prompt(stream: Pick<StreamingResponse, 'send' | 'end'>, input: { operationId: string; prompt: string; photoIds?: string[] }): Promise<void> {
-    const modelEnv = await this.modelEnvironment()
-    if (!modelEnv.MODEL_API_KEY || !modelEnv.MODEL_BASE_URL || !modelEnv.AI_MODEL) throw new Error('Model is not configured.')
-    if (this.harnessModelConfig !== modelConfigKey(modelEnv)) this.harness = undefined
+    if (input.photoIds?.length && !await this.acceptsModelImages()) throw new Error('Selected model does not support images.')
     const prompt = validPhotoPrompt(input.prompt, input.photoIds)
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.operationId)) {
       throw new Error('A valid operation ID is required.')
@@ -769,6 +774,7 @@ export class PiSession extends HostedAgent {
     validateSubmission(input)
     if (this.sessionStorage.nativeInputs().some(existing => existing.operationId === input.operationId) && !this.sessionStorage.chatRecords().has(input.operationId)) throw new Error('Operation belongs to native input')
     if (input.images?.length) {
+      if (!await this.acceptsModelImages()) throw new Error('Selected model does not support images.')
       const photos = this.sessionStorage.photosForOperation(input.operationId)
       if (photos.length !== input.images.length || photos.some((photo, i) => photo.id !== input.images![i]!.attachmentId || photo.name !== input.images![i]!.name || photo.mediaType !== input.images![i]!.mediaType || input.images![i]!.availability !== 'available')) throw new Error('Image operation identity conflict')
       await this.modelPhotos(input.operationId, input.images.map(image => image.attachmentId))
@@ -791,6 +797,7 @@ export class PiSession extends HostedAgent {
   async uploadChatImages(input: ImageUpload, owner: ChatImageOwner) {
     await this.authorizeChatImages(owner)
     checkUpload(input, owner.sessionId)
+    if (!await this.acceptsModelImages()) throw new Error('Selected model does not support images.')
     const prepared: PhotoUpload[] = []
     for (const image of input.images) {
       const photo = { ...image, id: await nativePhotoId(input.operationId, image.id), operationId: input.operationId }
@@ -892,6 +899,11 @@ export class PiSession extends HostedAgent {
     if (!this.env.COMPUTER_R2) throw new Error('Photo storage is not configured.')
     await Promise.all((['original', 'preview', 'model'] as const).map((variant) => this.env.COMPUTER_R2!.delete(this.photoKey(id, variant))))
     this.sessionStorage.deletePhoto(id)
+  }
+
+  private async acceptsModelImages(): Promise<boolean> {
+    const model = await (await this.getLane()).getModel(BACKGROUND_CONTEXT)
+    return model?.input.includes('image') ?? false
   }
 
   private async modelPhotos(operationId: string, ids: string[] | undefined): Promise<Array<{ type: 'image'; data: string; mimeType: string }>> {
@@ -1003,8 +1015,11 @@ export class PiSession extends HostedAgent {
   }
 
   private async getHarness(): Promise<PiHarness> {
+    if (this.active && this.harness) return this.harness
     const registry = this.registry()
-    this.harness ??= this.modelEnvironment().then(modelEnv => {
+    const modelEnv = await this.modelEnvironment()
+    if (!this.active && this.harnessModelConfig !== modelConfigKey(modelEnv)) this.harness = undefined
+    this.harness ??= Promise.resolve().then(() => {
       this.harnessModelConfig = modelConfigKey(modelEnv)
       return createPiHarness({
       env: modelEnv,
@@ -1142,7 +1157,6 @@ export class PiSession extends HostedAgent {
 
   private async extractNextMemoryBatch(): Promise<void> {
     const modelEnv = await this.modelEnvironment()
-    if (!modelEnv.MODEL_API_KEY || !modelEnv.MODEL_BASE_URL) return
     const cursor = this.sessionStorage.getSetting<number>(MEMORY_EXTRACTION_CURSOR) ?? 0
     const pending = this.sessionStorage.getEntriesWithSeq().filter(({ seq }) => seq > cursor)
     if (pending.length === 0) return
@@ -1167,8 +1181,9 @@ export class PiSession extends HostedAgent {
 
     const registry = this.registry()
     const operations = await extractMemoryOperations({
-      models: (await this.getHarness()).models,
-      model: getMemoryModel(modelEnv),
+      models: await accountModels(modelEnv),
+      model: selectedModel(modelEnv),
+      selection: modelEnv,
       memories: await registry.listMemories(),
       entries,
       sessionId: this.sessionStorage.getMetadataSync().id,
@@ -1185,15 +1200,14 @@ export class PiSession extends HostedAgent {
 
   private async modelEnvironment(): Promise<ModelEnvironment> {
     const instanceId = this.instanceId()
-    if (!instanceId) return this.env
+    if (!instanceId) return selfHostModelEnvironment(this.env)
     if (!this.env.PLATFORM || !this.env.CHAT_INTERNAL_SECRET) throw new Error('Hosted model service is unavailable')
     const response = await this.env.PLATFORM.fetch(`${this.env.PLATFORM_ORIGIN ?? 'https://app.lamplit.run'}/internal/chat-model/${instanceId}`, {
       headers: { 'x-lamplit-internal-secret': this.env.CHAT_INTERNAL_SECRET },
     })
-    if (response.status === 404) return { ...this.env, MODEL_API_KEY: '', MODEL_BASE_URL: '', AI_MODEL: '', AI_MEMORY_MODEL: '' }
+    if (response.status === 404) throw new Error('Model is not configured.')
     if (!response.ok) throw new Error('Model configuration is unavailable')
-    const config = await response.json() as { baseUrl: string; model: string; apiKey: string }
-    return { ...this.env, MODEL_BASE_URL: config.baseUrl, AI_MODEL: config.model, AI_MEMORY_MODEL: config.model, MODEL_API_KEY: config.apiKey }
+    return { PI_SYSTEM_PROMPT: this.env.PI_SYSTEM_PROMPT, ...resolveModelSelection(await response.json()) }
   }
 }
 
@@ -1218,7 +1232,7 @@ function validPrompt(prompt: string): string {
 }
 
 function modelConfigKey(env: ModelEnvironment): string {
-  return JSON.stringify([env.MODEL_API_KEY, env.MODEL_BASE_URL, env.AI_MODEL, env.AI_MEMORY_MODEL])
+  return JSON.stringify([env.provider, env.model, env.apiKey, env.thinkingLevel, env.maxOutputTokens])
 }
 
 function validPhotoPrompt(prompt: string, photoIds?: string[]): string {

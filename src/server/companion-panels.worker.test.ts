@@ -167,7 +167,12 @@ it('rechecks hosted platform authorization for panel calls and isolates instance
   let active = true, checks = 0
   await runInDurableObject(stub, async (instance, state) => {
     const internal = instance as unknown as { env: Env }
-    internal.env = { ...internal.env, HOSTED_MODE: 'true', CHAT_INTERNAL_SECRET: 'fixture-internal-secret', PLATFORM: { fetch: async () => { checks++; return Response.json({ active }) }, connect: () => { throw new Error('Fixture has no TCP transport') } } } as Env
+    internal.env = { ...internal.env, HOSTED_MODE: 'true', CHAT_INTERNAL_SECRET: 'fixture-internal-secret', PLATFORM: { fetch: async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (url.includes('/internal/chat-model/')) return Response.json({ provider: 'openrouter', model: 'openai/gpt-4o', apiKey: 'test-owned-panel-key', thinkingLevel: null, maxOutputTokens: null })
+      if (url.includes('/internal/chat-search/')) return Response.json({ enabled: false })
+      checks++; return Response.json({ active })
+    }, connect: () => { throw new Error('Fixture has no TCP transport') } } } as Env
     await instance.uploadPhoto({ id: photoId, operationId, order: 0, name: 'private.jpg', mediaType: 'image/jpeg', original: jpeg, preview: jpeg, model: jpeg })
     const storage = new PiSessionStorage(state.storage)
     storage.admitPromptSubmission(operationId, 'instance fixture', [photoId]); storage.acceptPromptSubmission(operationId, 'native-entry')

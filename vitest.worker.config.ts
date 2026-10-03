@@ -16,6 +16,7 @@ export default defineConfig({
   ],
   test: {
     include: ['src/server/**/*.worker.test.ts'],
+    setupFiles: ['./src/server/fixtures/native-api-setup.ts'],
     testTimeout: 30_000,
   },
 })

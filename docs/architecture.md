@@ -18,7 +18,10 @@ are not replayed. Recovery resumes accepted operations using their durable sourc
 identity. Browser submissions use the submission ledger; autonomous custom
 reminders use their occurrence receipts.
 
-The configured OpenAI-compatible model uses the existing BYOK key. The default
+The selected built-in Pi factory uses the account/provider BYOK key through an
+account-owned credential store with ambient environment/file auth disabled. Chat
+owns the authenticated native catalog; [provider/model integration](provider-model-catalog.md)
+defines options, maintenance and coordinated release. The default
 self-hosted edition requires neither Platform nor AI Gateway, Loader, containers,
 shell or Git. Computer supplies bounded file reads/writes inside SQLite; optional
 conversation photos use private R2. See README for the deployment/auth contract.

@@ -20,7 +20,7 @@ describe('Pi harness tools', () => {
     const repo = new MemorySessionRepo()
     const session = await repo.create({}, BACKGROUND_CONTEXT)
     const base = {
-      env: { MODEL_API_KEY: 'fixture-key', MODEL_BASE_URL: 'https://example.invalid/v1', AI_MODEL: 'fixture-model' } as unknown as Env,
+      env: { provider: 'openrouter', model: 'openai/gpt-4o', apiKey: 'fixture-key', thinkingLevel: null, maxOutputTokens: null, PI_SYSTEM_PROMPT: '' },
       session,
       memory: { getMemoryContext: async () => '', getRelationshipContext: async () => '' },
       compaction: DEFAULT_COMPACTION_SETTINGS,
@@ -39,7 +39,7 @@ it('projects the existing prompt, timezone, tools and image through a fake provi
   const session = await new MemorySessionRepo().create({}, BACKGROUND_CONTEXT)
   const requestBodies: Array<Record<string, unknown>> = []
   const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-    expect(input instanceof Request ? input.url : input.toString()).toBe('https://example.invalid/v1/chat/completions')
+    expect(input instanceof Request ? input.url : input.toString()).toBe('https://openrouter.ai/api/v1/chat/completions')
     requestBodies.push(JSON.parse(init!.body as string))
     const chunks = [
       { id: 'fixture-response', choices: [{ index: 0, delta: { role: 'assistant', content: 'Offline fixture reply' }, finish_reason: null }] },
@@ -51,7 +51,7 @@ it('projects the existing prompt, timezone, tools and image through a fake provi
   })
   try {
     const harness = await createPiHarness({
-      env: { MODEL_API_KEY: 'fixture-key', MODEL_BASE_URL: 'https://example.invalid/v1', AI_MODEL: 'fixture-model', PI_SYSTEM_PROMPT: 'Test companion prompt' } as unknown as Env,
+      env: { provider: 'openrouter', model: 'openai/gpt-4o', apiKey: 'fixture-key', thinkingLevel: null, maxOutputTokens: null, PI_SYSTEM_PROMPT: 'Test companion prompt' },
       session, tools: [tool('read')], compaction: DEFAULT_COMPACTION_SETTINGS,
       memory: { getMemoryContext: async () => 'Test learned memory', getRelationshipContext: async () => 'Test relationship' },
       loadInstructions: async () => 'Test workspace instructions',
@@ -64,7 +64,7 @@ it('projects the existing prompt, timezone, tools and image through a fake provi
     ] }, BACKGROUND_CONTEXT)
     expect(requestBodies).toHaveLength(1)
     const body = requestBodies[0]
-    expect(body.model).toBe('fixture-model')
+    expect(body.model).toBe('openai/gpt-4o')
     expect(body.tools).toMatchObject([{ type: 'function', function: { name: 'read', parameters: { type: 'object' } } }])
     const messages = body.messages as Array<{ role: string; content: unknown }>
     expect(messages[0]).toMatchObject({ role: 'system' })

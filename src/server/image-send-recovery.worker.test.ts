@@ -185,7 +185,7 @@ it('the real native fake model receives the exact uploaded JPEG bytes for both p
   const original = globalThis.fetch
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = input instanceof Request ? input.url : String(input)
-    if (!url.startsWith('https://example.invalid/')) return original(input, init)
+    if (!url.startsWith('https://openrouter.ai/')) return original(input, init)
     if (typeof init?.body !== 'string') throw new Error('Expected native model JSON request body')
     requests.push(JSON.parse(init.body))
     return new Response('data: {"id":"fixture","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[{"index":0,"delta":{"role":"assistant","content":"Native model observed image"},"finish_reason":null}]}\n\ndata: {"id":"fixture","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })

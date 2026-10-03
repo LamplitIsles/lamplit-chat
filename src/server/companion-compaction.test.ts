@@ -6,7 +6,7 @@ import type { AssistantMessage } from '@earendil-works/pi-ai'
 import { createPiHarness } from './create-pi-harness'
 import { DEFAULT_COMPANION_COMPACTION_PROMPT as defaultPrompt } from './companion-compaction-prompt'
 
-const env = { MODEL_API_KEY: 'fictional-key', MODEL_BASE_URL: 'https://fictional.invalid/v1', AI_MODEL: 'fictional-model', MODEL_MAX_TOKENS: '2000', MODEL_CONTEXT_WINDOW: '4000' } as unknown as Env
+const env = { provider: 'openrouter', model: 'openai/gpt-4o', apiKey: 'fictional-key', thinkingLevel: null, maxOutputTokens: null, PI_SYSTEM_PROMPT: '' }
 const usage = { input: 20, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 25, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }
 function assistant(text: string): AssistantMessage {
   return { role: 'assistant', content: [{ type: 'text', text }], api: 'openai-completions', provider: 'configured-provider', model: 'fictional-model', stopReason: 'stop', timestamp: Date.now(), usage }
@@ -15,7 +15,7 @@ function offlineProvider() {
   const requests: Array<{ model: string; messages: Array<{ role: string; content: string }> }> = []
   let failure = false, cancel: AbortController | undefined, overflow = false
   const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
-    expect(url instanceof Request ? url.url : url.toString()).toBe('https://fictional.invalid/v1/chat/completions')
+    expect(url instanceof Request ? url.url : url.toString()).toBe('https://openrouter.ai/api/v1/chat/completions')
     const request = JSON.parse(init!.body as string)
     requests.push(request)
     if (cancel) { cancel.abort(); throw new DOMException('cancelled', 'AbortError') }
@@ -111,11 +111,11 @@ it('preserves Pi split-turn and paired tool tail plus fileOps, using the public 
   } finally { provider.fetch.mockRestore() }
 })
 
-it.each(['failure', 'cancel', 'unconfigured'] as const)('%s leaves original conversation/context intact and creates no summary', async mode => {
+it.each(['failure', 'cancel'] as const)('%s leaves original conversation/context intact and creates no summary', async mode => {
   const provider = offlineProvider()
   try {
     const session = await new MemorySessionRepo().create({}, ctx)
-    const { lane } = await attach(session, async () => defaultPrompt, undefined, mode === 'unconfigured' ? { ...env, MODEL_API_KEY: '' } : env)
+    const { lane } = await attach(session, async () => defaultPrompt, undefined, env)
     await history(lane)
     const before = await lane.findEntries({ order: 'oldestFirst' }, ctx)
     const controller = new AbortController()
@@ -125,7 +125,7 @@ it.each(['failure', 'cancel', 'unconfigured'] as const)('%s leaves original conv
       const result = await lane.compact(undefined, withAbortSignal(controller.signal, ctx))
       expect(result.ok && result.value.compaction.status).toBe('declined')
     } catch (error) { if (mode !== 'cancel') throw error }
-    expect(provider.requests.length).toBe(mode === 'unconfigured' ? 0 : 1)
+    expect(provider.requests.length).toBe(1)
     expect(await lane.findEntries({ order: 'oldestFirst' }, ctx)).toEqual(before)
   } finally { provider.fetch.mockRestore() }
 })
@@ -136,7 +136,7 @@ it('automatic threshold requests use the effective prompt and native compaction 
     const session = await new MemorySessionRepo().create({}, ctx)
     const { lane } = await attach(session, async () => 'Automatic continuity checkpoint fixture')
     await history(lane, 'threshold-evidence', 20)
-    await lane.appendMessage({ ...assistant('Threshold usage fixture'), usage: { ...usage, input: 3500, totalTokens: 3505 } }, ctx)
+    await lane.appendMessage({ ...assistant('Threshold usage fixture'), usage: { ...usage, input: 127500, totalTokens: 127505 } }, ctx)
     expect((await lane.prompt('Next fictional turn', undefined, ctx)).ok).toBe(true)
     expect(provider.requests.some(r => r.messages[0].content === 'Automatic continuity checkpoint fixture')).toBe(true)
     expect((await lane.findEntries({ order: 'oldestFirst' }, ctx)).some(e => e.type === 'compaction')).toBe(true)

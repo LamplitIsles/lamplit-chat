@@ -15,7 +15,7 @@ it.each([
   const original = globalThis.fetch
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = input instanceof Request ? input.url : String(input)
-    if (!url.startsWith('https://example.invalid/')) return original(input, init)
+    if (!url.startsWith('https://openrouter.ai/')) return original(input, init)
     const chunks = [
       { id: 'empty-reply', choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: 'Fixture private reasoning', ...(content === undefined ? {} : { content }) }, finish_reason: null }] },
       { id: 'empty-reply', choices: [{ index: 0, delta: {}, finish_reason: finish }] },

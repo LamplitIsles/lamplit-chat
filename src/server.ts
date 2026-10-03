@@ -1,3 +1,4 @@
+import { modelCatalog } from './server/model-catalog'
 import { APPEARANCE_PATH } from '@lamplit/contracts'
 import { readChatAppearance } from './server/chat-appearance'
 import { VOICE_CAPABILITY_PATH, VOICE_STREAM_PATH } from '@lamplit/contracts/voice'
@@ -31,6 +32,10 @@ export default {
       const headers = new Headers(response.headers)
       headers.set('set-cookie', auth.setCookie)
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
+    }
+    if (new URL(request.url).pathname === '/internal/model-catalog') {
+      if (request.headers.get('origin') && request.headers.get('origin') !== new URL(request.url).origin) return respond(new Response('Forbidden', { status: 403, headers: { 'cache-control': 'no-store' } }))
+      return respond(request.method === 'GET' ? Response.json(modelCatalog(), { headers: { 'cache-control': 'no-store' } }) : new Response('Method not allowed', { status: 405, headers: { 'cache-control': 'no-store' } }))
     }
     if (new URL(request.url).pathname === APPEARANCE_PATH) {
       if (request.method !== 'GET') return respond(new Response('Method not allowed', { status: 405 }))

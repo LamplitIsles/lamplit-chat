@@ -14,11 +14,10 @@
     "run_worker_first": true
   },
   "vars": {
-    "AI_MODEL": "replace-with-your-model-id",
-    "AI_MEMORY_MODEL": "replace-with-your-model-id",
-    "MODEL_BASE_URL": "https://api.openai.com/v1",
-    "MODEL_CONTEXT_WINDOW": "128000",
-    "MODEL_MAX_TOKENS": "4096",
+    "MODEL_PROVIDER": "openrouter",
+    "AI_MODEL": "openai/gpt-4o",
+    "MODEL_THINKING_LEVEL": "",
+    "MODEL_MAX_OUTPUT_TOKENS": "",
     "PI_SYSTEM_PROMPT": "",
     "COMPANION_SESSION_ID": ""
   },

@@ -1,3 +1,4 @@
+import { selfHostModelEnvironment } from './model-catalog'
 import { runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { expect, it, vi } from 'vitest'
@@ -13,7 +14,7 @@ it('actual PiSession rebuild updates tools and projects narrowly authorized feed
   const submitted: Array<Record<string, unknown>> = []
   let invoked = false
   const fakeProvider = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
-    expect(url instanceof Request ? url.url : url.toString()).toBe('https://example.invalid/v1/chat/completions')
+    expect(url instanceof Request ? url.url : url.toString()).toBe('https://openrouter.ai/api/v1/chat/completions')
     const body = JSON.parse(init!.body as string); bodies.push(body)
     const call = body.tools.some((tool: { function: { name: string } }) => tool.function.name === 'submit_platform_feedback') && !invoked
     if (call) invoked = true
@@ -37,7 +38,7 @@ it('actual PiSession rebuild updates tools and projects narrowly authorized feed
       } } }
       Reflect.set(instance, 'env', localEnv)
       // No live model-settings binding or key resolution; still use the actual harness/provider path.
-      Reflect.set(instance, 'modelEnvironment', async () => env)
+      Reflect.set(instance, 'modelEnvironment', async () => selfHostModelEnvironment(env))
       await instance.initialize({ lineage: { type: 'new' }, id: sessionId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
       const getHarness = () => Reflect.get(instance, 'getHarness').call(instance) as Promise<PiHarness>
       const oldHarness = await getHarness()
@@ -59,7 +60,7 @@ it('actual PiSession rebuild updates tools and projects narrowly authorized feed
       const toolMessages = JSON.stringify(bodies[2].messages.filter(message => message.role === 'tool'))
       expect(JSON.parse(bodies[2].messages.find(message => message.role === 'tool')!.content)).toMatchObject({ ok: true, source: 'machine', status: 'received' })
       expect(toolMessages).not.toContain('PRIVATE')
-      Reflect.set(instance, 'modelEnvironment', async () => ({ ...env, PI_SYSTEM_PROMPT: 'Custom fixture companion base' }))
+      Reflect.set(instance, 'modelEnvironment', async () => ({ ...selfHostModelEnvironment(env), PI_SYSTEM_PROMPT: 'Custom fixture companion base' }))
       Reflect.set(instance, 'harness', undefined)
       const custom = await getHarness()
       await (await custom.lane('main', BACKGROUND_CONTEXT)).prompt('Fixture custom prompt', undefined, BACKGROUND_CONTEXT)

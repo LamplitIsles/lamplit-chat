@@ -3,16 +3,9 @@ import { PLATFORM_FEEDBACK_AUTHORIZATION } from './platform-feedback-tool'
 import { installCompanionCompaction, defaultCompactionPrompt } from './companion-compaction'
 import { AgentHarness, type AgentHarnessTool, type CompactionSettings, type Session } from '@earendil-works/pi-agent-core'
 import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
-import { createModels, createProvider, type Model } from '@earendil-works/pi-ai'
-import { stream, streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
+import { accountModels, selectedModel, type ModelEnvironment } from './model-catalog'
+export type { ModelEnvironment } from './model-catalog'
 import { projectTurnTime } from './turn-time'
-
-export type ModelEnvironment = Pick<Env, 'MODEL_CONTEXT_WINDOW' | 'MODEL_MAX_TOKENS' | 'PI_SYSTEM_PROMPT'> & {
-  MODEL_API_KEY: string
-  MODEL_BASE_URL: string
-  AI_MODEL: string
-  AI_MEMORY_MODEL: string
-}
 
 type CreatePiHarnessOptions = {
   env: ModelEnvironment
@@ -36,29 +29,8 @@ const DEFAULT_SYSTEM_PROMPT = [
 ].join('\n\n')
 
 export async function createPiHarness({ env, session, tools, memory, compaction, loadInstructions, getUserTimeZone, awaitWakeSchedules, loadCompactionPrompt = defaultCompactionPrompt }: CreatePiHarnessOptions) {
-  const modelId = env.AI_MODEL || 'your-model'
-  const model = directModel(env, modelId)
-  const memoryModel = directModel(env, env.AI_MEMORY_MODEL || modelId)
-  const providerModels = memoryModel.id === model.id ? [model] : [model, memoryModel]
-  const models = createModels()
-  models.setProvider(createProvider({
-    id: model.provider,
-    name: 'Configured OpenAI-compatible provider',
-    auth: {
-      apiKey: {
-        name: 'Model API key',
-        resolve: async () => ({
-          auth: {
-            apiKey: env.MODEL_API_KEY,
-            baseUrl: model.baseUrl,
-          },
-          source: 'MODEL_API_KEY',
-        }),
-      },
-    },
-    models: providerModels,
-    api: { stream, streamSimple },
-  }))
+  const model = selectedModel(env)
+  const models = await accountModels(env)
 
   const { harness } = await AgentHarness.create({
     session,
@@ -81,7 +53,7 @@ export async function createPiHarness({ env, session, tools, memory, compaction,
       }
       return [buildPiSystemPrompt(memoryContext, env.PI_SYSTEM_PROMPT, instructions, relationshipContext), tools.some(tool => tool.name === 'submit_platform_feedback') ? PLATFORM_FEEDBACK_AUTHORIZATION : ''].filter(Boolean).join('\n\n')
     },
-    thinkingLevel: 'medium',
+    ...(env.thinkingLevel === null ? {} : { thinkingLevel: env.thinkingLevel }),
     toProviderMessages: async (messages) => {
       if (messages.some(message => message.role === 'custom' && message.customType === WAKE_CUSTOM_TYPE)) await awaitWakeSchedules?.()
       return projectTurnTime(messages, await getUserTimeZone())
@@ -89,21 +61,20 @@ export async function createPiHarness({ env, session, tools, memory, compaction,
     compaction,
   }, BACKGROUND_CONTEXT)
   const lane = await harness.lane('main', BACKGROUND_CONTEXT)
-  installCompanionCompaction(harness, lane, models, loadCompactionPrompt, () => Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL && env.AI_MODEL))
+  installCompanionCompaction(harness, lane, models, loadCompactionPrompt, env)
   const activeModel = await lane.getModel(BACKGROUND_CONTEXT)
   if (activeModel?.id !== model.id || activeModel.provider !== model.provider) {
     await lane.setModel({ provider: model.provider, modelId: model.id }, BACKGROUND_CONTEXT)
   }
+  // Existing lane configuration is durable; apply the current account options too.
+  const thinkingLevel = env.thinkingLevel ?? 'off'
+  if (await lane.getThinkingLevel(BACKGROUND_CONTEXT) !== thinkingLevel) await lane.setThinkingLevel(thinkingLevel, BACKGROUND_CONTEXT)
   const activeTools = await lane.getActiveTools(BACKGROUND_CONTEXT)
   const currentTools = tools.map((tool) => tool.name)
   if (activeTools.length !== currentTools.length || activeTools.some((name, index) => name !== currentTools[index])) {
     await lane.setActiveTools(currentTools, BACKGROUND_CONTEXT)
   }
   return Object.assign(harness, { models })
-}
-
-export function getMemoryModel(env: ModelEnvironment): Model<'openai-completions'> {
-  return directModel(env, env.AI_MEMORY_MODEL || env.AI_MODEL || 'your-model')
 }
 
 export function buildPiSystemPrompt(memoryContext: string, customPrompt?: string, instructions?: string | null, relationshipContext?: string): string {
@@ -114,21 +85,6 @@ export function buildPiSystemPrompt(memoryContext: string, customPrompt?: string
     memoryContext,
     relationshipContext,
   ].filter(Boolean).join('\n\n')
-}
-
-function directModel(env: ModelEnvironment, modelId: string): Model<'openai-completions'> {
-  return {
-    id: modelId,
-    name: modelId,
-    api: 'openai-completions',
-    provider: 'configured-provider',
-    baseUrl: env.MODEL_BASE_URL,
-    reasoning: false,
-    input: ['text', 'image'],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: Number(env.MODEL_CONTEXT_WINDOW) || 128_000,
-    maxTokens: Number(env.MODEL_MAX_TOKENS) || 4096,
-  }
 }
 
 export type PiHarness = Awaited<ReturnType<typeof createPiHarness>>
