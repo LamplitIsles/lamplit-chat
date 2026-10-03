@@ -6,28 +6,83 @@ is no remote catalog refresh or custom endpoint editor.
 
 ## Supported scope
 
-| Provider ID | API-key chat protocol |
+All 42 public built-in factories in installed Pi 0.99.1 were audited. These
+37 providers (32 added by #3255) expose native chat models, accept one stored
+key/token without extra fields, and completed isolated workerd fixture replies
+through the actual hosted Wrangler bundle. Each listed protocol is exercised;
+these fixtures establish runtime/protocol compatibility, not paid-service access
+or the validity/entitlements of a real key. Native regional/token-plan IDs and
+credential namespaces stay distinct even when auth environment names coincide.
+
+| Enabled provider ID | Native chat models | Key-only authentication and native protocol |
+| --- | ---: | --- |
+| `amazon-bedrock` | 176 | Bearer token; Bedrock ConverseStream |
+| `ant-ling` | 3 | Stored API key; OpenAI completions |
+| `anthropic` | 16 | Stored API key; Anthropic Messages |
+| `baseten` | 21 | Stored API key; OpenAI completions |
+| `cerebras` | 2 | Stored API key; OpenAI completions |
+| `deepseek` | 2 | Stored API key; OpenAI completions |
+| `fireworks` | 22 | Stored API key; Anthropic Messages, OpenAI completions |
+| `github-copilot` | 33 | Stored token; Anthropic Messages, OpenAI completions, OpenAI Responses |
+| `google` | 22 | Stored API key; Google Generative AI |
+| `google-vertex` | 14 | Stored API key; Vertex express |
+| `groq` | 7 | Stored API key; OpenAI completions |
+| `huggingface` | 76 | Stored token; OpenAI completions |
+| `kimi-coding` | 4 | Stored API key; Anthropic Messages |
+| `meta` | 5 | Stored API key; OpenAI Responses |
+| `minimax` | 3 | Stored API key; Anthropic Messages |
+| `minimax-cn` | 3 | Stored API key; Anthropic Messages |
+| `mistral` | 32 | Stored API key; Mistral native chat |
+| `moonshotai` | 4 | Stored API key; OpenAI completions |
+| `moonshotai-cn` | 4 | Stored API key; OpenAI completions |
+| `nvidia` | 19 | Stored API key; OpenAI completions |
+| `openai` | 44 | Stored API key; OpenAI Responses |
+| `opencode` | 77 | Stored API key; Anthropic Messages, Google Generative AI, OpenAI completions, OpenAI Responses |
+| `opencode-go` | 29 | Stored API key; Anthropic Messages, OpenAI completions, OpenAI Responses |
+| `openrouter` | 398 | Stored API key; Anthropic Messages, OpenAI completions |
+| `qwen-token-plan` | 20 | Stored API key; OpenAI completions |
+| `qwen-token-plan-cn` | 20 | Stored API key; OpenAI completions |
+| `qwen-token-plan-individual` | 9 | Stored API key; OpenAI completions |
+| `radius` | 28 | Stored API key; Pi Messages |
+| `together` | 20 | Stored API key; OpenAI completions |
+| `vercel-ai-gateway` | 252 | Stored API key; Anthropic Messages |
+| `xai` | 4 | Stored API key; OpenAI Responses |
+| `xiaomi` | 6 | Stored API key; OpenAI completions |
+| `xiaomi-token-plan-ams` | 4 | Stored API key; OpenAI completions |
+| `xiaomi-token-plan-cn` | 4 | Stored API key; OpenAI completions |
+| `xiaomi-token-plan-sgp` | 4 | Stored API key; OpenAI completions |
+| `zai` | 7 | Stored API key; OpenAI completions |
+| `zai-coding-cn` | 4 | Stored API key; OpenAI completions |
+
+Bedrock uses Pi's public `bedrockProviderModule` and
+`setBedrockProviderModule` static-registration exports: its default Node-only
+variable-specifier lazy import cannot execute in a bundled workerd module.
+The native adapter resolves region from the catalog endpoint and uses the stored
+bearer token without IAM profiles or extra region/account fields. No AWS protocol
+or model metadata is reimplemented. Vertex's native express API-key branch
+resolves `aiplatform.googleapis.com` without ADC/project/location fields, while
+retaining the native catalog's read-only endpoint metadata. Copilot uses its
+native stored token path and headers; this interface does not obtain, refresh or
+exchange GitHub tokens. Radius uses its built-in baseline models and Pi Messages;
+Chat does not invoke remote catalog refresh or persist a dynamic catalog.
+
+The complete excluded inventory is:
+
+| Excluded provider ID | Installed native evidence / reason |
 | --- | --- |
-| `deepseek` | OpenAI completions with native DeepSeek compatibility |
-| `openai` | OpenAI Responses |
-| `anthropic` | Anthropic Messages |
-| `google` | Google Generative AI |
-| `openrouter` | Native OpenAI completions or Anthropic Messages, as catalogued |
+| `azure-openai-responses` | Native chat models have empty baseUrl; adapter requires resource name or deployment endpoint. |
+| `cloudflare-ai-gateway` | Native auth requires account ID and gateway ID in addition to key. |
+| `cloudflare-workers-ai` | Native auth requires account ID in addition to key. |
+| `openai-codex` | Legacy ChatGPT path exposes only OAuth; no API-key auth method. |
+| `typesafe` | API-key method exists, but getModels() is empty; only classifier models. |
 
-These five factories are enabled and bundle/run in the isolated workerd tests.
-Only their chat models are exposed; OpenRouter image-generation and classifier
-models are excluded. This is an audited API-key scope, not support for every Pi
-provider or every authentication method. OAuth/subscription login is not enabled,
-including the OAuth methods attached to OpenAI, Anthropic and OpenRouter factories.
-
-All other built-in providers are excluded in this release. Account/deployment or
-non-key auth paths include Amazon Bedrock, Azure OpenAI, Google Vertex, GitHub
-Copilot, OpenAI Codex, Cloudflare Workers AI and Cloudflare AI Gateway. The other
-factories (Ant Ling, Baseten, Cerebras, Fireworks, Groq, Hugging Face, Kimi Coding,
-Meta, MiniMax/CN, Mistral, Moonshot AI/CN, NVIDIA, OpenCode/Go, Qwen token-plan
-variants, Radius, Together, TypeSafe, Vercel AI Gateway, xAI, Xiaomi and its
-token-plan variants, Z.AI and Z.AI Coding CN) are outside the audited scope;
-exclusion does not assert that all require OAuth or cannot run in workerd.
+Exclusion does not assert these services cannot run in Cloudflare with additional
+configuration. Azure's adapter explicitly rejects a missing resource endpoint;
+Cloudflare auth returns no resolution with a lone key. No extra settings fields
+or credential environment are introduced. The enabled factories' classifier and
+image-generation models remain excluded by native `getModels()` chat filtering.
+OAuth/subscription alternatives on enabled factories are not exclusion reasons;
+Chat enables their independent key-only paths, not OAuth login, IAM or ADC.
 
 Each selected model retains native API, endpoint, context window, maximum output,
 input support, reasoning, thinking-level map and compatibility metadata. Catalog
@@ -112,28 +167,31 @@ are removed. Operators must select a native provider/model; custom URLs and
 handwritten capacities are no longer supported. Search/voice credentials remain
 independent.
 
-## Coordinated release and verification
+## Verification and release boundary (#3255)
 
-This change requires the Platform selection/schema change from spec #3246. Before
-release, jointly test the actual isolated Platform handler with test-owned SQL and
-this actual Chat handler/Pi DO: catalog → save A → save B → switch A without a key
-→ completed native chat, capacity and advanced options. Include wrong Origin and
-cross-account rejection, and record both final commits. Both merges wait for this
-joint acceptance; local Chat completion alone is insufficient.
-
-Existing deployed encrypted keys/model selections must be preserved. Use Platform's
-fixture-verified conversion against the exact catalog `baseUrl` and model IDs.
-Before a separately authorized deployment, inspect its unmatched-row report and
-provide explicit operator mapping for any unmatched endpoint/model. Never silently
-reassign or discard an old key. Preserve an authorized backup, apply the documented
-Platform schema/conversion steps, and release the matching pair of internal DTOs
-as one coordinated cutover. Chat adds no storage migration or old/new read path.
-This implementation run performs no live conversion, deployment or production read.
+Platform already dynamically forwards the exact catalog DTO and validates/stores
+arbitrary catalog provider IDs. No Platform/App/schema change or key conversion
+is required for this expansion. The unchanged authenticated catalog/save/internal
+model handler is exercised with its existing test-owned SQL fixture against the
+actual Chat Wrangler bundle: save a newly enabled provider, read it, complete
+native replies and maintenance, then return to the previous provider without
+supplying its key again. Wrong Origin, account and internal-secret requests reject
+without native calls. This joint consumer check gates merge; deployment requires
+separate authorization and the documented repository deploy step.
 
 `npm test`, `npm run lint`, `npm run typecheck`, shared-App build and hosted Wrangler
-dry-run are the local gates. `model-catalog.worker.test.ts` exercises native
-protocols/tools, account selection/options, catalog auth/no-network behavior,
-image history and native maintenance with test-only upstream responses. Existing
-chat, image recovery, empty-reply and quiet-compaction suites remain relevant.
-`fixtures/native-api-setup.ts` preloads public adapters only in Vitest so dynamic
-module loading cannot retain a test Durable Object's I/O context.
+dry-run are the local gates. `model-catalog.worker.test.ts` verifies the complete
+installed factory inventory, native model/options consistency, account key
+isolation, catalog auth/no-network behavior, native tools and maintenance. Existing
+image history, empty-reply, quiet-compaction, held-reply and navigation regressions
+remain gates. `fixtures/native-api-setup.ts` preloads public adapters only in
+Vitest so dynamic module loading cannot retain a test Durable Object's I/O context.
+
+The actual production-bundle smoke uses isolated Miniflare/workerd SQLite DOs,
+real shared sockets, only synthetic credentials and an intercepted outbound
+service; every enabled provider/protocol completes a native reply without Vitest
+preloading. Record the exact bundle hash, gzip size and startup measurement along
+with catalog bytes (below Platform's existing 4MiB limit). No live account,
+provider request, credential file, production migration or deployment is part of
+these checks. Installed SDK/dependency versions and the explicit factory list stay
+pinned; expanding or upgrading this list requires the same native audit.

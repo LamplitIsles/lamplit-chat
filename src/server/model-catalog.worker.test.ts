@@ -6,6 +6,8 @@ import type { ChatView } from '@lamplit/contracts'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/pi-agent-core/harness/context'
 import type { AgentLane } from '@earendil-works/pi-agent-core'
 import { accountModels, modelCatalog, nativeProviders, resolveModelSelection, selectedModel, type ModelSelection } from './model-catalog'
+import { builtinProviders } from '@earendil-works/pi-ai/providers/all'
+import { getSupportedThinkingLevels } from '@earendil-works/pi-ai'
 import { nativeReply } from './fixtures/native-provider'
 import worker from '../server'
 import type { PiSession } from './pi-session'
@@ -59,7 +61,9 @@ it('catalog uses factory metadata, guards hosted/self-host access, has no secret
     expect(response.status).toBe(200); expect(response.headers.get('cache-control')).toBe('no-store')
     const catalog = await response.json() as ReturnType<typeof modelCatalog>
     expect(catalog).toEqual(modelCatalog())
-    expect(catalog.providers.map(p => p.id)).toEqual(['deepseek', 'openai', 'anthropic', 'google', 'openrouter'])
+    expect(catalog.providers).toHaveLength(37)
+    expect(catalog.providers.map(p => p.id).slice(0, 5)).toEqual(['deepseek', 'openai', 'anthropic', 'google', 'openrouter'])
+    expect(new TextEncoder().encode(JSON.stringify(catalog)).byteLength).toBeLessThan(4 * 1024 * 1024)
     for (const provider of nativeProviders()) {
       const models = catalog.providers.find(p => p.id === provider.id)!.models
       expect(models.length).toBe(provider.getModels().length)
@@ -283,5 +287,69 @@ it('summarized navigation refreshes an idle saved selection and rejects invalid 
     await expect(runInDurableObject(account.stub, n => n.navigateTree(target, { summarize: true }))).rejects.toThrow('Unsupported provider or model')
     expect(requests).toHaveLength(1)
     expect(await account.native(n => n.active)).toBe(false)
+  } finally { vi.restoreAllMocks() }
+})
+
+// Inventory from the installed public registry; no remote catalog or auth login.
+it('every builtin is enabled or has a concrete key-only/chat exclusion', async () => {
+  const excluded = ['azure-openai-responses', 'cloudflare-ai-gateway', 'cloudflare-workers-ai', 'openai-codex', 'typesafe']
+  const enabled = nativeProviders()
+  const all = builtinProviders()
+  expect(all).toHaveLength(42)
+  expect(all.map(p => p.id).sort()).toEqual([...enabled.map(p => p.id), ...excluded].sort())
+  for (const provider of all) {
+    const key = `${provider.id}-test-owned-key`
+    const auth = await provider.auth.apiKey?.resolve({ ctx: { env: async () => undefined, fileExists: async () => false }, credential: { type: 'api_key', key }, signal: new AbortController().signal })
+    if (provider.id.startsWith('cloudflare-') || provider.id === 'openai-codex') expect(auth).toBeUndefined()
+    else expect(auth?.auth.apiKey).toBe(key)
+    if (provider.id === 'typesafe') expect(provider.getModels()).toEqual([])
+    else if (provider.id === 'azure-openai-responses') expect(provider.getModels().every(m => !m.baseUrl)).toBe(true)
+    else if (!excluded.includes(provider.id)) {
+      const registered = enabled.find(p => p.id === provider.id)!
+      expect(registered.getModels()).toEqual(provider.getModels())
+      for (const model of registered.getModels()) {
+        const config = resolveModelSelection({ provider: provider.id, model: model.id, apiKey: key, thinkingLevel: null, maxOutputTokens: null })
+        expect(selectedModel(config)).toEqual(model)
+        for (const level of getSupportedThinkingLevels(model)) expect(resolveModelSelection({ ...config, thinkingLevel: level, maxOutputTokens: model.maxTokens }).thinkingLevel).toBe(level)
+      }
+      const models = await accountModels(selection({ provider: provider.id, model: provider.getModels()[0].id }, key))
+      expect((await models.getAuth(provider.id))?.auth.apiKey).toBe(key)
+      for (const other of enabled.filter(p => p.id !== provider.id)) {
+        models.setProvider(other)
+        expect(await models.getAuth(other.id)).toBeUndefined()
+      }
+    }
+  }
+})
+
+it.each(['google-vertex', 'mistral', 'radius', 'amazon-bedrock'])('new native %s protocol completes tools, options and memory in the real DO', async provider => {
+  const model = nativeProviders().find(p => p.id === provider)!.getModels()[0]
+  const config = { ...selection({ provider, model: model.id }), thinkingLevel: getSupportedThinkingLevels(model).includes('high') ? 'high' as const : null, maxOutputTokens: 2500 }
+  const requests: Array<{ headers: Headers; body: Record<string, unknown> }> = []
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const request = new Request(input, init), body = await request.json() as Record<string, unknown>
+    requests.push({ headers: request.headers, body })
+    if (JSON.stringify(body).includes('record_memory_changes')) return nativeReply(model.api, '', { name: 'record_memory_changes', arguments: { operations: [] } })
+    return nativeReply(model.api, 'New protocol fixture reply', requests.length === 1)
+  })
+  try {
+    const account = await owner(crypto.randomUUID(), () => config)
+    await account.native(async n => {
+      const lane = await n.getLane()
+      expect(await lane.getModel(context)).toEqual(model)
+      expect((await lane.prompt('Use read then reply', undefined, context)).ok).toBe(true)
+      await n.extractNextMemoryBatch()
+    })
+    const branch = await runInDurableObject(account.stub, n => n.getBranch())
+    expect(branch.entries).toEqual(expect.arrayContaining([expect.objectContaining({ message: expect.objectContaining({ role: 'toolResult' }) })]))
+    expect(branch.entries.at(-1)?.message).toMatchObject({ role: 'assistant', stopReason: 'stop', content: expect.arrayContaining([expect.objectContaining({ type: 'text', text: 'New protocol fixture reply' })]) })
+    expect(requests.length).toBeGreaterThanOrEqual(3)
+    for (const request of requests) {
+      expect(request.headers.get('authorization') ?? request.headers.get('x-goog-api-key')).toContain(config.apiKey)
+      if (provider === 'google-vertex') expect(request.body).toMatchObject({ generationConfig: { maxOutputTokens: 2500, thinkingConfig: { thinkingBudget: 24576 } } })
+      else if (provider === 'mistral') expect(request.body.max_tokens).toBe(2500)
+      else if (provider === 'radius') expect(request.body).toMatchObject({ options: { maxTokens: 2500, reasoning: 'high' } })
+      else expect(request.body).toMatchObject({ inferenceConfig: { maxTokens: 2500 } })
+    }
   } finally { vi.restoreAllMocks() }
 })

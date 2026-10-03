@@ -4,10 +4,80 @@ import { deepseekProvider } from '@earendil-works/pi-ai/providers/deepseek'
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic'
 import { googleProvider } from '@earendil-works/pi-ai/providers/google'
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter'
+import { amazonBedrockProvider } from '@earendil-works/pi-ai/providers/amazon-bedrock'
+import { antLingProvider } from '@earendil-works/pi-ai/providers/ant-ling'
+import { basetenProvider } from '@earendil-works/pi-ai/providers/baseten'
+import { cerebrasProvider } from '@earendil-works/pi-ai/providers/cerebras'
+import { fireworksProvider } from '@earendil-works/pi-ai/providers/fireworks'
+import { githubCopilotProvider } from '@earendil-works/pi-ai/providers/github-copilot'
+import { googleVertexProvider } from '@earendil-works/pi-ai/providers/google-vertex'
+import { groqProvider } from '@earendil-works/pi-ai/providers/groq'
+import { huggingfaceProvider } from '@earendil-works/pi-ai/providers/huggingface'
+import { kimiCodingProvider } from '@earendil-works/pi-ai/providers/kimi-coding'
+import { metaProvider } from '@earendil-works/pi-ai/providers/meta'
+import { minimaxProvider } from '@earendil-works/pi-ai/providers/minimax'
+import { minimaxCnProvider } from '@earendil-works/pi-ai/providers/minimax-cn'
+import { mistralProvider } from '@earendil-works/pi-ai/providers/mistral'
+import { moonshotaiProvider } from '@earendil-works/pi-ai/providers/moonshotai'
+import { moonshotaiCnProvider } from '@earendil-works/pi-ai/providers/moonshotai-cn'
+import { nvidiaProvider } from '@earendil-works/pi-ai/providers/nvidia'
+import { opencodeProvider } from '@earendil-works/pi-ai/providers/opencode'
+import { opencodeGoProvider } from '@earendil-works/pi-ai/providers/opencode-go'
+import { qwenTokenPlanProvider } from '@earendil-works/pi-ai/providers/qwen-token-plan'
+import { qwenTokenPlanCnProvider } from '@earendil-works/pi-ai/providers/qwen-token-plan-cn'
+import { qwenTokenPlanIndividualProvider } from '@earendil-works/pi-ai/providers/qwen-token-plan-individual'
+import { radiusProvider } from '@earendil-works/pi-ai/providers/radius'
+import { togetherProvider } from '@earendil-works/pi-ai/providers/together'
+import { vercelAIGatewayProvider } from '@earendil-works/pi-ai/providers/vercel-ai-gateway'
+import { xaiProvider } from '@earendil-works/pi-ai/providers/xai'
+import { xiaomiProvider } from '@earendil-works/pi-ai/providers/xiaomi'
+import { xiaomiTokenPlanAmsProvider } from '@earendil-works/pi-ai/providers/xiaomi-token-plan-ams'
+import { xiaomiTokenPlanCnProvider } from '@earendil-works/pi-ai/providers/xiaomi-token-plan-cn'
+import { xiaomiTokenPlanSgpProvider } from '@earendil-works/pi-ai/providers/xiaomi-token-plan-sgp'
+import { zaiProvider } from '@earendil-works/pi-ai/providers/zai'
+import { zaiCodingCnProvider } from '@earendil-works/pi-ai/providers/zai-coding-cn'
+import { bedrockProviderModule } from '@earendil-works/pi-ai/bedrock-provider'
+import { setBedrockProviderModule } from '@earendil-works/pi-ai/api/bedrock-converse-stream.lazy'
+
+// Public static registration avoids the Node-only variable import in workerd.
+setBedrockProviderModule(bedrockProviderModule)
 
 // Explicitly audited API-key scope. Factories own all model/protocol metadata.
 export function nativeProviders(): Provider[] {
-  return [deepseekProvider(), openaiProvider(), anthropicProvider(), googleProvider(), openrouterProvider()]
+  return [deepseekProvider(), openaiProvider(), anthropicProvider(), googleProvider(), openrouterProvider(),
+    amazonBedrockProvider(),
+    antLingProvider(),
+    basetenProvider(),
+    cerebrasProvider(),
+    fireworksProvider(),
+    githubCopilotProvider(),
+    googleVertexProvider(),
+    groqProvider(),
+    huggingfaceProvider(),
+    kimiCodingProvider(),
+    metaProvider(),
+    minimaxProvider(),
+    minimaxCnProvider(),
+    mistralProvider(),
+    moonshotaiProvider(),
+    moonshotaiCnProvider(),
+    nvidiaProvider(),
+    opencodeProvider(),
+    opencodeGoProvider(),
+    qwenTokenPlanProvider(),
+    qwenTokenPlanCnProvider(),
+    qwenTokenPlanIndividualProvider(),
+    radiusProvider(),
+    togetherProvider(),
+    vercelAIGatewayProvider(),
+    xaiProvider(),
+    xiaomiProvider(),
+    xiaomiTokenPlanAmsProvider(),
+    xiaomiTokenPlanCnProvider(),
+    xiaomiTokenPlanSgpProvider(),
+    zaiProvider(),
+    zaiCodingCnProvider(),
+  ]
 }
 
 export function modelCatalog() {
