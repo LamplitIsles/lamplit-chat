@@ -41,9 +41,11 @@ export function createPiChatBackend(source: PiChatSource): ChatBackend {
       const content = entry.message?.content;
       const text = typeof content === 'string' ? content : Array.isArray(content) ? content.flatMap(part => part && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string' ? [part.text] : []).join('\n') : '';
       const stopReason = entry.message && 'stopReason' in entry.message ? entry.message.stopReason : null;
-      const failed = stopReason === 'aborted' || stopReason === 'error';
       const operation = entryOperations.get(entry.id);
       const images = await source.images(entry.id);
+      const hasToolCall = Array.isArray(content) && content.some(part => part && typeof part === 'object' && part.type === 'toolCall');
+      const missingReply = entry.message?.role === 'assistant' && stopReason === 'stop' && !text.trim() && !images.length && !hasToolCall;
+      const failed = stopReason === 'aborted' || stopReason === 'error' || missingReply;
       if (entry.message?.role === 'assistant' && !text && !failed && !images.length) return null;
       return { ...(entry.wakeSource ? { source: { kind: 'reminder' as const, reminderId: entry.wakeSource.wakeId, occurrenceId: occurrenceKey(entry.wakeSource) } } : {}), id: entry.id, role: failed ? 'notice' : !entry.wakeSource && entry.message!.role === 'user' ? 'user' : 'agent', images, text: failed ? stopReason === 'aborted' ? '已停止回复' : '回复失败' : text, createdAt: Date.parse(entry.timestamp), operationId: operation?.id ?? null, turnId: operation?.turnId ?? null } satisfies ChatMessage;
     }));
