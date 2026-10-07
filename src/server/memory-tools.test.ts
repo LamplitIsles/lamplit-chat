@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createMemoryTool } from './memory-tools'
 
 describe('memory tool', () => {
@@ -17,8 +17,8 @@ describe('memory tool', () => {
     const deleteMemory = vi.fn()
     const tool = createMemoryTool({ setMemory, deleteMemory }, 'session-1')
 
-    await expect(tool.execute('call-1', { action: 'delete' }, () => {}, undefined, {} as never, BACKGROUND_CONTEXT)).rejects.toThrow('id is required')
-    await expect(tool.execute('call-2', { action: 'set' }, () => {}, undefined, {} as never, BACKGROUND_CONTEXT)).rejects.toThrow('kind and content are required')
+    await expect(tool.execute({ action: 'delete' }, { callId: 'call-1' } as never, BACKGROUND_CONTEXT)).rejects.toThrow('id is required')
+    await expect(tool.execute({ action: 'set' }, { callId: 'call-2' } as never, BACKGROUND_CONTEXT)).rejects.toThrow('kind and content are required')
     expect(setMemory).not.toHaveBeenCalled()
     expect(deleteMemory).not.toHaveBeenCalled()
   })

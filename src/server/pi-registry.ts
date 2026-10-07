@@ -1,6 +1,5 @@
 import type { SearchBackend } from '@lamplit/contracts'
-import { nativeSearchNode, parseSearchId, searchId, searchSnippet } from './conversation-search'
-import type { Entry } from '@earendil-works/pi-agent-core/harness/session'
+import { parseSearchId, searchId, searchSnippet } from './conversation-search'
 import { MaterialFailure, materialCheck, materialReply } from './companion-materials'
 import { MemoryUpdateSchema, MemoryDeleteSchema, type MaterialRequest, type MaterialReply } from '../shared/companion-materials'
 import { HistoryArchives, HistoryFailure } from './history-archives'
@@ -9,7 +8,6 @@ import type { HistoryReply } from '../shared/history-import'
 import { hostedCallable, HostedAgent } from './hosted-agent'
 import type {
   ApplyMemoryExtractionInput,
-  CompactionSettings,
   Memory,
   MemoryKind,
   RelationshipRecord,
@@ -20,7 +18,6 @@ import type {
   SessionLineage,
   SessionListInput,
   SessionOverview,
-  SessionBranch,
   SessionSearchResult,
   SessionStatus,
   SessionSummary,
@@ -49,13 +46,6 @@ type SearchRow = SessionRow & {
   text: string
 }
 
-type SessionSnapshot = {
-  metadata: unknown
-  entries: unknown[]
-  compaction: CompactionSettings
-  files: Array<{ path: string; content: string; encoding?: 'base64' }>
-}
-
 type MemoryRow = {
   id: string
   kind: MemoryKind
@@ -77,12 +67,7 @@ type PiSessionInternal = {
   getOverview(): Promise<SessionOverview>
   compactionSearchEntries(): Promise<SessionIndexEvent[]>
   readSearchRecord(entryId: string): ReturnType<SearchBackend['searchRead']>
-  getBranch(leafId?: string): Promise<SessionBranch>
   setSessionName(name: string): Promise<SessionOverview>
-  exportSession(entryId?: string): Promise<SessionSnapshot>
-  exportFork(entryId: string): Promise<SessionSnapshot>
-  exportClone(): Promise<SessionSnapshot>
-  importSession(snapshot: SessionSnapshot, metadata?: InitializeMetadata): Promise<SessionOverview>
   deleteContents(): Promise<void>
 }
 
@@ -450,29 +435,6 @@ export class PiRegistry extends HostedAgent {
     }
   }
 
-  @hostedCallable()
-  async forkSession(input: { sourceSessionId: string; entryId: string; name?: string }): Promise<SessionSummary> {
-    this.requireSession(input.sourceSessionId)
-    const source = this.session(input.sourceSessionId)
-    const snapshot = await source.exportFork(input.entryId)
-    return this.importAsNew(snapshot, cleanName(input.name), {
-      type: 'fork',
-      parentSessionId: input.sourceSessionId,
-      sourceEntryId: input.entryId,
-    })
-  }
-
-  @hostedCallable()
-  async cloneSession(input: { sourceSessionId: string; name?: string }): Promise<SessionSummary> {
-    this.requireSession(input.sourceSessionId)
-    const source = this.session(input.sourceSessionId)
-    const snapshot = await source.exportClone()
-    return this.importAsNew(snapshot, cleanName(input.name), {
-      type: 'clone',
-      parentSessionId: input.sourceSessionId,
-    })
-  }
-
   async materialsMemoryRequest({ action, id = '', input }: MaterialRequest): Promise<MaterialReply> {
     return materialReply(async () => {
       if (action === 'memory-list') {
@@ -679,33 +641,6 @@ export class PiRegistry extends HostedAgent {
     })
   }
 
-  private async importAsNew(
-    snapshot: SessionSnapshot,
-    name: string | undefined,
-    lineage: SessionLineage,
-  ): Promise<SessionSummary> {
-    const id = crypto.randomUUID()
-    const now = new Date().toISOString()
-    this.insertCreatingSession(id, name, now, lineage)
-    try {
-      const overview = await this.session(id).importSession(snapshot, {
-        id,
-        name,
-        createdAt: now,
-        updatedAt: now,
-        lineage,
-      })
-      this.ctx.storage.transactionSync(() => {
-        this.storeOverview(overview)
-        this.indexSnapshot(id, snapshot.entries)
-      })
-      return summaryFromOverview(overview)
-    } catch (error) {
-      await this.cleanupFailedSession(id)
-      throw error
-    }
-  }
-
   private insertCreatingSession(id: string, name: string | undefined, now: string, lineage: SessionLineage): void {
     this.ctx.storage.sql.exec(
       `INSERT INTO pi_registry_sessions(
@@ -813,14 +748,6 @@ export class PiRegistry extends HostedAgent {
     this.ctx.storage.sql.exec('DELETE FROM pi_registry_sessions WHERE id = ?', sessionId)
   }
 
-  private indexSnapshot(sessionId: string, entries: unknown[]): void {
-    entries.forEach((value, index) => {
-      const node = nativeSearchNode(value as Entry)
-      if (!node.record?.content) return
-      this.upsertSearchEntry(sessionId, node.id, index + 1, node.record.kind === 'compaction' ? 'compaction' : node.record.role!, node.createdAt, node.record.content)
-    })
-  }
-
   private upsertSearchEntry(
     sessionId: string,
     entryId: string,
@@ -920,7 +847,7 @@ function cleanName(name: string | undefined): string | undefined {
 }
 
 function summaryFromOverview(overview: SessionOverview): SessionSummary {
-  const { revision: _revision, running: _running, tree: _tree, compaction: _compaction, ...summary } = overview
+  const { revision: _revision, running: _running, compaction: _compaction, ...summary } = overview
   return summary
 }
 

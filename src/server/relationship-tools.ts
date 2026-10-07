@@ -1,4 +1,4 @@
-import type { AgentHarnessTool } from '@earendil-works/pi-agent-core'
+import type { ToolRegistration } from '@earendil-works/pi-durable'
 import { Type } from 'typebox'
 import type { RelationshipSnapshot, RelationshipState, RelationshipUpdate } from '../shared/pi-contract'
 
@@ -15,14 +15,13 @@ const updateParameters = Type.Object({
 })
 const readParameters = Type.Object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })) })
 
-export function createRelationshipTools(registry: RelationshipRegistry): AgentHarnessTool<undefined>[] {
+export function createRelationshipTools(registry: RelationshipRegistry): ToolRegistration[] {
   return [{
     name: 'update_relationship',
-    label: 'Update relationship',
     description: 'Record a genuine change in your present mood, your sense of closeness, or your short profile signature. Give a concrete reason for each change. Closeness ranges from 0 to 100; each update may move it by -10 to 10. It is descriptive, not a score to maximize. Do not update it mechanically after every message.',
     parameters: updateParameters,
     executionMode: 'sequential',
-    execute: async (_id, input, _onUpdate, _toolContext, _invocation, context) => {
+    execute: async (input, _api, context) => {
       context.abortSignal?.throwIfAborted()
       const state = await registry.updateRelationship(input as RelationshipUpdate)
       context.abortSignal?.throwIfAborted()
@@ -30,11 +29,10 @@ export function createRelationshipTools(registry: RelationshipRegistry): AgentHa
     },
   }, {
     name: 'read_relationship_history',
-    label: 'Read relationship history',
     description: 'Read recent changes in the shared relationship across sessions, including the reasons recorded at the time.',
     parameters: readParameters,
     executionMode: 'sequential',
-    execute: async (_id, input, _onUpdate, _toolContext, _invocation, context) => {
+    execute: async (input, _api, context) => {
       context.abortSignal?.throwIfAborted()
       const snapshot = await registry.getRelationshipSnapshot({ limit: (input as { limit?: number }).limit })
       context.abortSignal?.throwIfAborted()

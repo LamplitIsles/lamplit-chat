@@ -1,6 +1,3 @@
-> Current default build/native acceptance: [default-shared-frontend.md](default-shared-frontend.md).
-> Earlier artifact commands below are historical evidence, not the current delivery gate.
-
 # Timed wakes
 
 Ask your companion in chat to return at an agreed time, for example “Tomorrow
@@ -62,7 +59,7 @@ No arbitrary cron expression or second model parser is exposed.
 ## Persistence, recovery and operations
 
 Both hosted and self-hosted editions use the same PiSession path, its existing
-session authorization, and Agents SDK 0.24.0 `schedule(Date)`, `listSchedules`,
+session authorization, and Agents SDK 0.26.0 `schedule(Date)`, `listSchedules`,
 and `cancelSchedule`. There are no additional secrets, bindings, migrations,
 queues, or system push notifications. Hosted Platform's existing `/api/agents`
 forwarding covers list reads; no new Platform business endpoint is required.
@@ -70,28 +67,26 @@ Model calls and memory extraction use the existing BYOK configuration and can
 incur its normal charges. Local synthetic checks do not establish account CPU
 limits or production provider performance.
 
-Active arrangements live in session settings. SDK schedules hold only the next
-absolute occurrence. A custom Pi message contains the saved source snapshot.
-The occurrence key (arrangement ID, revision, planned instant), accepted Pi entry
-ID, inbox write, and advancement of the arrangement commit in one DO SQLite
-transaction. Old revisions and cancelled callbacks cannot accept input. Same
-occurrence retries find the accepted receipt instead of adding another entry.
-Receipts survive refresh and restart; custom message details survive historical
-reads and remain explainable across compaction. Cloned/forked conversation
-sources describe their history; active schedules belong to the original session.
-This does not promise exactly-once external tool side effects.
+Active arrangements live in session settings and SDK schedules hold their next
+absolute occurrence. Before model work, acceptance saves a minimal pending source
+association, advances the arrangement and registers its next callback. Native
+PiHarness admits a stable occurrence requestId. Receipt reconciliation removes the
+pending association after native proof. A restart repeats that identity, avoiding a
+second native execution. Original source metadata is projected from the association
+and remains readable with historical records across compaction.
 
-Repeats advance and the next SDK callback is registered before current model
-work runs. Startup reconciliation repairs interrupted registration using
-idempotent scheduling. SDK readiness cannot be awaited from the startup hook:
-reconciliation is tracked with `ctx.waitUntil`, and resumed model execution waits
-for it. Idle drains and provider-message projections containing wake sources await serialized
-reconciliation, covering followUps consumed internally by an active run.
-Callback dates round upward to SDK second precision, retaining the exact
-planned instant for identity and lateness. Pi's existing alarm and steer drain
-remain in use; pending followUps can also start an idle run through lane admission
-and drive. Browser submission ledgers are required only for browser inputs;
-accepted wake custom messages do not fabricate browser submissions.
+Old revisions and cancelled callbacks cannot admit new input. Exactly 60 seconds
+late is eligible; later unaccepted input skips without catchup. Already accepted
+native work follows normal task recovery beyond the lateness window. This does not
+promise exactly-once external side effects. Browser submission/recovery associations
+are independent of autonomous reminders.
+
+Repeats and next callbacks register before model work. Startup reconciliation uses
+tracked background work and idempotent scheduling. Generation preparation waits for
+serialized schedule reconciliation. Agents owns alarm scheduling and public
+PiHarness resumes persisted native tasks after eviction; no old lane/inbox driver
+or separate execution state is maintained. SDK dates round upward to second
+precision while the occurrence retains its exact planned instant.
 
 No reminder text or chat body is logged by the feature. If diagnosing callbacks,
 record only arrangement ID, planned time, and outcome category; do not emit
@@ -112,13 +107,9 @@ answer without a browser, CRUD/quota/isolation, old and duplicate callbacks,
 admission-start cutoff and non-faulting expiry, anchored skipping, actual DST,
 busy answer ordering, model failure, storage reconstruction and accepted-operation recovery.
 
-For screenshots, start
-that isolated fixture and fails if already occupied. It mounts the real
-Companion with synthetic arrangements/actions and uses an isolated agent-browser
-session; screenshots and checks go to untracked `.scratch/timed-wake/`. Seven
-390×844 states plus narrow, desktop and dark are captured. This fixture verifies
-presentation and interaction; the workerd tests establish backend integration.
-It reads no user tabs, model credentials, microphone or production state.
+The approved App/native browser and affected reminder regressions use the same
+immutable handoff described in [native durable submissions](native-durable-submissions.md).
+No browser fixture can establish production alarm timing or device behavior.
 
 The full relevant checks are `npm run lint`,
 `npm run typecheck`, `npm test`, and `npm run build`. Production account/provider

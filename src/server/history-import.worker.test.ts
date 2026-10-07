@@ -1,3 +1,4 @@
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { env } from 'cloudflare:workers'
 import { SELF, runInDurableObject } from 'cloudflare:test'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -51,9 +52,9 @@ describe('authenticated archive API and existing search', () => {
     expect((await next.json() as { nodes: HistoryNode[] }).nodes).toEqual([expect.objectContaining(fixture().nodes[2])])
     await runInDurableObject(registry(), async instance => {
       const tool = createSessionSearchTool(instance)
-      const result = await tool.execute('fixture-call', { query: 'heliotropebranch' }, () => {}, undefined, {} as Parameters<typeof tool.execute>[4], {} as Parameters<typeof tool.execute>[5])
-      if (result.content[0].type !== 'text') throw new Error('Expected search text')
-      expect(JSON.parse(result.content[0].text)).toMatchObject([{ archive: { id: initial.archiveId, conversation: { source: 'deepseek' } }, matches: [{ sourceNodeId: 'answer-b' }] }])
+      const result = await tool.execute({ query: 'heliotropebranch' }, { callId: 'fixture-call' } as never, BACKGROUND_CONTEXT)
+      if (result.content![0].type !== 'text') throw new Error('Expected search text')
+      expect(JSON.parse(result.content![0].text)).toMatchObject([{ archive: { id: initial.archiveId, conversation: { source: 'deepseek' } }, matches: [{ sourceNodeId: 'answer-b' }] }])
     })
     expect(await registry().searchSessions({ query: 'privatethoughtquartz' })).toEqual([])
     expect(await registry().searchSessions({ query: 're:heliotropebranch' })).toHaveLength(1)
@@ -65,10 +66,6 @@ describe('authenticated archive API and existing search', () => {
       expect((await request(`agents/pi-session/${initial.archiveId}/${action}`, 'POST', {})).status).toBe(404)
     }
     expect((await request(`agents//pi-session/${initial.archiveId}/prompt`, 'POST', {})).status).toBe(404)
-    await runInDurableObject(registry(), async instance => {
-      await expect(instance.forkSession({ sourceSessionId: initial.archiveId, entryId: 'question' })).rejects.toThrow('Session not found')
-      await expect(instance.cloneSession({ sourceSessionId: initial.archiveId })).rejects.toThrow('Session not found')
-    })
     const listing = await request('history-archives?limit=1')
     expect(await listing.json()).toMatchObject({ archives: [{ id: initial.archiveId, messageCount: 3 }] })
   })
@@ -505,9 +502,9 @@ describe('Operit exact-name groups and atomic archives', () => {
     await runInDurableObject(registry(), async instance => {
       const tool = createSessionSearchTool(instance)
       for (const query of ['moonfloweroriginal', 'heliotropevariant']) {
-        const result = await tool.execute('fictional-operit-search', { query }, () => {}, undefined, {} as Parameters<typeof tool.execute>[4], {} as Parameters<typeof tool.execute>[5])
-        expect(result.content[0].type).toBe('text')
-        if (result.content[0].type === 'text') expect(JSON.parse(result.content[0].text)).toMatchObject([{ archive: { id: pending.archiveId, conversation }, matches: [{ sourceNodeId: expect.any(String) }] }])
+        const result = await tool.execute({ query }, { callId: 'fictional-operit-search' } as never, BACKGROUND_CONTEXT)
+        expect(result.content![0].type).toBe('text')
+        if (result.content![0].type === 'text') expect(JSON.parse(result.content![0].text)).toMatchObject([{ archive: { id: pending.archiveId, conversation }, matches: [{ sourceNodeId: expect.any(String) }] }])
       }
     })
     expect(await registry().searchSessions({ query: 'operitthoughtquartz' })).toEqual([])

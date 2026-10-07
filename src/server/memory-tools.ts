@@ -1,4 +1,4 @@
-import type { AgentHarnessTool } from '@earendil-works/pi-agent-core'
+import type { ToolRegistration } from '@earendil-works/pi-durable'
 import { Type } from 'typebox'
 import type { Memory, MemoryKind } from '../shared/pi-contract'
 
@@ -24,14 +24,13 @@ const parameters = Type.Object({
   content: Type.Optional(Type.String({ description: 'Required for set. One concise, durable fact. Never include secrets or conversation excerpts.' })),
 })
 
-export function createMemoryTool(registry: MemoryRegistry, sessionId: string): AgentHarnessTool<undefined, typeof parameters> {
+export function createMemoryTool(registry: MemoryRegistry, sessionId: string): ToolRegistration<typeof parameters> {
   return {
     name: 'memory',
-    label: 'Update memory',
     description: 'Set, correct, or delete long-term memory only when the user directly asks to remember, save, correct, or forget something. Do not call this for ordinary statements of fact or preference.',
     parameters,
     executionMode: 'sequential',
-    execute: async (_id, input, _onUpdate, _toolContext, _invocation, context) => {
+    execute: async (input, _api, context) => {
       const signal = context.abortSignal
       signal?.throwIfAborted()
       if (input.action === 'delete') {

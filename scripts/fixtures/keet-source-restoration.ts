@@ -3,7 +3,6 @@ import worker from '../../src/server'
 import { PiSession as NativeSession } from '../../src/server/pi-session'
 import { PiRegistry as NativeRegistry } from '../../src/server/pi-registry'
 import { nativeReply } from '../../src/server/fixtures/native-provider'
-import { laneState } from '@earendil-works/pi-agent-core/harness/session'
 const fixture = { releases: [], requests: [] }
 globalThis.fetch = async (input, init) => {
   const url = input instanceof Request ? input.url : String(input)
@@ -19,14 +18,13 @@ globalThis.fetch = async (input, init) => {
 }
 export class PiSession extends NativeSession {
   scheduleMemoryExtraction() {} // Disable unrelated background model work in this fixture only.
-  async schedulePendingDrain() {} // Native controls explicitly drive admitted queue work.
   async settleView() {
     if (this.chatHost) await (await this.chatHost).refresh()
   }
   async finishWeb() {
     for (const release of fixture.releases.splice(0)) await release()
     for (let n = 0; n < 400; n++) {
-      if (!this.active && !this.sessionStorage.getValueSync(laneState('main'))?.value.currentOperationId) { await this.settleView(); return }
+      if (!(await this.native.pending()).length) { await this.settleView(); return }
       await new Promise(resolve => setTimeout(resolve, 25))
     }
     throw new Error('Fake native web turn did not settle')
@@ -34,16 +32,17 @@ export class PiSession extends NativeSession {
   async seedHistoryPadding() {
     // Ordinary native entries put the already ingress-admitted historical Keet item outside page one.
     // No shared DTO, source row or private prompt is fabricated.
-    for (let n = 0; n < 16; n++) await this.prompt({ send() { return true }, end() { return true } }, { operationId: crypto.randomUUID(), prompt: `Fictional older web history ${n}` })
+    for (let n = 0; n < 16; n++) { const operationId = crypto.randomUUID(); await this.submitChat({ operationId, text: `Fictional older web history ${n}` }); await this.native.wait(operationId) }
   }
   async publishReminder() {
     const at = new Date(Date.now() + 10).toISOString()
     const wake = await this.saveTimedWake({ title: 'Fixture reminder', reminder: 'Native reminder input', plan: { type: 'once', at } })
     await new Promise(resolve => setTimeout(resolve, 20))
     await this.acceptTimedWake({ wakeId: wake.id, revision: wake.revision, scheduledAt: wake.nextAt, title: wake.title, reminder: wake.reminder })
-    await this.drainPendingWork(); await this.settleView()
+    await this.drainPendingWork(); await this.finishWeb(); await this.settleView()
   }
   async nativeImageNote(sequence, original) {
+    await this.getBranch()
     const entry = this.sessionStorage.entriesInOrder().find(entry => this.sessionStorage.keetSource(entry.id)?.messageId.seq === sequence)
     if (!entry) throw new Error('Missing ingress-admitted native source')
     const text = this.sessionStorage.keetSource(entry.id).text
@@ -51,7 +50,7 @@ export class PiSession extends NativeSession {
     return text.slice(original.length).trim()
   }
   async fixtureState() {
-    return { submissions: [...this.sessionStorage.chatRecords().values()].map(input => input.text), requests: fixture.requests,
+    return { submissions: [...this.sessionStorage.chatRecords().values()].filter(input => !input.text.startsWith('Fictional older web history')).map(input => input.text), requests: fixture.requests,
       branch: await this.getBranch() }
   }
   async disconnectFixture() { for (const connection of this.getConnections()) connection.close(1012, 'Owned fixture reconnect'); return { disconnected: true } }
@@ -81,6 +80,7 @@ async function incoming(input, env) {
   const response = await worker.fetch(new Request('http://127.0.0.1/api/keet/events', { method: 'POST', headers: { authorization: 'Bearer fixture-ingest' }, body: JSON.stringify(event) }), { ...env, COMPANION_SESSION_ID: sessionId })
   if (!response.ok) throw new Error(`Native ingress failed: ${response.status} ${await response.text()}`)
   await stub.drainPendingWork(); await stub.settleView()
+  if (input.id.startsWith('older-')) await stub.finishWeb()
   return input.hasImage ? { imageNote: await stub.nativeImageNote(event.sequence, event.text) } : {}
 }
 export default { async fetch(request, env) {

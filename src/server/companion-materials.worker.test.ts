@@ -1,3 +1,5 @@
+import { runNative, appendNative, type NativeFixture } from './fixtures/native-session'
+import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { env } from 'cloudflare:workers'
 import { SELF, runInDurableObject } from 'cloudflare:test'
 import { beforeEach, expect, it, vi } from 'vitest'
@@ -153,10 +155,7 @@ it('concurrent create/update requests have one winner and do not overwrite it', 
   expect(await json(request('files/race.md'))).toEqual(winner)
 })
 
-it('actual PiSession autoloads only AGENTS and compacts with API originals, native storage, and restored usage', async () => {
-  const { BACKGROUND_CONTEXT: context } = await import('@earendil-works/pi-agent-core/harness/context')
-  const { StorageBackedSession } = await import('@earendil-works/pi-agent-core/harness/session')
-  const { PiSessionStorage } = await import('./pi-session-storage')
+it('actual PiSession autoloads only AGENTS and compacts with API originals, native storage, and a continuity checkpoint', async () => {
   const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = []
   const fake = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
     expect(url instanceof Request ? url.url : url.toString()).toBe('https://openrouter.ai/api/v1/chat/completions')
@@ -173,23 +172,18 @@ it('actual PiSession autoloads only AGENTS and compacts with API originals, nati
     const id = (await registry().ensureDefaultSession()).id
     const stub = env.PiSession.getByName(`${owner}:${id}`) as DurableObjectStub<PiSession>
     await runInDurableObject(stub, async instance => {
-      const harness = await Reflect.get(instance, 'getHarness').call(instance) as import('./create-pi-harness').PiHarness
-      const lane = await harness.lane('main', context)
-      await lane.prompt('Fictional greeting', undefined, context)
+      const native = instance as unknown as NativeFixture
+      await runNative(instance, 'Fictional greeting')
       expect(JSON.stringify(bodies[0].messages[0])).toContain('AGENTS autoload sentinel')
       expect(JSON.stringify(bodies[0])).not.toContain('SOUL private sentinel')
-      for (let i = 0; i < 6; i++) await lane.appendMessage({ role: 'user', content: 'Fictional compaction evidence ' + 'x'.repeat(3000), timestamp: Date.now() }, context)
-      await harness.setCompactionSettings({ enabled: true, reserveTokens: 1000, keepRecentTokens: 100 }, context)
-      const summary = await instance.compact()
-      expect(summary.summary).toBe('Offline continuity summary')
+      await instance.updateCompactionSettings({ enabled: true, reserveTokens: 1000, keepRecentTokens: 100 })
+      const lane = await native.getLane()
+      for (let i = 0; i < 6; i++) await appendNative(lane, { role: 'user', content: 'Fictional compaction evidence ' + 'x'.repeat(3000), timestamp: Date.now() }, context)
+      const task = await lane.compact(undefined, context)
+      const result = await (await native.getHarness()).waitForTask(task, context)
+      expect(result.state.outcome.status).toBe('completed')
       expect(bodies.at(-1)!.messages[0].content).toBe('Fictional full custom checkpoint policy.')
-    })
-    await runInDurableObject(stub, async (_instance, state) => {
-      const storage = new PiSessionStorage(state.storage)
-      const restored = new StorageBackedSession(storage.coreMetadata(), storage)
-      const entries = await (await restored.branch('main', context))!.findEntries({ order: 'oldestFirst' }, context)
-      expect(entries.at(-1)).toMatchObject({ type: 'compaction', summary: 'Offline continuity summary', usage: { totalTokens: 25 } })
-      expect(await restored.getStats(context)).toMatchObject({ usage: { totalTokens: 50 } })
+      expect(JSON.stringify((await lane.context(context)).messages)).toContain('Offline continuity summary')
     })
   } finally { fake.mockRestore() }
 })

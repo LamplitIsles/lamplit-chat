@@ -22,7 +22,7 @@ async function fixture() {
     let serial = 0
     const call = async (member: string, input: unknown = { sessionId: metadata.id }) => {
       const id = String(++serial)
-      socket.send(JSON.stringify({ type: 'call', version: 1, id, call: { serviceId: 'lamplit.chat.v1', member, args: [input] } }))
+      socket.send(JSON.stringify({ type: 'call', version: 1, id, call: { serviceId: 'lamplit.chat.v2', member, args: [input] } }))
       await vi.waitFor(() => expect(frames.some(frame => frame.id === id)).toBe(true))
       return frames.find(frame => frame.id === id)!
     }
@@ -36,11 +36,13 @@ it('reads native registry and workspace via authenticated RPC with bounded pages
   const dates = Array.from({ length: 35 }, (_, i) => new Date(Date.UTC(2026, 9, 2) - i * 86400000).toISOString().slice(0, 10) + '.md')
   const exact = '灯'.repeat(43690) + 'xx'
   expect(new TextEncoder().encode(exact).byteLength).toBe(128 * 1024)
-  await f.stub.importSession({ metadata: { id: f.metadata.id, createdAt: f.metadata.createdAt, updatedAt: f.metadata.updatedAt, lineage: { type: 'new' } }, entries: [],
-    compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 }, files: [
-      ...dates.map((name, i) => ({ path: `/memory/${name}`, content: i === 0 ? exact : i === 1 ? exact + 'x' : '# Native diary' })),
-      { path: '/memory/notes.md', content: 'private' }, { path: '/USER.md', content: 'private' },
-    ] })
+  await runInDurableObject(f.stub, async instance => {
+    const workspace = Reflect.get(instance, 'workspace') as import('./computer-workspace').ComputerWorkspace
+    await workspace.mkdir('/workspace/memory', { recursive: true })
+    for (const [i, name] of dates.entries()) await workspace.writeFile(`/workspace/memory/${name}`, i === 0 ? exact : i === 1 ? exact + 'x' : '# Native diary')
+    await workspace.writeFile('/workspace/memory/notes.md', 'private')
+    await workspace.writeFile('/workspace/USER.md', 'private')
+  })
   for (let i = 0; i < 25; i++) await f.registry.updateRelationship({ affinity: { delta: 1, reason: `Native change ${i}` } })
   let client = await f.open()
   const b = await other.open()
@@ -108,7 +110,7 @@ it('projects registered images with stable createdAt/id ordering, actual availab
     await f.stub.uploadPhoto({ operationId, id, order: 0, name: 'fixture.png', mediaType: 'image/png', original: btoa(String.fromCharCode(...png)), preview: jpeg, model: jpeg })
     await runInDurableObject(f.stub, (_instance, state) => {
       const storage = new PiSessionStorage(state.storage)
-      storage.admitPromptSubmission(operationId, 'native photo fixture', [id]); storage.acceptPromptSubmission(operationId, `entry-${id}`)
+      storage.freezePhotos(operationId, [id]); storage.correlateInput(operationId, `entry-${id}`)
       state.storage.sql.exec('UPDATE conversation_photos SET created_at = ? WHERE id = ?', 123456, id)
     })
   }
@@ -175,7 +177,7 @@ it('rechecks hosted platform authorization for panel calls and isolates instance
     }, connect: () => { throw new Error('Fixture has no TCP transport') } } } as Env
     await instance.uploadPhoto({ id: photoId, operationId, order: 0, name: 'private.jpg', mediaType: 'image/jpeg', original: jpeg, preview: jpeg, model: jpeg })
     const storage = new PiSessionStorage(state.storage)
-    storage.admitPromptSubmission(operationId, 'instance fixture', [photoId]); storage.acceptPromptSubmission(operationId, 'native-entry')
+    storage.freezePhotos(operationId, [photoId]); storage.correlateInput(operationId, 'native-entry')
   })
   await runInDurableObject(other, instance => {
     const internal = instance as unknown as { env: Env }
@@ -189,12 +191,12 @@ it('rechecks hosted platform authorization for panel calls and isolates instance
   const frames: Array<{ id: string; type: string; result?: unknown }> = []
   socket.addEventListener('message', event => { frames.push(JSON.parse(String(event.data))) })
   try {
-    socket.send(JSON.stringify({ type: 'call', version: 1, id: 'allowed', call: { serviceId: 'lamplit.chat.v1', member: 'album', args: [{ sessionId, cursor: null }] } }))
+    socket.send(JSON.stringify({ type: 'call', version: 1, id: 'allowed', call: { serviceId: 'lamplit.chat.v2', member: 'album', args: [{ sessionId, cursor: null }] } }))
     await vi.waitFor(() => expect(frames.some(f => f.id === 'allowed')).toBe(true))
     expect(frames.find(f => f.id === 'allowed')).toMatchObject({ type: 'result', result: { images: [expect.objectContaining({ id: photoId })] } })
     const previous = checks
     active = false
-    socket.send(JSON.stringify({ type: 'call', version: 1, id: 'revoked', call: { serviceId: 'lamplit.chat.v1', member: 'diaryList', args: [{ sessionId, cursor: null }] } }))
+    socket.send(JSON.stringify({ type: 'call', version: 1, id: 'revoked', call: { serviceId: 'lamplit.chat.v2', member: 'diaryList', args: [{ sessionId, cursor: null }] } }))
     await vi.waitFor(() => expect(checks).toBeGreaterThan(previous))
     expect(frames.some(f => f.id === 'revoked' && f.type === 'result')).toBe(false)
     await vi.waitFor(() => expect(socket.readyState).toBeGreaterThanOrEqual(2))

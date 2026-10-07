@@ -1,16 +1,16 @@
 import { parseKeetFrame, type KeetFrame } from './keet-feed'
 import { createKeetTools } from './keet-tools'
-import { accountModels, selectedModel, resolveModelSelection, selfHostModelEnvironment } from './model-catalog'
+import { accountModels, nativeProviders, selectedModel, resolveModelSelection, selfHostModelEnvironment } from './model-catalog'
 import { nativeSearchNode, readSearchNodes } from './conversation-search'
 import { createPiPanelBackend, PanelCursors } from './companion-panels'
 import { PI_IMAGE_LIMITS, imageRef, checkUpload, nativePhotoId } from './chat-images'
 import { validateSubmission, validateRecovery, type Submission, type InputRecovery, type ImageUpload, type ImageRef } from '@lamplit/contracts'
 import { PANEL_LIMITS, type AlbumPage } from '@lamplit/contracts'
 import { createChatHost } from '@lamplit/contracts/server'
-import { createPiChatBackend, stopPiChatTurn } from './chat-adapter'
+import { createPiChatBackend, submissionIdentity } from './chat-adapter'
 import { createWakeTools } from './timed-wake-tools'
 import { makeWake } from './timed-wake'
-import { WAKE_CUSTOM_TYPE, type WakeSource, type TimedWake, type WakeInput } from '../shared/timed-wake'
+import { WAKE_CUSTOM_TYPE, occurrenceKey, type WakeSource, type TimedWake, type WakeInput } from '../shared/timed-wake'
 import { createPlatformFeedbackTools } from './platform-feedback-tool'
 import { createWebTools, searchSettings } from './web-tools'
 import { CompanionFiles, MaterialFailure, materialReply } from './companion-materials'
@@ -20,17 +20,14 @@ import {
   type DurableObjectStorageLike,
   Workspace,
 } from '@cloudflare/computer'
-import { laneState, operationMeta, operationResult, pendingEntry } from '@earendil-works/pi-agent-core/harness/session'
-import {
-  DEFAULT_COMPACTION_SETTINGS,
-  StorageBackedSession,
-  type Entry,
-  type AgentLane,
-  type AgentMessage,
-} from '@earendil-works/pi-agent-core'
-import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
+import { ensureNativeRoot } from './native-data-migration'
+import { PiHarness } from 'agents/harness/pi'
+import { Harness, CompactionTask, ROOT_CONVERSATION_ID, type CompactionResult, type SubmissionRecord, type EntryRecord } from '@earendil-works/pi-durable'
+import type { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite'
+import type { Message } from '@earendil-works/pi-ai'
+import type { ArchiveEntry as Entry } from './conversation-archive'
 import { hostedCallable, HostedAgent } from './hosted-agent'
-import { getCurrentAgent, type StreamingResponse } from 'agents'
+import { getCurrentAgent } from 'agents'
 import { activeContextUsage } from './context-usage'
 import type { Compaction, CompactInput, CompactResult } from '@lamplit/contracts'
 import type {
@@ -44,25 +41,20 @@ import type {
   RelationshipSnapshot,
   RelationshipState,
   RelationshipUpdate,
-  PiStreamEvent,
   PhotoUpload,
-  PromptAdmissionStatus,
   SessionBranch,
   SessionIndexEvent,
   SessionOverview,
   SessionSummary,
   StoredSessionEntry,
-  SteerAdmissionStatus,
   WorkspaceFile,
   WorkspaceFileContent,
 } from '../shared/pi-contract'
-import { createPiHarness, type ModelEnvironment, type PiHarness } from './create-pi-harness'
-import { admitAndDrivePrompt, exactPromptEntryId, getPromptAdmission, prepareOpenOperationResume } from './prompt-lifecycle'
+import { createPiHarness, type ModelEnvironment } from './create-pi-harness'
 import { extractMemoryOperations, type MemorySourceEntry } from './memory-extractor'
 import { createMemoryTool } from './memory-tools'
 import { createRelationshipTools } from './relationship-tools'
-import { PiSessionStorage, type PiSessionMetadata } from './pi-session-storage'
-import { toPiStreamEvent } from './stream-events'
+import { PiSessionStorage } from './pi-session-storage'
 import { PI_REGISTRY_INSTANCE } from '../shared/pi-contract'
 import { createSessionSearchTool, createWorkspaceTools } from './workspace-tools'
 import type { ComputerWorkspace } from './computer-workspace'
@@ -71,12 +63,6 @@ import { WORKSPACE_ROOT, workspacePath } from './workspace-root'
 export type ChatImageOwner = { sessionId: string; instanceId: string | null; tokenHash: string | null }
 
 type InitializeMetadata = Pick<SessionSummary, 'id' | 'createdAt' | 'updatedAt' | 'lineage'> & { name?: string }
-type SessionExport = {
-  metadata: PiSessionMetadata
-  entries: Entry[]
-  compaction: CompactionSettings
-  files: Array<{ path: string; content: string; encoding?: 'base64' }>
-}
 const WORKSPACE_PAGE_SIZE = 250
 const DIARY_ENTRY_MAX_BYTES = 128 * 1024
 const DIARY_NAME = /^\d{4}-\d{2}-\d{2}\.md$/
@@ -146,42 +132,19 @@ export class PiSession extends HostedAgent {
       observation: () => this.chatObservation(),
       compact: input => this.compactChat(input),
       branch: () => this.getBranch(),
-      identity: async () => {
-        await this.waitUntilInitialized()
-        const metadata = this.sessionStorage.getMetadataSync()
-        const lane = this.sessionStorage.getValueSync(laneState('main'))?.value
-        return { id: metadata.id, name: await this.session.getName(BACKGROUND_CONTEXT) ?? 'Lamplit', turnId: lane?.currentOperationId ?? null }
+      identity: async () => ({ id: this.sessionStorage.getMetadataSync().id, name: this.sessionStorage.getSetting<string>('name') ?? 'Lamplit', turnId: await this.activeTurn() }),
+      records: async () => {
+        const records = this.sessionStorage.chatRecords()
+        for (const [id, record] of records) { await this.lookupChat(id); records.set(id, { ...record, entryId: this.sessionStorage.inputEntry(id) }) }
+        return records
       },
-      records: async () => this.sessionStorage.chatRecords(),
-      record: async (id, value) => this.sessionStorage.recordChat(id, value),
       images: id => this.sharedImages(this.sessionStorage.photosForEntry(id)),
       recovery: () => this.chatRecovery(),
       imageLimits: () => this.env.COMPUTER_R2 && this.modelSupportsImages ? PI_IMAGE_LIMITS : false,
-      validate: input => this.validateChatInput(input),
-      rejected: async id => {
-        if (!this.sessionStorage.getPromptSubmission(id) && !this.sessionStorage.steerRecord(id)) this.sessionStorage.setChatRejected(id, true)
-      },
-      prompt: input => new Promise<void>((resolve, reject) => {
-        const stream = { send: (value: unknown) => { if (value && typeof value === 'object' && 'type' in value) { if (value.type === 'error') reject(new Error('Native admission failed')); if (value.type === 'accepted') resolve(); } return true }, end: () => { resolve(); return true } }
-        this.ctx.waitUntil(this.prompt(stream, { operationId: input.operationId, prompt: input.text, photoIds: input.images?.map(image => image.attachmentId) }).catch(reject).finally(resolve))
-      }),
-      steer: async input => { await this.submitSteer({ submissionId: input.operationId, prompt: input.text, photoIds: input.images?.map(image => image.attachmentId) }) },
-      promptReceipt: id => this.getPromptAdmission(id), steerReceipt: id => this.getSteerAdmission(id),
-      consumed: entryId => !!this.sessionStorage.getEntrySync(entryId),
-      unconsumed: entryId => this.sessionStorage.dropped(entryId) && !this.sessionStorage.getEntrySync(entryId),
-      outcomes: async () => {
-        const state = this.sessionStorage.getValueSync(laneState('main'))?.value
-        const records = this.sessionStorage.chatRecords()
-        const ids = new Set([...records.values()].flatMap(record => record.turnId ? [record.turnId] : []))
-        if (state?.lastOperationId) ids.add(state.lastOperationId)
-        const results = await Promise.all([...ids].map(id => this.session.getValue(operationResult(id), BACKGROUND_CONTEXT)))
-        return results.flatMap(stored => {
-          const result = stored?.value
-          if (!result || result.kind !== 'run' || result.status === 'completed') return []
-          return [{ id: `turn:${result.operationId}:status`, role: 'notice' as const, text: result.status === 'aborted' ? '已停止回复' : '回复失败', createdAt: result.endedAt, operationId: null, turnId: result.operationId }]
-        })
-      },
-      stop: async turnId => stopPiChatTurn(await this.getLane(), turnId),
+      submit: input => this.submitChat(input), lookup: id => this.lookupChat(id),
+      pendingMessages: () => this.pendingChatMessages(),
+      outcomes: () => this.replyOutcomes(),
+      stop: async turnId => ({ stopped: await this.native.abort({ operationId: turnId }) }),
     }))
   }
   revokePersonalSession(tokenHash: string): void {
@@ -189,7 +152,7 @@ export class PiSession extends HostedAgent {
   }
   async materialsRequest(request: MaterialRequest): Promise<MaterialReply> {
     return materialReply(async () => {
-      if (this.active) throw new MaterialFailure('busy', 409)
+      if (await this.compactBusy()) throw new MaterialFailure('busy', 409)
       return this.withExclusiveOperation(async () => {
         if (request.action.startsWith('memory-')) {
           const registry = this.env.PiRegistry.getByName(this.instanceId() ?? PI_REGISTRY_INSTANCE) as DurableObjectStub<PiRegistry>
@@ -206,16 +169,37 @@ export class PiSession extends HostedAgent {
     return next
   }
   private active = false
-  private promptOperationId?: string
-  private harness?: Promise<PiHarness>
-  private harnessModelConfig?: string
+  private nativeStorage?: SqliteStorage
+  private nativeContext?: Parameters<Harness['close']>[0]
+  private runtimeTools: import('@earendil-works/pi-durable').ToolRegistration[] = []
+  private runtimeConfig?: string
   private modelSupportsImages = false
   private memoryExtraction?: Promise<void>
   private readonly sessionStorage = new PiSessionStorage(this.ctx.storage)
-  private coreSession?: StorageBackedSession
-  private get session(): StorageBackedSession {
-    return this.coreSession ??= new StorageBackedSession(this.sessionStorage.coreMetadata(), this.sessionStorage)
-  }
+  private submissionMutation: Promise<unknown> = Promise.resolve()
+  private readonly native = new PiHarness({ harness: async ({ storage, context }) => {
+    this.nativeStorage = storage; this.nativeContext = context
+    const registry = this.registry()
+    const modelEnv = await this.modelEnvironment().catch(() => undefined)
+    this.runtimeConfig = JSON.stringify(modelEnv)
+    const harness = await createPiHarness({
+      storage, context, env: modelEnv, tools: this.runtimeTools = [
+        ...createWorkspaceTools(this.workspace), createSessionSearchTool(registry),
+        createMemoryTool(registry, this.sessionStorage.isInitialized() ? this.sessionStorage.getMetadataSync().id : this.name.split(':').at(-1)!), ...createRelationshipTools(registry),
+        ...(this.env.HOSTED_MODE !== 'true' && this.env.KEET_MCP_TOKEN && this.env.KEET_MCP_URL ? createKeetTools(this.env) : []),
+        ...createWakeTools(this, () => registry.getReportedTimeZone()), ...createWebTools(this.env, this.instanceId()),
+        ...createPlatformFeedbackTools(this.env, this.instanceId(), this.sessionStorage.isInitialized() ? this.sessionStorage.getMetadataSync().id : this.name.split(':').at(-1)!),
+      ], memory: registry, compaction: this.compactionSettings(),
+      loadCompactionPrompt: async () => (await new CompanionFiles(this.workspace).effective()).content,
+      loadInstructions: () => this.workspace.readFile(`${WORKSPACE_ROOT}/AGENTS.md`), getUserTimeZone: () => registry.getUserTimeZone(),
+      awaitWakeSchedules: () => this.awaitWakeSchedules(), projectKeet: messages => this.projectKeetMessages(messages),
+    })
+    await ensureNativeRoot(harness, this.sessionStorage, context)
+    const root = await harness.root(context)
+    if (modelEnv && !(await harness.inspect(context)).tasks.length) await root.configure({ model: { provider: modelEnv.provider, modelId: modelEnv.model }, thinkingLevel: modelEnv.thinkingLevel ?? 'off' }, context)
+    return harness
+  } })
+  constructor(ctx: DurableObjectState, env: Env) { super(ctx, env); this.lifecycle.use(this.native) }
   private readonly workspace = new Workspace({
     storage: this.ctx.storage as unknown as DurableObjectStorageLike,
     sessionId: this.ctx.id.toString(),
@@ -224,54 +208,14 @@ export class PiSession extends HostedAgent {
 
   async onStart(): Promise<void> {
     for (const connection of this.getConnections()) if ((connection.state as { chat?: boolean } | null)?.chat) connection.close(1012, 'Reconnect')
-    if (!this.sessionStorage.isInitialized() || this.active) return
+    if (!this.sessionStorage.isInitialized()) return
     this.ctx.waitUntil(this.serializeWake(() => this.ensureWakeSchedules()))
-    const durableState = this.sessionStorage.getValueSync(laneState('main'))?.value
-    if (!durableState?.currentOperationId) {
-      this.scheduleMemoryExtraction()
-      this.ctx.waitUntil(this.schedulePendingDrain())
-      return
-    }
-    this.active = true
-    try {
-      const lane = await this.getLane()
-      const recovery = await prepareOpenOperationResume(
-        lane, BACKGROUND_CONTEXT,
-        (id) => this.sessionStorage.getPromptSubmission(id) ?? this.keetSubmission(id),
-        async (id) => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
-        (id) => this.sessionStorage.getEntrySync(id),
-        (id, entryId) => {
-          const row = this.sessionStorage.nextKeet()
-          if (row?.operationId === id) { this.sessionStorage.acceptKeet(row.sequence, entryId); return this.keetSubmission(id)! }
-          return this.sessionStorage.acceptPromptSubmission(id, entryId)
-        },
-      )
-      if (recovery) {
-        if (recovery.browserPrompt) this.promptOperationId = recovery.operationId
-        this.ctx.waitUntil((async () => {
-          try {
-            await this.wakeMutation
-            const resumed = await lane.resume(BACKGROUND_CONTEXT)
-            if (!resumed.ok) throw resumed.error
-            const row = this.sessionStorage.nextKeet()
-            if (row?.operationId === recovery.operationId && await lane.getResult(row.operationId, BACKGROUND_CONTEXT)) this.sessionStorage.settleKeet(row.sequence)
-            await this.flushOutboxToRegistry()
-          } finally {
-            this.active = false
-            this.promptOperationId = undefined
-            this.scheduleMemoryExtraction()
-            await this.schedulePendingDrain()
-          }
-        })())
-      } else {
-        this.active = false
-        this.scheduleMemoryExtraction()
-        this.ctx.waitUntil(this.schedulePendingDrain())
-      }
-    } catch (error) {
-      this.active = false
-      throw error
-    }
+    this.ctx.waitUntil((async () => {
+      for (const pending of await this.native.pending()) this.watchSettlement(pending.operationId)
+      await this.syncNativeEntries()
+      await this.resumeWakes()
+      await this.schedulePendingDrain()
+    })())
   }
 
   async initialize(metadata: InitializeMetadata): Promise<SessionOverview> {
@@ -282,7 +226,7 @@ export class PiSession extends HostedAgent {
       updatedAt: metadata.updatedAt,
       lineage: metadata.lineage,
     })
-    if (created && metadata.name) await this.session.setName(metadata.name, BACKGROUND_CONTEXT)
+    if (created && metadata.name) this.sessionStorage.setSetting('name', metadata.name)
     return this.getOverview()
   }
 
@@ -290,227 +234,88 @@ export class PiSession extends HostedAgent {
   async getOverview(): Promise<SessionOverview> {
     await this.waitUntilInitialized()
     const metadata = this.sessionStorage.getMetadataSync()
+    await this.syncNativeEntries()
     const rows = this.sessionStorage.getEntriesWithSeq()
-    const leafId = this.sessionStorage.getLeafId()
-    const activePath = new Set(this.sessionStorage.getPathToRoot(leafId).map((entry) => entry.id))
-    const parentIds = new Set(rows.map(({ entry }) => entry.parentId).filter((id): id is string => id !== null))
-    const stats = await this.session.getStats(BACKGROUND_CONTEXT)
-    const labels = new Map(await Promise.all(rows.map(async ({ entry }) => [entry.id, await this.session.getLabel(entry.id, BACKGROUND_CONTEXT)] as const)))
-    return {
-      id: metadata.id,
-      name: await this.session.getName(BACKGROUND_CONTEXT),
-      status: 'ready',
-      createdAt: metadata.createdAt,
-      updatedAt: rows.at(-1) ? new Date(rows.at(-1)!.entry.timestamp).toISOString() : metadata.updatedAt,
-      messageCount: stats.messageCount,
-      activeLeafId: leafId,
-      lineage: metadata.lineage,
-      revision: rows.at(-1)?.seq ?? 0,
-      running: Boolean((await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value.currentOperationId),
-      compaction: this.compactionSettings(),
-      tree: rows.map(({ seq, entry }) => ({
-        seq,
-        id: entry.id,
-        parentId: entry.parentId,
-        type: entry.type,
-        role: entry.type === 'message' ? entry.message.role : undefined,
-        preview: entryPreview(entry),
-        label: labels.get(entry.id),
-        timestamp: new Date(entry.timestamp).toISOString(),
-        isLeaf: !parentIds.has(entry.id),
-        isOnActiveBranch: activePath.has(entry.id),
-      })),
-    }
+    return { ...metadata, name: this.sessionStorage.getSetting<string>('name'), status: 'ready', messageCount: rows.filter(row => row.entry.type === 'message').length,
+      activeLeafId: this.sessionStorage.getLeafId(), revision: rows.at(-1)?.seq ?? 0, running: !!await this.activeTurn(), compaction: this.compactionSettings() }
   }
 
-  @hostedCallable()
-  async getBranch(leafId?: string): Promise<SessionBranch> {
-    await this.waitUntilInitialized()
-    const rows = this.sessionStorage.getEntriesWithSeq()
-    const seqById = new Map(rows.map(({ seq, entry }) => [entry.id, seq]))
-    const selectedLeaf = leafId ?? this.sessionStorage.getLeafId()
-    const entries = this.sessionStorage.getPathToRoot(selectedLeaf)
-    return {
-      leafId: selectedLeaf,
-      revision: rows.at(-1)?.seq ?? 0,
-      entries: entries.map(entry => {
-        const source = this.sessionStorage.keetSource(entry.id)
-        return { ...storedEntry(seqById.get(entry.id) ?? 0, entry), photos: this.sessionStorage.photosForEntry(entry.id),
-          ...(source ? { keet: { kind: source.kind, sender: source.sender, destination: source.destination, text: source.text } } : {}) }
-      }),
-    }
+  async getBranch(): Promise<SessionBranch> {
+    await this.syncNativeEntries()
+    const rows = this.sessionStorage.getEntriesWithSeq().filter(row => this.timelineIds.includes(row.entry.id))
+    return { leafId: this.sessionStorage.getLeafId(), revision: rows.at(-1)?.seq ?? 0, entries: rows.map(({ seq, entry }) => {
+      const source = this.sessionStorage.keetSource(entry.id)
+      return { ...storedEntry(seq, entry), photos: this.sessionStorage.photosForEntry(entry.id), ...(source ? { keet: { kind: source.kind, sender: source.sender, destination: source.destination, text: source.text } } : {}) }
+    }) }
   }
-
-  @hostedCallable()
-  async navigateTree(entryId: string, options?: { summarize?: boolean; customInstructions?: string; label?: string }): Promise<{ editorText?: string }> {
-    if (this.active) throw new Error('Pi is currently running.')
-    const lane = await this.getLane()
-    if (this.active) throw new Error('Pi is currently running.')
-    this.active = true
-    try {
-      const result = await lane.navigateTree(entryId, options, BACKGROUND_CONTEXT)
-      if (!result.ok) throw result.error
-      await this.flushOutboxToRegistry()
-      return {}
-    } finally {
-      this.active = false
-    }
-  }
-
   @hostedCallable()
   async setSessionName(name: string): Promise<SessionOverview> {
-    return this.withExclusiveOperation(async () => {
-      await this.session.setName(name, BACKGROUND_CONTEXT)
-      await this.flushOutboxToRegistry()
-      return this.getOverview()
-    })
+    this.sessionStorage.setSetting('name', name); await this.flushOutboxToRegistry(); return this.getOverview()
   }
 
-  @hostedCallable()
-  async setEntryLabel(entryId: string, label?: string): Promise<SessionOverview> {
-    return this.withExclusiveOperation(async () => {
-      await this.session.setLabel(entryId, label, BACKGROUND_CONTEXT)
-      await this.flushOutboxToRegistry()
-      return this.getOverview()
-    })
-  }
-
+  private async activeTurn(): Promise<string | null> { return (await this.native.pending()).find(item => item.status === 'running')?.operationId ?? null }
   private async chatObservation() {
-    await this.waitUntilInitialized()
     const lane = await this.getLane()
-    const model = await lane.getModel(BACKGROUND_CONTEXT)
+    const reference = (await lane.agent(this.nativeContext!)).model
+    const model = nativeProviders().find(provider => provider.id === reference?.provider)?.getModels().find(model => model.id === reference?.modelId)
     this.modelSupportsImages = model?.input.includes('image') ?? false
-    const name = await this.session.getName(BACKGROUND_CONTEXT) ?? 'Lamplit'
-    // Async preparation must not mix an earlier busy/session observation with
-    // newly appended context. Retry the bounded projection if native state moves.
-    for (;;) {
-      const sessionId = this.sessionStorage.getMetadataSync().id
-      const tip = this.sessionStorage.getLeafId()
-      const activeTurnId = this.sessionStorage.getValueSync(laneState('main'))?.value?.currentOperationId ?? null
-      const entries = this.sessionStorage.getPathToRoot(tip)
-      const contextUsage = await activeContextUsage(entries, model?.contextWindow, this.sessionStorage.getSetting<number>('chatUsageBoundary') ?? 0)
-      if (sessionId !== this.sessionStorage.getMetadataSync().id || tip !== this.sessionStorage.getLeafId() || activeTurnId !== (this.sessionStorage.getValueSync(laneState('main'))?.value?.currentOperationId ?? null)) continue
-      const latest = [...entries].reverse().find(entry => entry.type === 'compaction')
-      const compaction = this.sessionStorage.getSetting<Compaction>('chatCompaction') ?? (latest ? { id: latest.id, status: 'complete' as const } : null)
-      return { sessionId, name, activeTurnId, contextUsage, compaction }
-    }
+    const view = await lane.context(this.nativeContext!)
+    const latest = [...this.sessionStorage.entriesInOrder()].reverse().find(entry => entry.type === 'compaction')
+    // Terminal native compaction tasks remain authoritative even when a fast
+    // operation starts and finishes between socket observations.
+    let cursor: Parameters<SqliteStorage['scanTasks']>[2]
+    let task: Awaited<ReturnType<SqliteStorage['scanTasks']>>['items'][number] | undefined
+    do {
+      const page = await this.nativeStorage!.scanTasks({conversationId:ROOT_CONVERSATION_ID,kind:CompactionTask.definition.name},100,cursor,this.nativeContext!)
+      task = page.items.at(-1) ?? task; cursor = page.next
+    } while (cursor)
+    const outcome = task?.state.status === 'terminal' ? task.state.outcome : undefined
+    const result = outcome?.status === 'completed' ? outcome.result as unknown as CompactionResult : undefined
+    const compaction: Compaction = task ? {id:String(task.id),status:task.state.status !== 'terminal' ? 'running' : result && (result.entryId || result.submissionId) ? 'complete' : 'failed'} : latest ? {id:latest.id,status:'complete'} : null
+    return { sessionId: this.sessionStorage.getMetadataSync().id, name: this.sessionStorage.getSetting<string>('name') ?? 'Lamplit', activeTurnId: await this.activeTurn(),
+      contextUsage: activeContextUsage(view, model?.contextWindow), compaction }
   }
-
-  private compactBusy(): boolean {
-    const state = this.sessionStorage.getValueSync(laneState('main'))?.value
-    return this.active || !!state?.currentOperationId || !!state?.inbox.some(item => {
-      const pending = this.sessionStorage.getValueSync(pendingEntry(item.entryId))?.value
-      return pending?.type === 'message' && pending.payload.role === 'user'
-    })
+  private async nativeBusy(harness: Harness): Promise<boolean> {
+    return (await this.native.pending()).length > 0 || (await harness.inspect(this.nativeContext!)).tasks.some(task => !task.record.background)
   }
-
+  private async compactBusy(): Promise<boolean> { return this.active || await this.nativeBusy(await this.getHarness()) }
   private async compactChat(input: CompactInput): Promise<CompactResult> {
-    // Capture the actual caller before preparation. Hosted background calls cannot
-    // supply authorization for a human command.
     const connection = getCurrentAgent().connection
-    const harness = await this.getHarness()
-    const lane = await this.getLane()
     if (this.env.HOSTED_MODE === 'true' && !connection) return { ...input, accepted: false }
     if (connection) await this.verifyConnection(connection)
     if (connection && !this.chatConnections.has(connection.id)) return { ...input, accepted: false }
-    if (input.sessionId !== this.sessionStorage.getMetadataSync().id || this.compactBusy()) return { ...input, accepted: false }
-    this.active = true
-    let acknowledge!: (accepted: boolean) => void
-    const admitted = new Promise<boolean>(resolve => { acknowledge = resolve })
-    const off = harness.events.on('compaction_start', event => {
-      if (event.lane === 'main' && event.reason === 'manual') acknowledge(true)
-    })
-    // The SDK owns admission, cancellation, execution and persistence. A start
-    // event acknowledges admission; a pre-start refusal never becomes queued work.
-    this.ctx.waitUntil(this.runCompact(lane).then(() => acknowledge(false), () => acknowledge(false)).finally(() => {
-      off(); this.active = false
-    }))
-    return { ...input, accepted: await admitted }
-  }
-
-  private async runCompact(lane: Awaited<ReturnType<PiSession['getLane']>>, focus?: string): Promise<{ summary: string; tokensBefore: number }> {
-    const result = await lane.compact({ customInstructions: focus }, BACKGROUND_CONTEXT)
-    if (!result.ok) throw result.error
-    if (result.value.compaction.status !== 'completed') throw new Error('Compaction did not complete; conversation preserved.')
-    const entry = this.sessionStorage.getEntrySync(result.value.compaction.tipId ?? '')
-    if (!entry || entry.type !== 'compaction') throw new Error('Compaction entry was not saved.')
-    await this.flushOutboxToRegistry()
-    return { summary: entry.summary, tokensBefore: entry.tokensBefore }
-  }
-
-  @hostedCallable()
-  async compact(focus?: string): Promise<{ summary: string; tokensBefore: number }> {
+    if (input.sessionId !== this.sessionStorage.getMetadataSync().id || await this.compactBusy()) return { ...input, accepted: false }
     const lane = await this.getLane()
-    await this.verifyCurrentConnection()
-    if (this.compactBusy()) throw new Error('Pi is currently running.')
-    return this.withExclusiveOperation(() => this.runCompact(lane, focus))
+    if (connection) await this.verifyConnection(connection)
+    if (connection && !this.chatConnections.has(connection.id)) return { ...input, accepted: false }
+    if (input.sessionId !== this.sessionStorage.getMetadataSync().id || await this.compactBusy()) return { ...input, accepted: false }
+    this.active = true
+    try {
+      await this.schedule(1, 'maintainNativeWork', undefined, { idempotent: true })
+      const task = await lane.compact(undefined, this.nativeContext!)
+      this.ctx.waitUntil((async () => {
+        await (await this.getHarness()).waitForTask(task, this.nativeContext!)
+        await this.syncNativeEntries(); await this.flushOutboxToRegistry()
+      })().finally(() => { this.active = false }))
+      return { ...input, accepted: true }
+    } catch { this.active = false; return { ...input, accepted: false } }
   }
-
+  async maintainNativeWork(): Promise<void> {
+    await (await this.getHarness()).waitForIdle(this.nativeContext!)
+    await this.syncNativeEntries(); await this.flushOutboxToRegistry()
+    if (this.active) await this.schedule(1, 'maintainNativeWork', undefined, { idempotent: true })
+  }
   @hostedCallable()
   async updateCompactionSettings(settings: CompactionSettings): Promise<CompactionSettings> {
-    if (!Number.isSafeInteger(settings.reserveTokens) || settings.reserveTokens < 0 ||
-        !Number.isSafeInteger(settings.keepRecentTokens) || settings.keepRecentTokens < 0) {
-      throw new Error('Compaction token settings must be non-negative integers.')
-    }
-    return this.withExclusiveOperation(async () => {
-      const value = { ...settings }
-      this.sessionStorage.setSetting('compaction', value)
-      await (await this.getHarness()).setCompactionSettings(value, BACKGROUND_CONTEXT)
-      return value
+    if (!Number.isSafeInteger(settings.reserveTokens) || settings.reserveTokens < 0 || !Number.isSafeInteger(settings.keepRecentTokens) || settings.keepRecentTokens < 0) throw new Error('Compaction token settings must be non-negative integers.')
+    const task = this.laneMutation.then(async () => {
+      if (await this.compactBusy()) throw new Error('Pi is currently running.')
+      this.sessionStorage.setSetting('compaction', settings)
+      await this.native.dispose()
+      return settings
     })
-  }
-
-  @hostedCallable()
-  async submitSteer(input: { submissionId: string; prompt: string; photoIds?: string[] }): Promise<SteerAdmissionStatus> {
-    await this.waitUntilInitialized()
-    if (!UUID.test(input.submissionId)) throw new Error('A valid submission ID is required.')
-    const prompt = validPhotoPrompt(input.prompt, input.photoIds)
-    if (input.photoIds?.length && !await this.acceptsModelImages()) throw new Error('Selected model does not support images.')
-    const photos = await this.modelPhotos(input.submissionId, input.photoIds)
-    if (JSON.stringify([prompt, photos]).length > PHOTO_ROW_BUDGET) throw new Error('Photo group exceeds the Pi message size limit.')
-    const fingerprint = await promptFingerprint(submissionFingerprintInput(prompt, input.photoIds))
-    const lane = await this.getLane()
-    await this.verifyCurrentConnection()
-    this.sessionStorage.saveInput(input.submissionId, input.prompt, input.photoIds ?? [], 'steer')
-    const record = this.sessionStorage.admitSteer(input.submissionId, fingerprint, input.photoIds ?? [])
-    if (record.created) {
-      const result = await lane.steer({ role: 'user', content: photos.length ? [...(prompt ? [{ type: 'text' as const, text: prompt }] : []), ...photos] : prompt, timestamp: record.timestamp }, undefined, BACKGROUND_CONTEXT)
-      if (!result.ok) throw result.error
-      this.sessionStorage.acceptSteer(input.submissionId, result.value.entryId)
-      this.sessionStorage.acceptPhotos(input.submissionId, result.value.entryId)
-      await this.schedulePendingDrain()
-    }
-    return this.getSteerAdmission(input.submissionId)
-  }
-
-  @hostedCallable()
-  async getSteerAdmission(submissionId: string): Promise<SteerAdmissionStatus> {
-    if (!UUID.test(submissionId)) throw new Error('A valid submission ID is required.')
-    const record = this.sessionStorage.steerRecord(submissionId)
-    if (!record) return { state: 'missing', submissionId }
-    if (record.entryId) { this.sessionStorage.acceptPhotos(submissionId, record.entryId); return { state: 'accepted', submissionId, entryId: record.entryId } }
-    const state = (await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value
-    for (const item of state?.inbox ?? []) {
-      const pending = (await this.session.getValue(pendingEntry(item.entryId), BACKGROUND_CONTEXT))?.value
-      if (pending?.type === 'message' && pending.payload.role === 'user' && pending.payload.timestamp === record.timestamp &&
-          await this.steerFingerprint(submissionId, messageText(pending.payload)) === record.fingerprint) {
-        this.sessionStorage.acceptSteer(submissionId, item.entryId)
-        this.sessionStorage.acceptPhotos(submissionId, item.entryId)
-        await this.schedulePendingDrain()
-        return { state: 'accepted', submissionId, entryId: item.entryId }
-      }
-    }
-    const candidates = this.sessionStorage.entriesInOrder().filter((entry) => entry.type === 'message' && entry.message.role === 'user' && entry.message.timestamp === record.timestamp)
-    let committed: Entry | undefined
-    for (const candidate of candidates) {
-      if (await this.steerFingerprint(submissionId, messageText(candidate.type === 'message' ? candidate.message : '')) === record.fingerprint) { committed = candidate; break }
-    }
-    if (committed) {
-      this.sessionStorage.acceptSteer(submissionId, committed.id)
-      this.sessionStorage.acceptPhotos(submissionId, committed.id)
-      return { state: 'accepted', submissionId, entryId: committed.id }
-    }
-    return { state: 'uncertain', submissionId }
+    this.laneMutation = task.catch(() => undefined)
+    return task
   }
 
   @hostedCallable()
@@ -563,27 +368,29 @@ export class PiSession extends HostedAgent {
     return this.serializeWake(() => this.acceptWake(source))
   }
   private async acceptWake(source: WakeSource): Promise<void> {
-    if (this.sessionStorage.wakeReceipt(source)) { await this.ensureWakeSchedules(); await this.schedulePendingDrain(); return }
-    const lane = await this.getLane()
-    // Eligibility is checked at public admission start, after all lane acquisition waits.
-    if (this.sessionStorage.wakeReceipt(source)) { await this.ensureWakeSchedules(); await this.schedulePendingDrain(); return }
+    if (this.sessionStorage.wakeReceipt(source)) { await this.ensureWakeSchedules(); return }
     const wake = this.sessionStorage.timedWakes().find(item => item.id === source.wakeId && item.revision === source.revision && item.nextAt === source.scheduledAt)
-    if (!wake) return
-    if (Date.now() < Date.parse(wake.nextAt)) return
-    if (Date.now() - Date.parse(wake.nextAt) > 60_000) {
-      this.sessionStorage.advanceWake(wake, Date.now())
-    } else {
-      try {
-        const queued = await lane.followUp({ role: 'custom', customType: WAKE_CUSTOM_TYPE, display: true,
-          content: `[Your self-set reminder, scheduled ${source.scheduledAt}] ${source.title}\n${source.reminder}`, details: source, timestamp: Date.now() }, undefined, BACKGROUND_CONTEXT)
-        if (!queued.ok) throw queued.error
-      } catch (error) {
-        if (!this.sessionStorage.wakeReceipt(source)) throw error
-      }
+    if (!wake || Date.now() < Date.parse(wake.nextAt)) return
+    const operationId = `wake:${occurrenceKey(source)}`
+    if (Date.now() - Date.parse(wake.nextAt) <= 60_000) {
+      this.sessionStorage.setSetting('pendingWakes', [...this.sessionStorage.getSetting<WakeSource[]>('pendingWakes') ?? [], source])
+      this.sessionStorage.setSetting(`wakeSource:${operationId}`, source)
     }
-    // Future repeats are reliably registered before any current model execution.
+    this.sessionStorage.advanceWake(wake, Date.now())
     await this.ensureWakeSchedules()
-    await this.schedulePendingDrain()
+    await this.resumeWakes()
+  }
+
+  private async resumeWakes(): Promise<void> {
+    for (const source of this.sessionStorage.getSetting<WakeSource[]>('pendingWakes') ?? []) {
+      const operationId = `wake:${occurrenceKey(source)}`
+      await this.ensureWakeSchedules()
+      await this.getLane()
+      await this.native.submit(`[Your self-set reminder, scheduled ${source.scheduledAt}] ${source.title}\n${source.reminder}`, { operationId })
+      this.sessionStorage.recordWake(source, operationId)
+      this.sessionStorage.setSetting('pendingWakes', (this.sessionStorage.getSetting<WakeSource[]>('pendingWakes') ?? []).filter(item => occurrenceKey(item) !== occurrenceKey(source)))
+      this.watchSettlement(operationId)
+    }
   }
 
   private async awaitWakeSchedules(): Promise<void> {
@@ -603,107 +410,16 @@ export class PiSession extends HostedAgent {
     return result
   }
 
-  async drainKeetQueue(): Promise<void> {
-    if (this.active || !this.sessionStorage.isInitialized()) return
+  async drainPendingWork(): Promise<void> {
+    if (!this.sessionStorage.isInitialized()) return
     const next = this.sessionStorage.nextKeet()
     if (!next) return
-    this.active = true
-    try {
-      await this.driveKeetQueue(next)
-    } finally {
-      this.active = false
-      this.scheduleMemoryExtraction()
-      await this.schedulePendingDrain()
-    }
+    await this.getLane()
+    this.sessionStorage.setSetting(`keetInput:${next.operationId}`, next)
+    await this.native.submit(next.source.text, { operationId: next.operationId, whenBusy: 'followUp' })
+    this.watchSettlement(next.operationId)
   }
-
-  private async driveKeetQueue(next: NonNullable<ReturnType<PiSessionStorage['nextKeet']>>, existingLane?: AgentLane): Promise<void> {
-    const lane = existingLane ?? await this.getLane()
-    const current = (await lane.inspectExecution(BACKGROUND_CONTEXT)).current
-    if (current && current.id !== next.operationId) {
-      await this.schedulePendingDrain()
-      return
-    }
-    let entryId = next.entryId
-    if (!entryId && (await this.session.getValue(operationMeta(next.operationId), BACKGROUND_CONTEXT))?.value) {
-      entryId = await exactPromptEntryId(next.operationId,
-        async (id) => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
-        (id) => this.sessionStorage.getEntrySync(id))
-    }
-    if (entryId) this.sessionStorage.acceptKeet(next.sequence, entryId)
-    if (await lane.getResult(next.operationId, BACKGROUND_CONTEXT)) {
-      if (!entryId) throw new Error('Terminal Keet run is missing source correlation.')
-    } else {
-      if (!entryId) {
-        const admitted = await lane.accept({ kind: 'prompt', operationId: next.operationId, prompt: next.source.text }, BACKGROUND_CONTEXT)
-        if (!admitted.ok) throw admitted.error
-        entryId = await exactPromptEntryId(next.operationId,
-          async (id) => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
-          (id) => this.sessionStorage.getEntrySync(id))
-        this.sessionStorage.acceptKeet(next.sequence, entryId)
-      }
-      const driven = await lane.drive({ operationId: next.operationId, waitForRetry: true }, BACKGROUND_CONTEXT)
-      if (!driven.ok) throw driven.error
-      if (driven.value.kind === 'waiting') {
-        await this.schedulePendingDrain()
-        return
-      }
-    }
-    this.sessionStorage.settleKeet(next.sequence)
-    await this.flushOutboxToRegistry()
-  }
-
-  async drainPendingWork(): Promise<void> {
-    if (this.active || !this.sessionStorage.isInitialized()) return
-    this.active = true
-    try {
-      const lane = await this.getLane()
-      await this.awaitWakeSchedules()
-      if (!(await lane.inspectExecution(BACKGROUND_CONTEXT)).current) {
-        const state = (await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value
-        if (state?.inbox.some((item) => item.kind === 'steer' || item.kind === 'followUp')) {
-          const operationId = crypto.randomUUID()
-          const admission = await lane.accept({ kind: 'prompt', operationId, prompt: '' }, BACKGROUND_CONTEXT)
-          if (!admission.ok) throw admission.error
-          const driven = await lane.drive({ operationId, waitForRetry: true }, BACKGROUND_CONTEXT)
-          if (!driven.ok) throw driven.error
-          await this.flushOutboxToRegistry()
-        }
-      }
-      const next = this.sessionStorage.nextKeet()
-      if (next) await this.driveKeetQueue(next, lane)
-    } finally {
-      this.active = false
-      this.scheduleMemoryExtraction()
-      await this.schedulePendingDrain()
-    }
-  }
-
-  private keetSubmission(operationId: string) {
-    const row = this.sessionStorage.nextKeet()
-    if (row?.operationId !== operationId) return undefined
-    return { operationId, fingerprint: '', state: row.entryId ? 'accepted' as const : 'submitting' as const,
-      ...(row.entryId ? { entryId: row.entryId } : {}), createdAt: '' }
-  }
-
-  private async schedulePendingDrain(): Promise<void> {
-    const state = (await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value
-    if (this.sessionStorage.nextKeet() || state?.inbox.some((item) => item.kind === 'steer' || item.kind === 'followUp')) {
-      await this.schedule(1, 'drainPendingWork', undefined, { idempotent: true })
-    }
-  }
-
-  @hostedCallable()
-  async followUp(prompt: string): Promise<void> {
-    const result = await (await this.getLane()).followUp(validPrompt(prompt), undefined, BACKGROUND_CONTEXT)
-    if (!result.ok) throw result.error
-  }
-
-  @hostedCallable()
-  async abort(): Promise<void> {
-    const result = await (await this.getLane()).abort(BACKGROUND_CONTEXT)
-    if (!result.ok) throw result.error
-  }
+  private async schedulePendingDrain(): Promise<void> { if (this.sessionStorage.nextKeet()) await this.schedule(1, 'drainPendingWork', undefined, { idempotent: true }) }
 
   @hostedCallable()
   async listFiles(): Promise<WorkspaceFile[]> {
@@ -748,120 +464,108 @@ export class PiSession extends HostedAgent {
     return text === null ? null : new TextEncoder().encode(text).byteLength > DIARY_ENTRY_MAX_BYTES ? { tooLarge: true } : { name, text }
   }
 
-  @hostedCallable({ streaming: true })
-  async prompt(stream: Pick<StreamingResponse, 'send' | 'end'>, input: { operationId: string; prompt: string; photoIds?: string[] }): Promise<void> {
-    if (input.photoIds?.length && !await this.acceptsModelImages()) throw new Error('Selected model does not support images.')
-    const prompt = validPhotoPrompt(input.prompt, input.photoIds)
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.operationId)) {
-      throw new Error('A valid operation ID is required.')
+  private async nativeSubmission(id: string): Promise<SubmissionRecord | undefined> {
+    await this.getHarness()
+    return this.nativeStorage!.submissionByRequest(ROOT_CONVERSATION_ID, id, this.nativeContext!)
+  }
+  async lookupChat(id: string): Promise<import('@lamplit/contracts').Receipt | null> {
+    const native = await this.nativeSubmission(id)
+    const record = this.sessionStorage.chatRecords().get(id)
+    if (native) {
+      const messageId = native.entry ? this.sessionStorage.sourceId(native.entry) : null
+      if (messageId) this.sessionStorage.correlateInput(id, messageId)
+      if (record?.replacementSourceIds?.length) for (const source of record.replacementSourceIds) this.sessionStorage.markReplaced(source)
+      if (native.status === 'unanswered' && !native.entry && native.reason === 'aborted') this.sessionStorage.withdrawInput(id)
+      return { operationId: id, state: 'submitted', messageId: messageId && record ? `submission:${id}` : messageId, turnId: record?.turnId ?? id, error: null }
     }
-    const photos = await this.modelPhotos(input.operationId, input.photoIds)
-    if (JSON.stringify([prompt, photos]).length > PHOTO_ROW_BUDGET) throw new Error('Photo group exceeds the Pi message size limit.')
-    const fingerprint = await promptFingerprint(submissionFingerprintInput(prompt, input.photoIds))
-    const harness = await this.getHarness()
-    const lane = await this.getLane()
-    await this.verifyCurrentConnection()
-    if (this.active && !this.sessionStorage.getPromptSubmission(input.operationId)) {
-      throw new Error('Pi is already running in this workspace.')
-    }
-    this.sessionStorage.saveInput(input.operationId, input.prompt, input.photoIds ?? [], 'prompt')
-    const submission = this.sessionStorage.admitPromptSubmission(input.operationId, fingerprint, input.photoIds ?? [])
-    if (!submission.created) {
-      try {
-        const status = await this.getPromptAdmission(input.operationId)
-        if (status.state === 'accepted' || status.state === 'settled') {
-          stream.send({ type: 'accepted', operationId: input.operationId, entryId: status.entryId } satisfies PiStreamEvent)
-        }
-      } finally {
-        try { stream.send({ type: 'done' } satisfies PiStreamEvent) } catch { /* disconnected */ }
-        try { stream.end() } catch { /* disconnected */ }
+    const historic = this.sessionStorage.inputEntry(id)
+    if (historic && this.sessionStorage.getEntrySync(historic)) return { operationId: id, state: 'submitted', messageId: historic, turnId: record?.turnId ?? id, error: null }
+    return record?.rejected ? { operationId: id, state: 'failed', messageId: null, turnId: null, error: 'Input was not admitted' } : null
+  }
+  async submitChat(input: Submission): Promise<import('@lamplit/contracts').Receipt> {
+    const connection = getCurrentAgent().connection
+    const task = this.submissionMutation.then(async () => {
+      const previous = this.sessionStorage.chatRecords().get(input.operationId)
+      if (previous && submissionIdentity(previous) !== submissionIdentity(input)) throw new Error('Submission identity conflict')
+      const existing = await this.lookupChat(input.operationId)
+      if (existing) return existing
+      await this.getLane()
+      const turnId = await this.activeTurn() ?? input.operationId
+      this.sessionStorage.recordChat(input.operationId, { ...input, turnId, createdAt: Date.now() })
+      // Validation refusal is definite nonreception. Native errors remain ambiguous until lookup proves admission.
+      try { await this.validateChatInput(input) } catch (error) {
+        this.sessionStorage.setChatRejected(input.operationId, true)
+        return { operationId: input.operationId, state: 'failed' as const, messageId: null, turnId: null, error: error instanceof Error ? error.message : String(error) }
       }
-      return
-    }
-
-    this.active = true
-    this.promptOperationId = input.operationId
-    let unsubscribe: Array<() => void> = []
-    try {
-      const eventTypes = ['message_update', 'message_end', 'tool_start', 'tool_update', 'tool_end'] as const
-      unsubscribe = eventTypes.map((type) => harness.events.on(type, (event) => {
-        const payload = toPiStreamEvent(event)
-        if (payload) stream.send(payload)
-      }))
-      await admitAndDrivePrompt(lane, { operationId: input.operationId, prompt, images: photos }, BACKGROUND_CONTEXT, async () => {
-        const entryId = await exactPromptEntryId(
-          input.operationId,
-          async (id) => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
-          (id) => this.sessionStorage.getEntrySync(id),
-        )
-        this.sessionStorage.acceptPromptSubmission(input.operationId, entryId)
-        return entryId
-      }, (entryId) => {
-        stream.send({ type: 'accepted', operationId: input.operationId, entryId } satisfies PiStreamEvent)
-      })
-      await this.flushOutboxToRegistry()
-    } catch (error) {
-      try { stream.send({ type: 'error', error: error instanceof Error ? error.message : String(error) } satisfies PiStreamEvent) }
-      catch { /* The operation may already be durable even if the connection is gone. */ }
-    } finally {
-      for (const remove of unsubscribe) remove()
-      this.active = false
-      this.promptOperationId = undefined
-      try { stream.send({ type: 'done' } satisfies PiStreamEvent) } catch { /* disconnected */ }
-      try { stream.end() } catch { /* disconnected */ }
-      this.scheduleMemoryExtraction()
-      await this.schedulePendingDrain()
-    }
+      const photos = await this.modelPhotos(input.operationId, input.images?.map(image => image.attachmentId))
+      if (connection) { await this.verifyConnection(connection); if (!this.chatConnections.has(connection.id)) throw new Error('Chat connection ended before admission') }
+      this.sessionStorage.freezePhotos(input.operationId, input.images?.map(image => image.attachmentId) ?? [])
+      this.sessionStorage.saveInput(input.operationId, input.text, input.images?.map(image => image.attachmentId) ?? [], 'prompt')
+      await this.native.submit(photos.length ? [...(input.text ? [{ type: 'text' as const, text: input.text }] : []), ...photos] : input.text, { operationId: input.operationId, whenBusy: 'steer' })
+      this.watchSettlement(input.operationId)
+      const receipt = await this.lookupChat(input.operationId)
+      if (!receipt) throw new Error('Native submission result is temporarily unavailable')
+      return receipt
+    })
+    this.submissionMutation = task.catch(() => undefined)
+    return task
   }
-
-  @hostedCallable()
-  async getPromptAdmission(operationId: string): Promise<PromptAdmissionStatus> {
-    await this.waitUntilInitialized()
-    return getPromptAdmission(
-      await this.getLane(),
-      operationId,
-      BACKGROUND_CONTEXT,
-      (id) => this.sessionStorage.getPromptSubmission(id),
-      async (id) => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
-      (id) => this.sessionStorage.getEntrySync(id),
-      (id, entryId) => this.sessionStorage.acceptPromptSubmission(id, entryId),
-      this.promptOperationId === operationId,
-    )
+  private watchSettlement(id: string): void {
+    this.ctx.waitUntil(this.native.wait(id).then(async () => {
+      await this.lookupChat(id); await this.syncNativeEntries()
+      const keet = this.sessionStorage.nextKeet()
+      if (keet?.operationId === id) {
+        const native = await this.nativeSubmission(id)
+        if (native?.entry) { this.sessionStorage.acceptKeet(keet.sequence, this.sessionStorage.sourceId(native.entry)); this.sessionStorage.settleKeet(keet.sequence) }
+      }
+      this.scheduleMemoryExtraction(); await this.schedulePendingDrain()
+    }))
   }
-
   async chatRecovery(): Promise<InputRecovery[]> {
-    await this.waitUntilInitialized()
-    const records = this.sessionStorage.chatRecords()
-    const native = this.sessionStorage.nativeInputs()
-    const ids = [...new Set([...native.map(input => input.operationId), ...records.keys()])]
-    const recovery: InputRecovery[] = []
-    for (const id of ids) {
-      if (this.sessionStorage.replaced(id)) continue
-      const entryId = this.sessionStorage.inputEntry(id)
-      if (entryId && this.sessionStorage.getEntrySync(entryId)) continue
-      const record = records.get(id)
-      const input = native.find(input => input.operationId === id)
-      // A native entry or explicit pre-admission rejection is required for eligibility.
-      const state = record?.rejected ? 'rejected' : entryId && this.sessionStorage.dropped(entryId) ? 'unconsumed' : !entryId ? 'uncertain' : null
-      if (!state) continue
-      const text = record?.text ?? input?.text
-      if (text === undefined || text.length > 16_000) continue
+    const result: InputRecovery[] = []
+    for (const [id, record] of this.sessionStorage.chatRecords()) {
+      await this.lookupChat(id)
+      if (!this.sessionStorage.eligible(id)) continue
       const available = await this.sharedImages(this.sessionStorage.photosForOperation(id))
-      const images: ImageRef[] = (record?.images ?? input?.photos.map(photo => imageRef(photo)) ?? []).map(image => ({ ...image, availability: available.some(photo => photo.attachmentId === image.attachmentId && photo.availability === 'available') ? 'available' : 'missing' }))
-      recovery.push(validateRecovery({ sourceId: id, operationId: id, text, images, state, replacementEligible: state !== 'uncertain' && this.sessionStorage.eligible(id) }))
+      const images: ImageRef[] = (record.images ?? []).map(image => ({ ...image, availability: available.some(photo => photo.attachmentId === image.attachmentId && photo.availability === 'available') ? 'available' : 'missing' }))
+      result.push(validateRecovery({ sourceId: id, operationId: id, text: record.text, images, replacementEligible: true }))
     }
-    return recovery.slice(-20)
+    return result.slice(-20)
+  }
+  private async pendingChatMessages(): Promise<import('@lamplit/contracts').ChatMessage[]> {
+    const messages: import('@lamplit/contracts').ChatMessage[] = []
+    for (const [id, record] of this.sessionStorage.chatRecords()) {
+      const native = await this.nativeSubmission(id)
+      if (native?.status !== 'queued' && !(native?.status === 'unanswered' && !native.entry && native.reason === 'aborted')) continue
+      messages.push({ id: `submission:${id}`, operationId: id, turnId: record.turnId, role: 'user', text: record.text,
+        createdAt: record.createdAt ?? 0, images: await this.sharedImages(this.sessionStorage.photosForOperation(id)) })
+    }
+    return messages
+  }
+  private async replyOutcomes(): Promise<import('@lamplit/contracts').ChatMessage[]> {
+    const result: import('@lamplit/contracts').ChatMessage[] = []
+    for (const [id, record] of this.sessionStorage.chatRecords()) {
+      const native = await this.nativeSubmission(id)
+      if (native?.status !== 'unanswered' || !native.entry) continue
+      const rows = this.sessionStorage.entriesInOrder()
+      const start = rows.findIndex(entry => entry.id === this.sessionStorage.sourceId(native.entry!))
+      const nextInput = rows.findIndex((entry, index) => index > start && entry.type === 'message' && entry.message.role === 'user')
+      if (start >= 0 && rows.slice(start + 1, nextInput < 0 ? undefined : nextInput).some(entry => entry.type === 'message' && entry.message.role === 'assistant' && ['aborted','error'].includes(entry.message.stopReason))) continue
+      result.push({ id: `turn:${id}:status`, role: 'notice', text: native.reason === 'aborted' ? '已停止回复' : '回复失败', createdAt: this.sessionStorage.getEntrySync(this.sessionStorage.sourceId(native.entry))?.timestamp ?? 0, operationId: null, turnId: record.turnId, images: [] })
+    }
+    return result
   }
   private async sharedImages(photos: ConversationPhoto[]): Promise<ImageRef[]> {
     return Promise.all(photos.map(async photo => imageRef(photo, !!this.env.COMPUTER_R2 && !!await this.env.COMPUTER_R2.head(this.photoKey(photo.id, 'original')) && !!await this.env.COMPUTER_R2.head(this.photoKey(photo.id, 'preview')))))
   }
   private async validateChatInput(input: Submission): Promise<void> {
     validateSubmission(input)
+    await this.modelEnvironment()
     if (this.sessionStorage.nativeInputs().some(existing => existing.operationId === input.operationId) && !this.sessionStorage.chatRecords().has(input.operationId)) throw new Error('Operation belongs to native input')
     if (input.images?.length) {
       if (!await this.acceptsModelImages()) throw new Error('Selected model does not support images.')
       const photos = this.sessionStorage.photosForOperation(input.operationId)
-      if (photos.length !== input.images.length || photos.some((photo, i) => photo.id !== input.images![i]!.attachmentId || photo.name !== input.images![i]!.name || photo.mediaType !== input.images![i]!.mediaType || input.images![i]!.availability !== 'available')) throw new Error('Image operation identity conflict')
+      if (photos.length !== input.images.length || photos.some((photo, i) => photo.id !== input.images![i]!.attachmentId || imageRef(photo).name !== input.images![i]!.name || photo.mediaType !== input.images![i]!.mediaType || input.images![i]!.availability !== 'available')) throw new Error('Image operation identity conflict')
       await this.modelPhotos(input.operationId, input.images.map(image => image.attachmentId))
       for (const photo of photos) for (const variant of ['original', 'preview'] as const) {
         if (!await this.env.COMPUTER_R2!.head(this.photoKey(photo.id, variant))) throw new Error('Image variant is missing')
@@ -987,8 +691,8 @@ export class PiSession extends HostedAgent {
   }
 
   private async acceptsModelImages(): Promise<boolean> {
-    const model = await (await this.getLane()).getModel(BACKGROUND_CONTEXT)
-    return model?.input.includes('image') ?? false
+    const reference = (await (await this.getLane()).agent(this.nativeContext!)).model
+    return nativeProviders().find(provider => provider.id === reference?.provider)?.getModels().find(model => model.id === reference?.modelId)?.input.includes('image') ?? false
   }
 
   private async modelPhotos(operationId: string, ids: string[] | undefined): Promise<Array<{ type: 'image'; data: string; mimeType: string }>> {
@@ -1009,61 +713,8 @@ export class PiSession extends HostedAgent {
     return content
   }
 
-  private async steerFingerprint(operationId: string, prompt: string): Promise<string> {
-    return promptFingerprint(submissionFingerprintInput(prompt, this.sessionStorage.photosForOperation(operationId).map((photo) => photo.id)))
-  }
-
-  async exportSession(entryId?: string): Promise<SessionExport> {
-    return this.withExclusiveOperation(() => this.createExport(entryId))
-  }
-
-  async exportFork(entryId: string): Promise<SessionExport> {
-    return this.withExclusiveOperation(async () => {
-      const target = await this.session.getEntry(entryId, BACKGROUND_CONTEXT)
-      if (!target || target.type !== 'message' || target.message.role !== 'user') {
-        throw new Error('A fork must select a user message on the source branch.')
-      }
-      return this.createExport(target.parentId ?? undefined)
-    })
-  }
-
-  async exportClone(): Promise<SessionExport> {
-    return this.withExclusiveOperation(async () => this.createExport(this.sessionStorage.getLeafId() ?? undefined))
-  }
-
-  async importSession(snapshot: SessionExport, metadata?: InitializeMetadata): Promise<SessionOverview> {
-    return this.withExclusiveOperation(async () => {
-      const targetMetadata: PiSessionMetadata = metadata ? {
-        id: metadata.id,
-        createdAt: metadata.createdAt,
-        updatedAt: metadata.updatedAt,
-        lineage: metadata.lineage,
-      } : snapshot.metadata
-      await this.sessionStorage.replace(targetMetadata, snapshot.entries)
-      this.sessionStorage.setSetting('compaction', snapshot.compaction)
-      this.sessionStorage.setSetting('chatUsageBoundary', this.sessionStorage.entriesInOrder().at(-1)?.seq ?? 0)
-      this.sessionStorage.setSetting('chatCompaction', null)
-      this.sessionStorage.setSetting(MEMORY_EXTRACTION_CURSOR, this.sessionStorage.getEntriesWithSeq().at(-1)?.seq ?? 0)
-      for (const file of snapshot.files) {
-        const path = workspacePath(file.path)
-        const parent = path.slice(0, path.lastIndexOf('/')) || '/'
-        if (parent !== '/') await this.workspace.mkdir(parent, { recursive: true })
-        if (file.encoding === 'base64') await this.workspace.fs.writeFile(path, decodeBase64(file.content))
-        else await this.workspace.writeFile(path, file.content)
-      }
-      this.coreSession = undefined
-      if (metadata?.name) await this.session.setName(metadata.name, BACKGROUND_CONTEXT)
-      this.harness = undefined
-      return this.getOverview()
-    })
-  }
-
   async deleteContents(): Promise<void> {
-    if (this.active) {
-      const lane = await this.getLane()
-      await lane.abort(BACKGROUND_CONTEXT)
-      await lane.waitForIdle(BACKGROUND_CONTEXT)
-    }
+    await this.native.abort()
     this.active = true
     if (this.env.COMPUTER_R2) {
       for (const id of this.sessionStorage.allPhotoIds()) {
@@ -1088,7 +739,7 @@ export class PiSession extends HostedAgent {
 
   async readSearchRecord(entryId: string): Promise<import('@lamplit/contracts').SearchReadResult> {
     const metadata = this.sessionStorage.getMetadataSync()
-    return readSearchNodes(metadata.id, await this.session.getName(BACKGROUND_CONTEXT), this.sessionStorage.entriesInOrder().map(nativeSearchNode), entryId)
+    return readSearchNodes(metadata.id, this.sessionStorage.getSetting<string>('name'), this.sessionStorage.entriesInOrder().map(nativeSearchNode), entryId)
   }
 
   async flushOutbox(): Promise<SessionIndexEvent[]> {
@@ -1099,92 +750,69 @@ export class PiSession extends HostedAgent {
     this.sessionStorage.acknowledgeOutbox(eventIds)
   }
 
-  private async getHarness(): Promise<PiHarness> {
-    if (this.active && this.harness) return this.harness
-    const registry = this.registry()
-    const modelEnv = await this.modelEnvironment()
-    if (!this.active && this.harnessModelConfig !== modelConfigKey(modelEnv)) this.harness = undefined
-    this.harness ??= Promise.resolve().then(() => {
-      this.harnessModelConfig = modelConfigKey(modelEnv)
-      return createPiHarness({
-      env: modelEnv,
-      session: this.session,
-      tools: [
-        ...createWorkspaceTools(this.workspace),
-        createSessionSearchTool(registry),
-        createMemoryTool(registry, this.sessionStorage.getMetadataSync().id),
-        ...createRelationshipTools(registry),
-        ...(this.env.HOSTED_MODE !== 'true' && this.env.KEET_MCP_TOKEN && this.env.KEET_MCP_URL ? createKeetTools(this.env) : []),
-        ...createWakeTools(this, () => registry.getReportedTimeZone()),
-        ...createWebTools(this.env, this.instanceId()),
-        ...createPlatformFeedbackTools(this.env, this.instanceId(), this.sessionStorage.getMetadataSync().id),
-      ],
-      memory: registry,
-      compaction: this.compactionSettings(),
-      loadCompactionPrompt: async () => (await new CompanionFiles(this.workspace).effective()).content,
-      loadInstructions: () => this.workspace.readFile(`${WORKSPACE_ROOT}/AGENTS.md`),
-      getUserTimeZone: () => registry.getUserTimeZone(),
-      awaitWakeSchedules: () => this.awaitWakeSchedules(),
-      projectKeet: messages => this.projectKeetMessages(messages),
-      }).then(harness => {
-        harness.events.on('compaction_start', event => {
-          if (event.lane === 'main') this.sessionStorage.setSetting('chatCompaction', { id: event.runId, status: 'running' })
-        })
-        harness.events.on('compaction_end', event => {
-          if (event.lane === 'main') this.sessionStorage.setSetting('chatCompaction', { id: event.runId, status: event.status === 'completed' ? 'complete' : 'failed' })
-        })
-        harness.events.on('navigation_end', event => {
-          if (event.lane === 'main' && event.status === 'completed') this.sessionStorage.setSetting('chatUsageBoundary', this.sessionStorage.entriesInOrder().at(-1)?.seq ?? 0)
-        })
-        return harness
-      })
-    })
-    const harness = await this.harness
-    const lane = await harness.lane('main', BACKGROUND_CONTEXT)
-    let searchEnabled = false
-    try { searchEnabled = (await searchSettings(this.env, this.instanceId())).enabled } catch { /* Fail closed; page reading remains available. */ }
-    const names = await lane.getActiveTools(BACKGROUND_CONTEXT)
-    if (names.includes('web_search') !== searchEnabled) {
-      await lane.setActiveTools(searchEnabled ? [...names, 'web_search'] : names.filter(name => name !== 'web_search'), BACKGROUND_CONTEXT)
+  private getHarness(): Promise<Harness> { return this.native.pi() }
+  private laneMutation: Promise<unknown> = Promise.resolve()
+  private getLane() {
+    const task = this.laneMutation.then(() => this.resolveLane())
+    this.laneMutation = task.catch(() => undefined)
+    return task
+  }
+  private async resolveLane() {
+    let harness = await this.getHarness()
+    if (!await this.nativeBusy(harness)) {
+      const config = JSON.stringify(await this.modelEnvironment().catch(() => undefined))
+      if (config !== this.runtimeConfig) { await this.native.dispose(); harness = await this.getHarness() }
     }
-    return harness
+    const root = await harness.root(this.nativeContext!)
+    if (!await this.nativeBusy(harness)) {
+      let enabled = false
+      try { enabled = (await searchSettings(this.env, this.instanceId())).enabled } catch { /* Search fails closed. */ }
+      const tools = this.runtimeTools.filter(tool => tool.name !== 'web_search' || enabled)
+      const active = await root.agent(this.nativeContext!)
+      if (JSON.stringify(active.tools.map(tool => tool.name)) !== JSON.stringify(tools.map(tool => tool.name))) await root.configure({ tools }, this.nativeContext!)
+    }
+    return root
   }
-
-  private async getLane() {
-    return (await this.getHarness()).lane('main', BACKGROUND_CONTEXT)
-  }
-
-  private projectKeetMessages(messages: AgentMessage[]): AgentMessage[] {
+  private async projectKeetMessages(messages: readonly Message[]): Promise<readonly Message[]> {
+    const queued = this.sessionStorage.nextKeet()
+    let nativeMessage: Message | undefined
+    if (queued) {
+      const record = await this.nativeStorage!.submissionByRequest(ROOT_CONVERSATION_ID, queued.operationId, this.nativeContext!)
+      if (record?.entry) nativeMessage = (await this.nativeStorage!.entry(record.entry, this.nativeContext!))?.entry.model?.[0]
+    }
     return messages.map(message => {
       if (message.role !== 'user') return message
-      // Maintenance preparation is deserialized; compare native timestamp/content,
-      // not array identity. Display entries remain untouched.
-      const entry = this.sessionStorage.entriesInOrder().find(entry => entry.type === 'message' &&
-        entry.message.role === 'user' && entry.message.timestamp === message.timestamp &&
-        JSON.stringify(entry.message.content) === JSON.stringify(message.content) && this.sessionStorage.keetSource(entry.id))
+      if (queued && nativeMessage?.role === 'user' && message.timestamp === nativeMessage.timestamp && JSON.stringify(message.content) === JSON.stringify(nativeMessage.content)) return { ...message, content: queued.prompt }
+      const entry = this.sessionStorage.entriesInOrder().find(entry => entry.type === 'message' && entry.message.role === 'user' && entry.message.timestamp === message.timestamp && JSON.stringify(entry.message.content) === JSON.stringify(message.content) && this.sessionStorage.keetSource(entry.id))
       const prompt = entry && this.sessionStorage.keetModelPrompt(entry.id)
       return prompt ? { ...message, content: prompt } : message
     })
   }
-
-  private compactionSettings(): CompactionSettings {
-    return this.sessionStorage.getSetting<CompactionSettings>('compaction') ?? { ...DEFAULT_COMPACTION_SETTINGS }
-  }
-
-  private async createExport(entryId?: string): Promise<SessionExport> {
-    const entries = entryId ? this.sessionStorage.getPathToRoot(entryId) : []
-    const files = await this.listAllWorkspaceFiles()
-    const contents: Array<{ path: string; content: string; encoding: 'base64' }> = []
-    for (const { path } of files) {
-      const content = await this.workspace.readFileBytes(path)
-      if (content !== null) contents.push({ path, content: encodeBase64(content), encoding: 'base64' })
+  private compactionSettings(): CompactionSettings { return this.sessionStorage.getSetting<CompactionSettings>('compaction') ?? { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 } }
+  private timelineIds: string[] = []
+  private async syncNativeEntries(): Promise<void> {
+    const lane = await this.getLane()
+    let cursor: Parameters<typeof lane.entries>[2]
+    const entries: EntryRecord[] = []
+    do { const page = await lane.entries({}, 250, cursor, this.nativeContext!); entries.push(...page.items); cursor = page.next } while (cursor)
+    this.timelineIds = entries.sort((a,b) => a.id-b.id).map(entry => this.sessionStorage.sourceId(entry.id))
+    const records = this.sessionStorage.chatRecords()
+    const wakes = new Map<number, WakeSource>()
+    for (const { operationId, source } of this.sessionStorage.wakeSources()) {
+      const submission = await this.nativeSubmission(operationId)
+      if (submission?.entry) wakes.set(submission.entry, source)
     }
-    return {
-      metadata: this.sessionStorage.getMetadataSync(),
-      entries,
-      compaction: this.compactionSettings(),
-      files: contents,
+    for (const entry of entries.sort((a,b) => a.id-b.id)) {
+      const id = this.sessionStorage.sourceId(entry.id)
+      if (this.sessionStorage.getEntrySync(id)) continue
+      const rows = this.sessionStorage.entriesInOrder()
+      const base = { id, parentId: rows.at(-1)?.id ?? null, seq: (rows.at(-1)?.seq ?? 0)+1, timestamp: entry.model?.[0] && 'timestamp' in entry.model[0] ? entry.model[0].timestamp : Date.now() }
+      if (entry.kind === 'pi.compaction') this.sessionStorage.archive({ ...base, type: 'compaction', summary: messageText(entry.model?.[0]), firstKeptEntryId: this.sessionStorage.sourceId(entry.head ?? entry.id), tokensBefore: 0 })
+      else if (entry.model?.[0] && entry.kind !== 'pi.system') this.sessionStorage.archive({ ...base, type: 'message', message: wakes.has(entry.id) ? { role: 'custom', customType: WAKE_CUSTOM_TYPE, content: messageText(entry.model[0]), timestamp: base.timestamp, details: wakes.get(entry.id) } : entry.model[0] })
     }
+    for (const id of records.keys()) await this.lookupChat(id)
+    const next = this.sessionStorage.nextKeet()
+    if (next) { const native = await this.nativeSubmission(next.operationId); if (native?.entry) this.sessionStorage.acceptKeet(next.sequence, this.sessionStorage.sourceId(native.entry)) }
   }
 
   private async waitUntilInitialized(): Promise<void> {
@@ -1213,7 +841,7 @@ export class PiSession extends HostedAgent {
   }
 
   private async withExclusiveOperation<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.active) throw new Error('Pi is currently running.')
+    if (await this.compactBusy()) throw new Error('Pi is currently running.')
     this.active = true
     try {
       return await operation()
@@ -1324,24 +952,6 @@ function photoBytes(input: PhotoUpload) {
   return { original, preview, model }
 }
 
-function validPrompt(prompt: string): string {
-  prompt = prompt.trim()
-  if (!prompt) throw new Error('A prompt is required.')
-  if (prompt.length > 20_000) throw new Error('Prompt exceeds 20,000 characters.')
-  return prompt
-}
-
-function modelConfigKey(env: ModelEnvironment): string {
-  return JSON.stringify([env.provider, env.model, env.apiKey, env.thinkingLevel, env.maxOutputTokens])
-}
-
-function validPhotoPrompt(prompt: string, photoIds?: string[]): string {
-  prompt = prompt.trim()
-  if (!prompt && !photoIds?.length) throw new Error('A prompt or photo is required.')
-  if (prompt.length > 20_000) throw new Error('Prompt exceeds 20,000 characters.')
-  return prompt
-}
-
 function isPhotoBytes(bytes: Uint8Array, type: string): boolean {
   if (type === 'image/jpeg') return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9
   if (type === 'image/png') return [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value)
@@ -1353,10 +963,6 @@ function isPhotoBytes(bytes: Uint8Array, type: string): boolean {
 async function promptFingerprint(prompt: string): Promise<string> {
   const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(prompt))
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
-function submissionFingerprintInput(prompt: string, photoIds: readonly string[] | undefined): string {
-  return photoIds?.length ? JSON.stringify([prompt, photoIds]) : prompt
 }
 
 function storedEntry(seq: number, entry: Entry): StoredSessionEntry {
@@ -1375,14 +981,6 @@ function storedEntry(seq: number, entry: Entry): StoredSessionEntry {
 function browserMessage(message: Extract<Entry, { type: 'message' }>['message']): StoredSessionEntry['message'] {
   if (!('content' in message) || !Array.isArray(message.content)) return message
   return { ...message, content: message.content.filter((part) => part.type !== 'image') }
-}
-
-function entryPreview(entry: Entry): string {
-  let value = ''
-  if (entry.type === 'message') value = messageText(entry.message)
-  else if (entry.type === 'compaction' || entry.type === 'branch_summary') value = entry.summary
-  else if (entry.type === 'custom') value = entry.customType
-  return value.replace(/\s+/g, ' ').trim().slice(0, 160)
 }
 
 function messageText(message: unknown): string {

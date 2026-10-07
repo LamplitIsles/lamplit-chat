@@ -3,23 +3,6 @@ export const PI_REGISTRY_NAME = 'PiRegistry'
 export const PI_AGENT_PREFIX = 'api/agents'
 export const PI_REGISTRY_INSTANCE = 'singleton'
 
-export type PiStreamEvent =
-  | { type: 'accepted'; operationId: string; entryId: string }
-  | { type: 'text_start' | 'text_end' | 'thinking_start' | 'thinking_end' | 'done' }
-  | { type: 'text_delta' | 'thinking_delta'; delta: string }
-  | { type: 'tool_execution_start'; callId: string; name: string; args: unknown }
-  | { type: 'tool_execution_update'; callId: string; name: string; result: unknown }
-  | { type: 'tool_execution_end'; callId: string; name: string; isError: boolean; result?: unknown }
-  | { type: 'error'; error: string }
-
-export type PromptAdmissionStatus =
-  | { state: 'accepted'; operationId: string; entryId: string; running: boolean }
-  | { state: 'settled'; operationId: string; entryId: string; status: 'completed' | 'failed' | 'aborted' | 'declined' }
-  | { state: 'uncertain'; operationId: string }
-  | { state: 'missing'; operationId: string }
-
-export type SteerAdmissionStatus = { state: 'accepted'; submissionId: string; entryId: string } | { state: 'uncertain' | 'missing'; submissionId: string }
-
 export type ConversationPhoto = { id: string; operationId: string; name: string; mediaType: string; created: number; order: number; entryId?: string }
 export type PhotoUpload = { operationId: string; id: string; order: number; name: string; mediaType: string; original: string; preview: string; model: string }
 export type ConversationPhotoPage = { images: ConversationPhoto[]; nextCursor?: string }
@@ -59,19 +42,6 @@ export type SessionSummary = {
   lineage: SessionLineage
 }
 
-export type SessionTreeNode = {
-  seq: number
-  id: string
-  parentId: string | null
-  type: string
-  role?: string
-  preview: string
-  label?: string
-  timestamp: string
-  isLeaf: boolean
-  isOnActiveBranch: boolean
-}
-
 export type StoredSessionEntry = {
   seq: number
   id: string
@@ -92,7 +62,6 @@ export type StoredSessionEntry = {
 export type SessionOverview = SessionSummary & {
   revision: number
   running: boolean
-  tree: SessionTreeNode[]
   compaction: CompactionSettings
 }
 
@@ -194,23 +163,13 @@ export type ApplyMemoryExtractionInput = {
 export interface PiSessionContract {
   readonly state: unknown
   getOverview(): Promise<SessionOverview>
-  getBranch(leafId?: string): Promise<SessionBranch>
-  navigateTree(entryId: string, options?: { summarize?: boolean; customInstructions?: string; label?: string }): Promise<{ editorText?: string }>
   setSessionName(name: string): Promise<SessionOverview>
-  setEntryLabel(entryId: string, label?: string): Promise<SessionOverview>
-  compact(focus?: string): Promise<{ summary: string; tokensBefore: number }>
   updateCompactionSettings(settings: CompactionSettings): Promise<CompactionSettings>
-  submitSteer(input: { submissionId: string; prompt: string; photoIds?: string[] }): Promise<SteerAdmissionStatus>
-  getSteerAdmission(submissionId: string): Promise<SteerAdmissionStatus>
-  followUp(prompt: string): Promise<void>
-  abort(): Promise<void>
   listFiles(): Promise<WorkspaceFile[]>
   readWorkspaceFile(path: string): Promise<WorkspaceFileContent>
   listTimedWakes(): Promise<import('./timed-wake').TimedWake[]>
   listDiary(): Promise<string[]>
   readDiary(name: string): Promise<DiaryEntry | null>
-  prompt(input: { operationId: string; prompt: string; photoIds?: string[] }): Promise<void>
-  getPromptAdmission(operationId: string): Promise<PromptAdmissionStatus>
   uploadPhoto(input: PhotoUpload): Promise<ConversationPhoto>
   listConversationPhotos(input?: { cursor?: string; limit?: number }): Promise<ConversationPhotoPage>
 }
@@ -224,8 +183,6 @@ export interface PiRegistryContract {
   searchSessions(input: SessionListInput): Promise<SessionSearchResult[]>
   renameSession(sessionId: string, name?: string): Promise<SessionSummary>
   deleteSession(sessionId: string): Promise<void>
-  forkSession(input: { sourceSessionId: string; entryId: string; name?: string }): Promise<SessionSummary>
-  cloneSession(input: { sourceSessionId: string; name?: string }): Promise<SessionSummary>
   getRelationshipSnapshot(input?: { limit?: number; before?: number }): Promise<RelationshipSnapshot>
   updateRelationship(input: RelationshipUpdate): Promise<RelationshipState>
 }

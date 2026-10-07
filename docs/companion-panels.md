@@ -2,7 +2,7 @@
 
 # Shared companion panels
 
-The shared app reads the original Pi stores through `lamplit.chat.v1` on the
+The shared app reads the original Pi stores through `lamplit.chat.v2` on the
 existing authenticated `/api/chat/socket`. `@lamplit/contracts`, maintained in
 `lamplit-app/packages/contracts`, owns the compiled schemas and public types.
 There is no additional transport or content replica. The shared App is the
@@ -106,9 +106,10 @@ APP_ACCEPTANCE_EVIDENCE=/absolute/test-owned/evidence/panels \
   bun panels-browser.mjs
 ```
 
-The unchanged runner passes at 390/1280 against actual native storage and public
+The unchanged runner checks 390/1280 against actual native storage and public
 methods, including original PNG save bytes, reminder source after reload, text
-chat and microphone PCM to draft. Use a fresh owned root and free port; inherited
+chat and microphone PCM to draft. The implementation report records current run
+results and limitations. Use a fresh owned root and free port; inherited
 Cloudflare credentials and dotenv loading are excluded. Recheck the parent and
 replacement hashes after acceptance. Stop only this harness with Ctrl-C; its
 fixture evidence remains for inspection. These commands do not deploy.

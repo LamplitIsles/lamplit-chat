@@ -1,4 +1,4 @@
-import type { AgentHarnessTool } from '@earendil-works/pi-agent-core'
+import type { ToolRegistration } from '@earendil-works/pi-durable'
 import { Type } from 'typebox'
 import { boundedRequest, isOperationAborted, isRequestTimeout, ResponseBodyLimitError, readResponseText } from './web-request'
 
@@ -30,12 +30,14 @@ async function submissionKey(instanceId: string, sessionId: string, toolCallId: 
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-export function createPlatformFeedbackTools(env: FeedbackEnvironment, instanceId: string | null, sessionId: string): AgentHarnessTool<undefined>[] {
+export function createPlatformFeedbackTools(env: FeedbackEnvironment, instanceId: string | null, sessionId: string): ToolRegistration[] {
   if (env.HOSTED_MODE !== 'true' || !instanceId || !uuid.test(instanceId) || !uuid.test(sessionId)) return []
   return [{
-    name: 'submit_platform_feedback', label: 'Submit Lamplit feedback', parameters,
+    name: 'submit_platform_feedback', parameters,
     description: 'Autonomously submit a Lamplit product problem or improvement suggestion to the platform for the Human to view in the management app’s My feedback. Provide a problem, optional circumstances and expected improvement. Never include secrets or private conversation transcripts. This authorization applies only to this feedback tool.',
-    execute: async (toolCallId, input, _update, _tool, _invocation, context) => {
+    replay: 'safe',
+    execute: async (input, api, context) => {
+      const toolCallId = api.callId
       if (typeof toolCallId !== 'string' || !toolCallId.trim()) return failure('missing_call_id', 'A trusted tool call ID is required.', 'not_sent')
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !fields.includes(key as typeof fields[number]))) return failure('invalid_input', 'Only the three feedback description fields are allowed.', 'not_sent')
       const descriptions = { problem: '', circumstances: '', expected_improvement: '' }
@@ -75,5 +77,5 @@ export function createPlatformFeedbackTools(env: FeedbackEnvironment, instanceId
         return failure(code, sent ? unconfirmed : 'Feedback was not sent.', sent ? 'unconfirmed' : 'not_sent')
       }
     },
-  } satisfies AgentHarnessTool<undefined, typeof parameters>]
+  } satisfies ToolRegistration<typeof parameters>]
 }

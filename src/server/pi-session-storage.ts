@@ -1,12 +1,10 @@
 import { keetIdentity, keetPrompt, keetSource, keetDisplayText, type KeetFrame, type KeetSource } from './keet-feed'
 import { nativeSearchNode } from './conversation-search'
-import { WAKE_CUSTOM_TYPE, occurrenceKey, type TimedWake, type WakeSource } from '../shared/timed-wake'
+import { occurrenceKey, type TimedWake, type WakeSource } from '../shared/timed-wake'
 import { nextWake } from './timed-wake'
-import { branchTip, laneState, operationMeta, setValue, pendingEntry, type CommittedWrite, type Entry, type PendingEntry, type SessionMetadata } from '@earendil-works/pi-agent-core/harness/session'
-import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
+import { ConversationArchive, type ArchiveEntry as Entry } from './conversation-archive'
 import type { ConversationPhoto, ConversationPhotoPage, SessionIndexEvent, SessionLineage } from '../shared/pi-contract'
 import { submissionIdentity, type ChatAdmission } from './chat-adapter'
-import { PiV4Storage } from './pi-v4-storage'
 
 export type PiSessionMetadata = {
   id: string
@@ -16,28 +14,13 @@ export type PiSessionMetadata = {
 }
 
 type MetadataRow = { value: string }
-type PromptSubmissionRow = {
-  operation_id: string
-  fingerprint: string
-  state: 'submitting' | 'accepted'
-  entry_id: string | null
-  created_at: string
-}
 type PhotoRow = { id: string; operation_id: string; name: string; media_type: string; created_at: number; ordinal: number; entry_id: string | null }
 function photoRow(row: PhotoRow): ConversationPhoto {
   return { id: row.id, operationId: row.operation_id, name: row.name, mediaType: row.media_type, created: row.created_at, order: row.ordinal, ...(row.entry_id ? { entryId: row.entry_id } : {}) }
 }
-export type PromptSubmissionRecord = {
-  operationId: string
-  fingerprint: string
-  state: 'submitting' | 'accepted'
-  entryId?: string
-  createdAt: string
-}
-
-/** Application metadata and indexing around Pi's v4 durable Storage. */
-export class PiSessionStorage extends PiV4Storage {
-  constructor(private readonly durable: DurableObjectStorage) {
+/** Domain associations, media and indexing. Native Pi owns all execution state. */
+export class PiSessionStorage extends ConversationArchive {
+  constructor(durable: DurableObjectStorage) {
     super(durable)
     durable.sql.exec(`
       CREATE TABLE IF NOT EXISTS keet_feed (sequence INTEGER PRIMARY KEY, identity TEXT NOT NULL UNIQUE, frame TEXT NOT NULL);
@@ -106,26 +89,17 @@ export class PiSessionStorage extends PiV4Storage {
   nativeInputs(): Array<{ operationId: string; text: string; photoIds: string[]; photos: ConversationPhoto[]; kind: 'prompt' | 'steer' }> {
     return this.durable.sql.exec<{ operation_id: string; payload: string }>('SELECT * FROM chat_inputs ORDER BY rowid').toArray().map(row => ({ operationId: row.operation_id, ...JSON.parse(row.payload) }))
   }
-  inputEntry(id: string): string | undefined { return this.getPromptSubmission(id)?.entryId ?? this.steerRecord(id)?.entryId }
+  inputEntry(id: string): string | undefined { return this.getSetting<Record<string,string>>('inputEntries')?.[id] }
+  correlateInput(id: string, entryId: string): void { this.setSetting('inputEntries', { ...this.getSetting<Record<string,string>>('inputEntries'), [id]: entryId }); this.acceptPhotos(id, entryId) }
   dropped(entryId: string): boolean { return !!this.durable.sql.exec('SELECT 1 FROM chat_dropped WHERE entry_id = ?', entryId).toArray()[0] }
   replaced(id: string): boolean { return !!this.durable.sql.exec('SELECT 1 FROM chat_replaced WHERE operation_id = ?', id).toArray()[0] }
   eligible(id: string): boolean {
     if (this.replaced(id)) return false
     const entry = this.inputEntry(id)
-    return entry ? this.dropped(entry) && !this.getEntrySync(entry) : this.chatRecords().get(id)?.rejected === true
+    return this.getSetting<boolean>(`withdrawn:${id}`) === true || (!entry && this.chatRecords().get(id)?.rejected === true)
   }
-  private replaceForAdmission(id: string): void {
-    const record = this.chatRecords().get(id)
-    if (!record?.replacementSourceIds?.length) return
-    // Operation reconciliation precedes obsolete-source rejection.
-    const entry = this.inputEntry(id)
-    if (entry) return
-    for (const source of record.replacementSourceIds) {
-      if (source === id || !this.eligible(source)) throw new Error('Recovery source is no longer eligible')
-    }
-    for (const source of record.replacementSourceIds) this.durable.sql.exec('INSERT INTO chat_replaced(operation_id) VALUES (?)', source)
-  }
-
+  markReplaced(id: string): void { this.durable.sql.exec('INSERT OR IGNORE INTO chat_replaced(operation_id) VALUES (?)', id) }
+  withdrawInput(id: string): void { this.setSetting(`withdrawn:${id}`, true) }
   keetCheckpoint(): number {
     return this.durable.sql.exec<{ sequence: number }>('SELECT sequence FROM keet_feed ORDER BY sequence DESC LIMIT 1').toArray()[0]?.sequence ?? 0
   }
@@ -199,6 +173,10 @@ export class PiSessionStorage extends PiV4Storage {
     this.durable.sql.exec("UPDATE keet_queue SET state = 'settled' WHERE sequence = ? AND entry_id IS NOT NULL", sequence)
   }
 
+  acceptedKeetForMigration() {
+    return this.durable.sql.exec<{ sequence: number; operation_id: string; entry_id: string | null }>("SELECT sequence, operation_id, entry_id FROM keet_queue WHERE state = 'accepted' ORDER BY sequence").toArray()
+  }
+
   keetSource(entryId: string): KeetSource | undefined {
     const row = this.durable.sql.exec<{ source: string }>('SELECT source FROM keet_sources WHERE entry_id = ?', entryId).toArray()[0]
     return row ? JSON.parse(row.source) as KeetSource : undefined
@@ -206,6 +184,10 @@ export class PiSessionStorage extends PiV4Storage {
 
   keetModelPrompt(entryId: string): string | undefined {
     return this.durable.sql.exec<{ prompt: string }>('SELECT prompt FROM keet_sources WHERE entry_id = ?', entryId).toArray()[0]?.prompt
+  }
+
+  wakeSources(): Array<{ operationId: string; source: WakeSource }> {
+    return this.durable.sql.exec<{ key: string; value: string }>("SELECT key,value FROM pi_session_settings WHERE key LIKE 'wakeSource:%'").toArray().map(row => ({ operationId: row.key.slice('wakeSource:'.length), source: JSON.parse(row.value) }))
   }
 
   timedWakes(): TimedWake[] { return this.getSetting<TimedWake[]>('timedWakes') ?? [] }
@@ -217,45 +199,7 @@ export class PiSessionStorage extends PiV4Storage {
     if (wake.plan.type !== 'once') wakes.push({ ...wake, nextAt: nextWake(wake.plan, Math.max(now, Date.parse(wake.nextAt))) })
     this.setSetting('timedWakes', wakes)
   }
-  // The acceptance identity and next occurrence commit with Pi's durable inbox.
-  protected override beforeCommit(writes: CommittedWrite[]): void {
-    const address = pendingEntry('')
-    const metaAddress = operationMeta('')
-    const state = this.getValueSync(laneState('main'))?.value
-    for (const write of writes) {
-      if (write.kind !== 'value') continue
-      if (write.op === 'set' && write.namespace === metaAddress.namespace && write.key.startsWith(metaAddress.key)) {
-        const meta = write.value as import('@earendil-works/pi-agent-core/harness/session').OperationMeta
-        if (meta.lane === 'main') this.replaceForAdmission(meta.operationId)
-      }
-      if (write.namespace !== address.namespace || !write.key.startsWith(address.key)) continue
-      const entryId = write.key.slice(address.key.length)
-      if (write.op === 'delete' && state?.inbox.some(item => item.entryId === entryId) &&
-          !this.getEntrySync(entryId) && !writes.some(item => item.kind === 'entry' && item.id === entryId)) {
-        const pending = this.getValueSync(pendingEntry(entryId))?.value
-        if (pending?.type === 'message' && pending.payload.role === 'user') this.durable.sql.exec('INSERT OR IGNORE INTO chat_dropped(entry_id) VALUES (?)', entryId)
-      }
-      if (write.op === 'set') {
-        const pending = write.value as PendingEntry
-        if (pending.type === 'message' && pending.payload.role === 'user') {
-          const row = this.durable.sql.exec<{ submission_id: string }>('SELECT submission_id FROM pi_steer_submissions WHERE created_at = ?', String(pending.payload.timestamp)).toArray()[0]
-          if (row) this.replaceForAdmission(row.submission_id)
-        }
-      }
-    }
-    for (const write of writes) {
-      if (write.kind !== 'value' || write.op !== 'set' || write.namespace !== address.namespace || !write.key.startsWith(address.key)) continue
-      const pending = write.value as PendingEntry
-      if (pending.type !== 'message' || pending.payload.role !== 'custom' || pending.payload.customType !== WAKE_CUSTOM_TYPE) continue
-      const source = pending.payload.details as WakeSource
-      if (this.wakeReceipt(source)) throw new Error('Wake occurrence already accepted.')
-      const wake = this.timedWakes().find(item => item.id === source.wakeId && item.revision === source.revision && item.nextAt === source.scheduledAt)
-      if (!wake) throw new Error('Wake occurrence is obsolete.')
-      this.durable.sql.exec('INSERT INTO timed_wake_receipts(occurrence, entry_id) VALUES (?, ?)', occurrenceKey(source), write.key.slice(address.key.length))
-      this.advanceWake(wake, Date.now())
-    }
-  }
-
+  recordWake(source: WakeSource, entryId: string): void { this.durable.sql.exec('INSERT OR IGNORE INTO timed_wake_receipts(occurrence,entry_id) VALUES (?,?)', occurrenceKey(source), entryId) }
   initialize(metadata: PiSessionMetadata): boolean {
     if (this.isInitialized()) return false
     this.writeMetadata(metadata)
@@ -272,14 +216,7 @@ export class PiSessionStorage extends PiV4Storage {
     return JSON.parse(row.value) as PiSessionMetadata
   }
 
-  coreMetadata(): SessionMetadata {
-    const metadata = this.getMetadataSync()
-    return { id: metadata.id, createdAt: Date.parse(metadata.createdAt), storageVersion: 1 }
-  }
-
-  getLeafId(): string | null {
-    return this.getValueSync(branchTip('main'))?.value ?? null
-  }
+  getLeafId(): string | null { return this.entriesInOrder().at(-1)?.id ?? null }
 
   getEntriesWithSeq(): Array<{ seq: number; entry: Entry }> {
     return this.entriesInOrder().map((entry) => ({ seq: entry.seq, entry }))
@@ -295,90 +232,12 @@ export class PiSessionStorage extends PiV4Storage {
     return path
   }
 
-  async replace(metadata: PiSessionMetadata, entries: Entry[]): Promise<void> {
-    this.reset()
-    for (const table of ['keet_feed', 'keet_queue', 'keet_context', 'keet_sources']) this.durable.sql.exec(`DELETE FROM ${table}`)
-    this.durable.sql.exec('DELETE FROM pi_prompt_submissions')
-    for (const table of ['chat_inputs', 'chat_replaced', 'chat_dropped', 'chat_submissions']) this.durable.sql.exec(`DELETE FROM ${table}`)
-    this.durable.sql.exec('DELETE FROM pi_steer_submissions')
-    this.durable.sql.exec('DELETE FROM conversation_photos')
-    this.durable.sql.exec('DELETE FROM conversation_photo_groups')
-    this.writeMetadata(metadata)
-    this.restoreEntries(entries)
-    await this.commit([setValue(branchTip('main'), entries.at(-1)?.id ?? null)], BACKGROUND_CONTEXT)
+  migrationAssociations(): Array<{ id: string; entryId: string }> {
+    return [
+      ...this.durable.sql.exec<{ operation_id: string; entry_id: string }>('SELECT operation_id,entry_id FROM pi_prompt_submissions WHERE entry_id IS NOT NULL').toArray().map(row => ({ id: row.operation_id, entryId: row.entry_id })),
+      ...this.durable.sql.exec<{ submission_id: string; entry_id: string }>('SELECT submission_id,entry_id FROM pi_steer_submissions WHERE entry_id IS NOT NULL').toArray().map(row => ({ id: row.submission_id, entryId: row.entry_id })),
+    ]
   }
-
-  admitSteer(submissionId: string, fingerprint: string, photoIds: string[] = []): { created: boolean; timestamp: number; entryId?: string } {
-    this.freezePhotos(submissionId, photoIds)
-    const row = this.durable.sql.exec<{ fingerprint: string; entry_id: string | null; created_at: string }>('SELECT fingerprint, entry_id, created_at FROM pi_steer_submissions WHERE submission_id = ?', submissionId).toArray()[0]
-    if (row) {
-      if (row.fingerprint !== fingerprint) throw new Error('Steer submission identity conflict.')
-      return { created: false, timestamp: Number(row.created_at), ...(row.entry_id ? { entryId: row.entry_id } : {}) }
-    }
-    const latest = this.durable.sql.exec<{ created_at: string }>('SELECT created_at FROM pi_steer_submissions ORDER BY CAST(created_at AS INTEGER) DESC LIMIT 1').toArray()[0]
-    const timestamp = Math.max(Date.now(), Number(latest?.created_at ?? 0) + 1)
-    this.durable.sql.exec('INSERT INTO pi_steer_submissions(submission_id, fingerprint, created_at) VALUES (?, ?, ?)', submissionId, fingerprint, String(timestamp))
-    return { created: true, timestamp }
-  }
-
-  steerRecord(submissionId: string): { entryId?: string; timestamp: number; fingerprint: string } | undefined {
-    const row = this.durable.sql.exec<{ entry_id: string | null; created_at: string; fingerprint: string }>('SELECT entry_id, created_at, fingerprint FROM pi_steer_submissions WHERE submission_id = ?', submissionId).toArray()[0]
-    return row ? { timestamp: Number(row.created_at), fingerprint: row.fingerprint, ...(row.entry_id ? { entryId: row.entry_id } : {}) } : undefined
-  }
-
-  acceptSteer(submissionId: string, entryId: string): void {
-    const row = this.steerRecord(submissionId)
-    if (!row || (row.entryId && row.entryId !== entryId)) throw new Error('Steer correlation conflict.')
-    this.durable.sql.exec('UPDATE pi_steer_submissions SET entry_id = ? WHERE submission_id = ?', entryId, submissionId)
-  }
-
-  getPromptSubmission(operationId: string): PromptSubmissionRecord | undefined {
-    const row = this.durable.sql.exec<PromptSubmissionRow>(
-      'SELECT * FROM pi_prompt_submissions WHERE operation_id = ?', operationId,
-    ).toArray()[0]
-    return row ? {
-      operationId: row.operation_id,
-      fingerprint: row.fingerprint,
-      state: row.state,
-      ...(row.entry_id === null ? {} : { entryId: row.entry_id }),
-      createdAt: row.created_at,
-    } : undefined
-  }
-
-  admitPromptSubmission(operationId: string, fingerprint: string, photoIds: string[] = []): { record: PromptSubmissionRecord; created: boolean } {
-    this.freezePhotos(operationId, photoIds)
-    const existing = this.getPromptSubmission(operationId)
-    if (existing) {
-      if (existing.fingerprint !== fingerprint) throw new Error('Prompt submission identity conflict.')
-      return { record: existing, created: false }
-    }
-    this.durable.sql.exec(
-      "INSERT INTO pi_prompt_submissions(operation_id, fingerprint, state, entry_id, created_at) VALUES (?, ?, 'submitting', NULL, ?)",
-      operationId, fingerprint, new Date().toISOString(),
-    )
-    return { record: this.getPromptSubmission(operationId)!, created: true }
-  }
-
-  acceptPromptSubmission(operationId: string, entryId: string): PromptSubmissionRecord {
-    const existing = this.getPromptSubmission(operationId)
-    if (!existing) throw new Error('Prompt submission is missing before Pi correlation.')
-    if (existing.state === 'accepted') {
-      if (existing.entryId !== entryId) throw new Error('Prompt submission entry identity conflict.')
-      this.acceptPhotos(operationId, entryId)
-      return existing
-    }
-    this.durable.sql.exec(
-      "UPDATE pi_prompt_submissions SET state = 'accepted', entry_id = ? WHERE operation_id = ? AND state = 'submitting'",
-      entryId, operationId,
-    )
-    const accepted = this.getPromptSubmission(operationId)
-    if (accepted?.state !== 'accepted' || accepted.entryId !== entryId) {
-      throw new Error('Prompt submission correlation was not persisted.')
-    }
-    this.acceptPhotos(operationId, entryId)
-    return accepted
-  }
-
   reservePhoto(photo: ConversationPhoto, fingerprint: string, originalBytes: number): boolean {
     const existing = this.durable.sql.exec<{ fingerprint: string; operation_id: string; ordinal: number; ready: number }>(
       'SELECT fingerprint, operation_id, ordinal, ready FROM conversation_photos WHERE id = ?', photo.id,
@@ -406,7 +265,7 @@ export class PiSessionStorage extends PiV4Storage {
     return row && JSON.parse(row.photo_ids) as string[]
   }
 
-  private freezePhotos(operationId: string, ids: string[]): void {
+  freezePhotos(operationId: string, ids: string[]): void {
     const frozen = this.frozenPhotoIds(operationId)
     if (frozen) {
       if (JSON.stringify(frozen) !== JSON.stringify(ids)) throw new Error('Photo group identity conflict.')

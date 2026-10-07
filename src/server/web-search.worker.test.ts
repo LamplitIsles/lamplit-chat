@@ -1,18 +1,18 @@
 import { runInDurableObject } from 'cloudflare:test'
 import type { PiRegistry } from './pi-registry'
 import type { PiSession } from './pi-session'
-import type { PiHarness } from './create-pi-harness'
+import { runNative, type NativeFixture } from './fixtures/native-session'
 import { env } from 'cloudflare:workers'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import worker from '../server'
 import { executeSearch, searchSettings, createWebTools, type SearchEnvironment } from './web-tools'
 import { fetchPage, fetchLinks, PAGE_MAX_BYTES, PAGE_MAX_CHARACTERS, PAGE_MAX_TITLE_CHARACTERS } from './web-fetch'
 import { search } from './web-search-providers'
-import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 
 const owners = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222']
 function toolValue(value: Awaited<ReturnType<ReturnType<typeof createWebTools>[number]['execute']>>) {
-  const text = value.content.find(item => item.type === 'text')
+  const text = value.content!.find(item => item.type === 'text')
   if (!text || text.type !== 'text') throw new Error('Expected text tool result')
   return JSON.parse(text.text)
 }
@@ -48,15 +48,17 @@ describe('web tools in the Worker executor', () => {
     await runInDurableObject(stub, async instance => {
       const localEnv = { ...env, WEB_SEARCH_PROVIDER: 'exa', WEB_SEARCH_API_KEY: 'fixture-search-key' }
       Reflect.set(instance, 'env', localEnv)
-      const getHarness = () => Reflect.get(instance, 'getHarness').call(instance) as Promise<PiHarness>
+      vi.spyOn(instance as unknown as { scheduleMemoryExtraction(): void }, 'scheduleMemoryExtraction').mockImplementation(() => {})
+      await (instance as unknown as NativeFixture).native.dispose()
+      const native = instance as unknown as NativeFixture
+      const getHarness = () => native.getHarness()
       const harness = await getHarness()
-      const lane = await harness.lane('main', BACKGROUND_CONTEXT)
-      await lane.prompt('Search fictional lighthouses', undefined, BACKGROUND_CONTEXT)
+      await runNative(instance, 'Search fictional lighthouses')
       expect(requests[0].tools.map(tool => tool.function.name)).toContain('web_search')
       expect(JSON.stringify(requests[1].messages.filter(message => message.role === 'tool'))).toContain('Fixture excerpt')
       localEnv.WEB_SEARCH_API_KEY = ''
       expect(await getHarness()).toBe(harness)
-      await lane.prompt('Read the fictional public page', undefined, BACKGROUND_CONTEXT)
+      await runNative(instance, 'Read the fictional public page')
       expect(requests[2].tools.map(tool => tool.function.name)).not.toContain('web_search')
       expect(requests[2].tools.map(tool => tool.function.name)).toContain('web_fetch')
       expect(requests[2].tools.map(tool => tool.function.name)).toContain('web_links')
@@ -100,7 +102,7 @@ describe('web tools in the Worker executor', () => {
       return Response.json({ web: { results: [] } })
     })
     const tool = createWebTools(settings, owners[0])[0]
-    const call = () => tool.execute('fixture-call', { query: 'sea' }, () => {}, undefined, undefined!, BACKGROUND_CONTEXT)
+    const call = () => tool.execute({ query: 'sea' }, { callId: 'fixture-call' } as never, BACKGROUND_CONTEXT)
     expect(toolValue(await call())).toEqual({ provider: 'Exa', results: [] })
     current = { enabled: true, provider: 'exa', apiKey: 'replacement-key' }
     await call()
@@ -137,7 +139,7 @@ describe('web tools in the Worker executor', () => {
   it('bounds failures without leaking upstream keys, handles malformed/config failures, cancellation and timeout', async () => {
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('SECRET-provider-debug', { status: 401 }))
     const tool = createWebTools({ WEB_SEARCH_PROVIDER: 'exa', WEB_SEARCH_API_KEY: 'SECRET-key' }, null)[0]
-    const result = await tool.execute('call', { query: 'sea' }, () => {}, undefined, undefined!, BACKGROUND_CONTEXT)
+    const result = await tool.execute({ query: 'sea' }, { callId: 'call' } as never, BACKGROUND_CONTEXT)
     expect(JSON.stringify(result)).not.toContain('SECRET')
     expect(toolValue(result).code).toBe('upstream_error')
     fetcher.mockResolvedValue(Response.json({ content: [{ type: 'web_search_tool_result', content: { type: 'web_search_tool_result_error' } }] }))
@@ -262,7 +264,7 @@ describe('web_links in Worker runtime', () => {
     })
     for (const settings of [{}, { HOSTED_MODE: 'true', PLATFORM: { fetch: platform } }]) {
       const tool = createWebTools(settings, null).find(tool => tool.name === 'web_links')!
-      expect(toolValue(await tool.execute('links', { url: 'https://93.184.216.34/' }, () => {}, undefined, undefined!, BACKGROUND_CONTEXT))).toEqual({ url: 'https://93.184.216.34/', links: [{ text: 'Next', url: 'https://93.184.216.34/next' }], truncated: false })
+      expect(toolValue(await tool.execute({ url: 'https://93.184.216.34/' }, { callId: 'links' } as never, BACKGROUND_CONTEXT))).toEqual({ url: 'https://93.184.216.34/', links: [{ text: 'Next', url: 'https://93.184.216.34/next' }], truncated: false })
     }
     expect(platform).not.toHaveBeenCalled()
   })

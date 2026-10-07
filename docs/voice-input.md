@@ -40,13 +40,13 @@ While recording, PCM streams through the Worker to Alibaba for processing. Cance
 
 ## Committed local fixture and platform handoff
 
-Use the root npm lockfile and the adjacent compiled contracts package. The current
+Use the root npm lockfile and the approved immutable compiled contracts package. The current
 six-suite native host and exact frozen voice runner commands are in
 [default-shared-frontend.md](default-shared-frontend.md). The retained protocol
 fixture can also be run independently:
 
 ```sh
-VOICE_FIXTURE_PORT=8896 node scripts/voice-input-local.mjs
+NATIVE_FIXTURE_PORT=8896 node scripts/native-submissions-local.mjs voice
 npx vitest run --config vitest.worker.config.ts src/server/voice.worker.test.ts
 ```
 
@@ -55,27 +55,16 @@ WebSocket upstream. The removed frontend fixture/Vite build is no longer a test
 entry. Current browser acceptance uses the approved production App, real
 AudioContext/AudioWorklet and actual native relay, with synthetic microphone input.
 
-Stable ownership: the compiled public `@lamplit/contracts/voice` export from adjacent `lamplit-app/packages/contracts` owns browser-boundary constants, types and runtime validation. The relay uses `parseVoiceControl`, `validateVoiceFrameBytes`, and `validateVoiceServerEvent`; ready/finish lifecycle and bounded Qwen parsing stay in `src/server/voice.ts`. Install root dependencies with npm after the app worker has built the package; the existing file dependency resolves its compiled exports. Chat snapshots use the common package capabilities without a fixed voice flag; capability GET is authoritative. The shared App owns capture/controller/worklet and public wire definitions. Retained local modules support existing behavior checks; no old UI serving/build entry remains. No provider framework is introduced.
-
-Fixture owner A `11111111-1111-4111-8111-111111111111` is enabled; B `22222222-2222-4222-8222-222222222222` disabled. Internal secret: `fixture-voice-internal-secret`. Local-only `GET/POST /__fixture/state` reads/updates `{enabled,apiKey,text,status,delayMs,startDelayMs,calls,frames,bytes,events,closes}`. Status controls fake upgrade failure; delayMs holds final; startDelayMs holds task-started; calls counts provider upgrades; events records PCM byte counts and run-task/finish-task timestamps. Only synthetic fixture keys/text appear there. This control route exists only in the temporary fixture entry.
+Stable ownership: the compiled public `@lamplit/contracts/voice` export from the approved App artifact owns browser-boundary constants, types and runtime validation. The relay uses `parseVoiceControl`, `validateVoiceFrameBytes`, and `validateVoiceServerEvent`; ready/finish lifecycle and bounded Qwen parsing stay in `src/server/voice.ts`. Install root dependencies with npm; the packed approved file dependency resolves its compiled exports. Chat snapshots use the common package capabilities without a fixed voice flag; capability GET is authoritative. The shared App owns capture/controller/worklet and public wire definitions. Retained local modules support existing behavior checks; no old UI serving/build entry remains. No provider framework is introduced.
 
 ## Shared frozen browser acceptance
 
-The current Owner-approved parent archive and separately reviewed voice runner
-are documented in [default-shared-frontend.md](default-shared-frontend.md).
-Actual Pi/workerd voice acceptance passes at 390/1280 with native image intake
-enabled. Actual read-only Platform-handler hosted voice acceptance also passes
-at those widths on test-owned D1/DO/R2. Parent browser/contracts/runners remain
-unchanged; the corrected runner is copied beside the original and hashed before
-and after acceptance.
-
-Earlier #3044 acceptance used browser SHA256
-`0525f67e3d9d0c142425fb3db26a65727b9049536a203434cf8099aca844439e`
-and build manifest SHA256
-`381a3ad65c64275b673f4215190914a6a8abad305e7f713d7d42e72b32f6cf70`.
-Those historical artifacts are not the current delivery gate. Owner joint
-App/Pi/CFL/Platform review remains required before merge; no live restart,
-deployment or paid provider call was performed by this implementation.
+Use the approved #3439 artifact and unchanged `acceptance/voice-browser.mjs` with
+`APP_ACCEPTANCE_CONTROL_URL=http://127.0.0.1:8896/__test/voice`. The local host
+uses actual native persistence/socket, the actual voice relay and browser
+AudioWorklet with synthetic microphone input and fake ASR only. Current run
+identity/results are recorded in the implementation report. Orc joint acceptance
+is pending; historical hosted Platform checks are separate evidence.
 
 Native Android microphone/software-keyboard behavior and real 3.1 vendor latency are unverified in this isolated run. Tests cover actual workerd protocol and actual browser/worklet behavior with synthetic audio.
 

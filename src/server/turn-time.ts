@@ -1,4 +1,4 @@
-import { convertToLlm, type AgentMessage } from '@earendil-works/pi-agent-core'
+import type { Message } from '@earendil-works/pi-ai'
 
 export const DEFAULT_USER_TIME_ZONE = 'Asia/Shanghai'
 
@@ -22,8 +22,8 @@ export function formatTurnTime(timestamp: number, timeZone: string): string {
   return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')} ${offset} (${timeZone})`
 }
 
-export function projectTurnTime(messages: AgentMessage[], timeZone: string) {
-  return convertToLlm(messages.map((message) => {
+export function projectTurnTime(messages: readonly Message[], timeZone: string) {
+  return messages.map((message) => {
     if (message.role !== 'user') return message
     const content = typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content
     return {
@@ -33,5 +33,5 @@ export function projectTurnTime(messages: AgentMessage[], timeZone: string) {
         ...content,
       ],
     }
-  }))
+  })
 }

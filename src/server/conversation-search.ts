@@ -1,4 +1,4 @@
-import type { Entry } from '@earendil-works/pi-agent-core/harness/session'
+import type { ArchiveEntry as Entry } from './conversation-archive'
 import type { SearchCard, SearchReadResult } from '@lamplit/contracts'
 
 export type SearchNode = {

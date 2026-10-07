@@ -77,7 +77,7 @@ The Human's most recently known IANA time zone, shared by web and Keet turns whe
 _Avoid_: Worker time zone, Keet sender time zone
 
 **Turn time（回合时间）**:
-The time Pi accepts a prompt or queues a steer for Jiji to process. It can differ from when a Keet message originally arrived and does not change during that turn's later model requests.
+The time native Pi durably admits input for Jiji to process. It can differ from when a Keet message originally arrived and does not change during that turn's later model requests.
 _Avoid_: Keet message time, model request time
 
 **Keet-sourced message（Keet 来源消息）**:
@@ -111,6 +111,18 @@ _Avoid_: Full companion migration, memory extraction
 **Active conversation（当前对话）**:
 The conversation in which the user and companion exchange new messages. Its selected context is distinct from the full historical archive.
 _Avoid_: Entire history archive, companion identity
+
+**Message submission（消息提交）**:
+The durable acceptance of the Human's message for processing in the active conversation. A submitted message remains submitted even when the companion's reply fails or is stopped.
+_Avoid_: Model consumption, reply completion
+
+**Companion reply（聊天机回复）**:
+The companion's response to a submitted message. Its completion, failure, or interruption is distinct from whether the Human's message was submitted.
+_Avoid_: Message delivery receipt
+
+**Recoverable draft（可恢复草稿）**:
+The Human's text and photos retained for editing when their submission has failed or has been withdrawn before processing. Temporarily losing confirmation of submission does not by itself make a message a recoverable draft.
+_Avoid_: Failed reply, disconnected message
 
 **Web search（网络搜索）**:
 The companion's ability to find public webpages relevant to a query through the user's selected search provider. Search results identify sources and may contain excerpts; they are distinct from reading a page's body.

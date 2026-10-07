@@ -1,4 +1,4 @@
-import type { AgentHarnessTool } from '@earendil-works/pi-agent-core'
+import type { ToolRegistration } from '@earendil-works/pi-durable'
 import { Type } from 'typebox'
 import type { SessionSearchResult } from '../shared/pi-contract'
 import type { ComputerWorkspace } from './computer-workspace'
@@ -53,12 +53,11 @@ export function createWorkspaceTools(workspace: ComputerWorkspace) {
     query: Type.String({ description: 'Text or regular expression to find' }),
   })
 
-  const readTool: AgentHarnessTool<undefined, typeof readSchema> = {
-    name: 'read',
-    label: 'Read file',
+  const readTool: ToolRegistration<typeof readSchema> = {
+    name: 'read', replay: 'safe',
     description: 'Read a UTF-8 file from the durable workspace.',
     parameters: readSchema,
-    execute: async (_id, { path }, _onUpdate, _toolContext, _invocation, context) => {
+    execute: async ({ path }, _api, context) => {
       const signal = context.abortSignal
       signal?.throwIfAborted()
       requireWorkspacePath(path)
@@ -69,13 +68,12 @@ export function createWorkspaceTools(workspace: ComputerWorkspace) {
       return text(content)
     },
   }
-  const writeTool: AgentHarnessTool<undefined, typeof writeSchema> = {
+  const writeTool: ToolRegistration<typeof writeSchema> = {
     name: 'write',
-    label: 'Write file',
     description: 'Write a complete UTF-8 file to the durable workspace.',
     parameters: writeSchema,
     executionMode: 'sequential',
-    execute: async (_id, { path, content }, _onUpdate, _toolContext, _invocation, context) => {
+    execute: async ({ path, content }, _api, context) => {
       const signal = context.abortSignal
       signal?.throwIfAborted()
       requireWorkspacePath(path)
@@ -85,13 +83,12 @@ export function createWorkspaceTools(workspace: ComputerWorkspace) {
       return text(`Wrote ${path}`)
     },
   }
-  const editTool: AgentHarnessTool<undefined, typeof editSchema> = {
+  const editTool: ToolRegistration<typeof editSchema> = {
     name: 'edit',
-    label: 'Edit file',
     description: 'Replace exact text in a durable workspace file.',
     parameters: editSchema,
     executionMode: 'sequential',
-    execute: async (_id, { path, search, replacement }, _onUpdate, _toolContext, _invocation, context) => {
+    execute: async ({ path, search, replacement }, _api, context) => {
       const signal = context.abortSignal
       signal?.throwIfAborted()
       requireWorkspacePath(path)
@@ -106,12 +103,11 @@ export function createWorkspaceTools(workspace: ComputerWorkspace) {
       return text(`Updated ${path}`)
     },
   }
-  const listTool: AgentHarnessTool<undefined, typeof listSchema> = {
-    name: 'list',
-    label: 'List directory',
+  const listTool: ToolRegistration<typeof listSchema> = {
+    name: 'list', replay: 'safe',
     description: 'List files and directories in the durable workspace.',
     parameters: listSchema,
-    execute: async (_id, { path }, _onUpdate, _toolContext, _invocation, context) => {
+    execute: async ({ path }, _api, context) => {
       const signal = context.abortSignal
       signal?.throwIfAborted()
       const directory = requireWorkspacePath(path ?? WORKSPACE_ROOT)
@@ -121,12 +117,11 @@ export function createWorkspaceTools(workspace: ComputerWorkspace) {
       return text(result)
     },
   }
-  const findTool: AgentHarnessTool<undefined, typeof findSchema> = {
-    name: 'find',
-    label: 'Find files',
+  const findTool: ToolRegistration<typeof findSchema> = {
+    name: 'find', replay: 'safe',
     description: 'Find durable workspace files using a glob pattern.',
     parameters: findSchema,
-    execute: async (_id, { pattern }, _onUpdate, _toolContext, _invocation, context) => {
+    execute: async ({ pattern }, _api, context) => {
       const signal = context.abortSignal
       signal?.throwIfAborted()
       requireSearchPattern(pattern)
@@ -137,12 +132,11 @@ export function createWorkspaceTools(workspace: ComputerWorkspace) {
       return text(result)
     },
   }
-  const grepTool: AgentHarnessTool<undefined, typeof grepSchema> = {
-    name: 'grep',
-    label: 'Search files',
+  const grepTool: ToolRegistration<typeof grepSchema> = {
+    name: 'grep', replay: 'safe',
     description: 'Search matching durable workspace files for text.',
     parameters: grepSchema,
-    execute: async (_id, { pattern, query }, _onUpdate, _toolContext, _invocation, context) => {
+    execute: async ({ pattern, query }, _api, context) => {
       const signal = context.abortSignal
       signal?.throwIfAborted()
       requireSearchPattern(pattern)
@@ -166,17 +160,16 @@ export function createWorkspaceTools(workspace: ComputerWorkspace) {
 
 export function createSessionSearchTool(
   registry: RegistrySearch,
-): AgentHarnessTool<undefined> {
+): ToolRegistration {
   const parameters = Type.Object({
     query: Type.String({ description: 'Lexical query, quoted phrase, or re: regular expression' }),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
   })
   return {
-    name: 'session_search',
-    label: 'Search sessions',
+    name: 'session_search', replay: 'safe',
     description: 'Search prior Pi sessions and read-only imported archives for plain message text on all branches. Historical thoughts are excluded. Archive IDs cannot be resumed.',
     parameters,
-    execute: async (_id, { query, limit }, _onUpdate, _toolContext, _invocation, context) => {
+    execute: async ({ query, limit }, _api, context) => {
       const signal = context.abortSignal
       signal?.throwIfAborted()
       const results = await registry.searchSessions({ query, limit })

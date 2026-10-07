@@ -1,161 +1,76 @@
 import { expect, it, vi } from 'vitest'
-import { MemorySessionRepo } from '@earendil-works/pi-agent-core/harness/session'
-import { BACKGROUND_CONTEXT as ctx, withAbortSignal } from '@earendil-works/pi-agent-core/harness/context'
-import { DEFAULT_COMPACTION_SETTINGS, prepareCompaction, type AgentLane } from '@earendil-works/pi-agent-core'
-import type { AssistantMessage } from '@earendil-works/pi-ai'
+import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
+import { fauxAssistantMessage, type Message } from '@earendil-works/pi-ai'
+import type { Conversation } from '@earendil-works/pi-durable'
+import { nativeOptions } from './fixtures/native-harness-options'
 import { createPiHarness } from './create-pi-harness'
-import { DEFAULT_COMPANION_COMPACTION_PROMPT as defaultPrompt } from './companion-compaction-prompt'
+import { nativeReply } from './fixtures/native-provider'
+import { DEFAULT_COMPANION_COMPACTION_PROMPT } from './companion-compaction-prompt'
 
-const env = { provider: 'openrouter', model: 'openai/gpt-4o', apiKey: 'fictional-key', thinkingLevel: null, maxOutputTokens: null, PI_SYSTEM_PROMPT: '' }
-const usage = { input: 20, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 25, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }
-function assistant(text: string): AssistantMessage {
-  return { role: 'assistant', content: [{ type: 'text', text }], api: 'openai-completions', provider: 'configured-provider', model: 'fictional-model', stopReason: 'stop', timestamp: Date.now(), usage }
-}
-function offlineProvider() {
-  const requests: Array<{ model: string; messages: Array<{ role: string; content: string }> }> = []
-  let failure = false, cancel: AbortController | undefined, overflow = false
-  const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
-    expect(url instanceof Request ? url.url : url.toString()).toBe('https://openrouter.ai/api/v1/chat/completions')
-    const request = JSON.parse(init!.body as string)
-    requests.push(request)
-    if (cancel) { cancel.abort(); throw new DOMException('cancelled', 'AbortError') }
-    if (failure) return Response.json({ error: { message: 'fictional failure' } }, { status: 400 })
-    if (overflow && !request.messages[0].content.includes('checkpoint')) {
-      overflow = false
-      return Response.json({ error: { message: 'maximum context length exceeded' } }, { status: 400 })
+async function history(root: Conversation, prefix: string, turns=6) {
+  await root.commit(async tx => {
+    for (let i=0;i<turns;i++) {
+      await tx.appendEntry(root.id,{kind:'pi.user',model:[{role:'user',content:`${prefix} ${i} `+'x'.repeat(1200),timestamp:i}]})
+      await tx.appendEntry(root.id,{kind:'pi.assistant',model:[fauxAssistantMessage('Fixture answer '+i)]})
     }
-    const chunks = [
-      { choices: [{ index: 0, delta: { role: 'assistant', content: 'Fictional checkpoint ' + requests.length }, finish_reason: null }] },
-      { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 } },
-    ]
-    return new Response(chunks.map(c => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
-  })
-  return { requests, fetch, fail: () => { failure = true }, cancel: (controller: AbortController) => { cancel = controller }, overflow: () => { overflow = true } }
+  },context)
 }
-async function attach(session: Parameters<typeof createPiHarness>[0]['session'], loadPrompt: () => Promise<string>, settings = { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 1000, keepRecentTokens: 100 }, modelEnv = env, projectKeet?: Parameters<typeof createPiHarness>[0]['projectKeet']) {
-  const harness = await createPiHarness({ projectKeet, env: modelEnv, session, tools: [], memory: { getMemoryContext: async () => '', getRelationshipContext: async () => '' }, compaction: settings,
-    loadInstructions: async () => 'Read other root Markdown when needed.', loadCompactionPrompt: loadPrompt, getUserTimeZone: async () => 'Asia/Shanghai' })
-  const lane = await harness.lane('main', ctx)
-  return { harness, lane }
-}
-async function history(lane: AgentLane, prefix = 'fictional', turns = 5) {
-  for (let i = 0; i < turns; i++) {
-    await lane.appendMessage({ role: 'user', content: `${prefix} user ${i} ` + 'a'.repeat(500), timestamp: Date.now() }, ctx)
-    await lane.appendMessage(assistant(`${prefix} answer ${i}`), ctx)
-  }
-}
-
-it('uses default → custom → reset on actual manual requests, includes previous summary, usage, and reconstructs native persisted context', async () => {
-  const provider = offlineProvider()
+it('native manual summary uses companion default/custom policy, persists silently and preserves original history/previous summary', async () => {
+  const requests: Record<string,unknown>[]=[]
+  const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{requests.push(JSON.parse(init!.body as string));return nativeReply('openrouter','Fixture continuity '+requests.length)})
+  let prompt=DEFAULT_COMPANION_COMPACTION_PROMPT
+  const options=nativeOptions(),harness=await createPiHarness({...options,loadCompactionPrompt:async()=>prompt})
   try {
-    const repo = new MemorySessionRepo()
-    const session = await repo.create({}, ctx)
-    let effective = defaultPrompt
-    const { lane } = await attach(session, async () => effective)
-    await history(lane)
-    const prepared = prepareCompaction(await lane.findEntries({ order: 'oldestFirst' }, ctx), { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 1000, keepRecentTokens: 100 })
-    expect(prepared.ok).toBe(true)
-    const first = await lane.compact(undefined, ctx)
-    expect(first.ok).toBe(true)
-    expect(provider.requests[0].messages[0].content).toBe(defaultPrompt)
-    const entry = await lane.findEntry({ order: 'newestFirst' }, ctx)
-    expect(entry).toMatchObject({ type: 'compaction', summary: 'Fictional checkpoint 1', usage: { totalTokens: 25 } })
-    if (prepared.ok && prepared.value && entry?.type === 'compaction') expect(entry.retainedTail).toEqual(prepared.value.retainedTail)
-    effective = 'Custom continuity checkpoint. Only summarize fictional evidence.'
-    await history(lane, 'new-evidence', 3)
-    expect((await lane.compact({ customInstructions: 'Runtime focus fixture' }, ctx)).ok).toBe(true)
-    const customRequest = provider.requests.at(-1)!
-    expect(customRequest.messages[0].content).toBe(effective)
-    expect(JSON.stringify(customRequest.messages[1].content)).toContain('Fictional checkpoint 1')
-    expect(JSON.stringify(customRequest.messages[1].content)).toContain('new-evidence')
-    effective = defaultPrompt
-    await history(lane, 'reset-evidence', 3)
-    expect((await lane.compact(undefined, ctx)).ok).toBe(true)
-    expect(provider.requests.at(-1)!.messages[0].content).toBe(defaultPrompt)
-    const savedEntries = await lane.findEntries({ order: 'oldestFirst' }, ctx)
-    await session.close(ctx)
-    const rebuilt = await repo.open((await repo.list(undefined, ctx))[0], ctx)
-    const restored = await attach(rebuilt, async () => effective)
-    expect(await restored.lane.findEntries({ order: 'oldestFirst' }, ctx)).toEqual(savedEntries)
-    expect(await rebuilt.getStats(ctx)).toMatchObject({ usage: { totalTokens: 75 } })
-    expect((await restored.lane.prompt('Continue fictional conversation', undefined, ctx)).ok).toBe(true)
-    expect(JSON.stringify(provider.requests.at(-1))).toContain('Fictional checkpoint 3')
-  } finally { provider.fetch.mockRestore() }
+    const root=await harness.root(context,{agent:{model:{provider:'openrouter',modelId:'openai/gpt-4o'}}})
+    await root.commit(async tx => {
+      await tx.appendEntry(root.id, { kind: 'pi.user', model: [{ role: 'user', content: '<read-files>\n/workspace/notes.md\n</read-files>\n<modified-files>\n/workspace/soul.md\n</modified-files>', timestamp: 10 }] })
+    }, context)
+    await history(root,'Ordinary fixture')
+    const first=await harness.waitForTask(await root.compact(undefined,context),context)
+    expect(first.state.outcome.status).toBe('completed')
+    await root.waitForIdle(context)
+    const view=await root.context(context)
+    expect(view.head?.kind).toBe('pi.compaction')
+    expect(JSON.stringify(view.messages)).toContain('Fixture continuity 1')
+    expect(JSON.stringify(view.messages)).toContain('/workspace/notes.md')
+    expect(JSON.stringify(view.messages)).toContain('/workspace/soul.md')
+    expect(JSON.stringify(requests[0].messages)).toContain('Our Relationship')
+    expect(JSON.stringify(requests[0].messages)).not.toContain('coding assistant')
+    prompt='Fixture custom companion checkpoint'
+    await history(root,'Recent fixture')
+    await harness.waitForTask(await root.compact('keep the promise',context),context);await root.waitForIdle(context)
+    expect(JSON.stringify(requests[1].messages)).toContain(prompt)
+    expect(JSON.stringify(requests[1].messages)).toContain('previous-summary')
+    expect(JSON.stringify(requests[1].messages)).toContain('Fixture continuity 1')
+    const stored=await root.entries({},100,undefined,context)
+    expect(stored.items.filter(entry=>entry.kind==='pi.user')).toHaveLength(13)
+    expect(stored.items.filter(entry=>entry.kind==='pi.compaction')).toHaveLength(2)
+  } finally {await harness.close(context);fetch.mockRestore()}
 })
-
-it.each(['DM', 'Group'])('preserves Keet %s attribution in Pi split-turn prefix, paired tool tail and fileOps', async kind => {
-  const provider = offlineProvider()
-  try {
-    const session = await new MemorySessionRepo().create({}, ctx)
-    const settings = { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 1000, keepRecentTokens: 250 }
-    const { lane } = await attach(session, async () => defaultPrompt, settings, env, messages => messages.map(message =>
-      message.role === 'user' && message.content === 'Long ongoing fictional turn'
-        ? { ...message, content: `[Keet ${kind}: Room; sender: Bob] Long ongoing fictional turn` } : message))
-    await history(lane, 'old-evidence', 2)
-    await lane.appendMessage({ role: 'user', content: 'Long ongoing fictional turn', timestamp: Date.now() }, ctx)
-    for (let i = 0; i < 6; i++) {
-      const call = { ...assistant(''), content: [{ type: 'toolCall' as const, id: `fictional-tool-${i}`, name: i ? 'read' : 'write', arguments: { path: `/workspace/fictional-${i}.md`, content: 'fixture' } }] }
-      await lane.appendMessage(call, ctx)
-      await lane.appendMessage({ role: 'toolResult', toolCallId: `fictional-tool-${i}`, toolName: i ? 'read' : 'write', content: [{ type: 'text', text: 'tool evidence ' + 'x'.repeat(12_000) }], isError: false, timestamp: Date.now() }, ctx)
-    }
-    await lane.appendMessage(assistant('Recent tail acknowledgement'), ctx)
-    const prep = prepareCompaction(await lane.findEntries({ order: 'oldestFirst' }, ctx), settings)
-    expect(prep.ok && prep.value?.isSplitTurn).toBe(true)
-    expect((await lane.compact(undefined, ctx)).ok).toBe(true)
-    const entry = await lane.findEntry({ order: 'newestFirst' }, ctx)
-    if (!prep.ok || !prep.value || entry?.type !== 'compaction') throw new Error('Expected native compaction')
-    expect(entry.retainedTail).toEqual(prep.value.retainedTail)
-    expect(JSON.stringify(provider.requests[0].messages[1].content)).toContain('<split-turn-prefix>')
-    expect(JSON.stringify(provider.requests[0].messages[1].content)).toContain(`<split-turn-prefix>\\n[User]: [Keet ${kind}: Room; sender: Bob] Long ongoing fictional turn`)
-    expect(entry.details).toMatchObject({ modifiedFiles: ['/workspace/fictional-0.md'] })
-    expect(entry.summary).toContain('<modified-files>')
-    expect(JSON.stringify(provider.requests[0].messages[1].content).length).toBeLessThan(75_000)
-  } finally { provider.fetch.mockRestore() }
+it.each(['DM','Group'])('native %s maintenance projects private Keet attribution in summary and split prefix without mutating transcript',async kind=>{
+  const requests:Record<string,unknown>[]=[]
+  const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{requests.push(JSON.parse(init!.body as string));return nativeReply('openrouter','Keet continuity')})
+  const options=nativeOptions()
+  const project=async(messages:readonly Message[])=>messages.map(message=>message.role==='user'&&typeof message.content==='string'&&message.content.startsWith('Visible Keet')?{...message,content:`[Keet ${kind}; sender Alice; private contextual attribution] ${message.content}`}:message)
+  const harness=await createPiHarness({...options,projectKeet:project,compaction:{enabled:true,reserveTokens:1024,keepRecentTokens:4}})
+  try{
+    const root=await harness.root(context,{agent:{model:{provider:'openrouter',modelId:'openai/gpt-4o'}}})
+    await history(root,'Visible Keet')
+    await harness.waitForTask(await root.compact(undefined,context),context);await root.waitForIdle(context)
+    expect(JSON.stringify(requests[0].messages)).toContain(`Keet ${kind}`)
+    expect(JSON.stringify(requests[0].messages)).toContain('private contextual attribution')
+    const originals=await root.entries({},100,undefined,context)
+    expect(JSON.stringify(originals.items.filter(entry=>entry.kind==='pi.user'))).not.toContain('private contextual attribution')
+  }finally{await harness.close(context);fetch.mockRestore()}
 })
-
-it.each(['failure', 'cancel'] as const)('%s leaves original conversation/context intact and creates no summary', async mode => {
-  const provider = offlineProvider()
-  try {
-    const session = await new MemorySessionRepo().create({}, ctx)
-    const { lane } = await attach(session, async () => defaultPrompt, undefined, env)
-    await history(lane)
-    const before = await lane.findEntries({ order: 'oldestFirst' }, ctx)
-    const controller = new AbortController()
-    if (mode === 'failure') provider.fail()
-    if (mode === 'cancel') provider.cancel(controller)
-    try {
-      const result = await lane.compact(undefined, withAbortSignal(controller.signal, ctx))
-      expect(result.ok && result.value.compaction.status).toBe('declined')
-    } catch (error) { if (mode !== 'cancel') throw error }
-    expect(provider.requests.length).toBe(1)
-    expect(await lane.findEntries({ order: 'oldestFirst' }, ctx)).toEqual(before)
-  } finally { provider.fetch.mockRestore() }
-})
-
-it('automatic threshold requests use the effective prompt and native compaction entry', async () => {
-  const provider = offlineProvider()
-  try {
-    const session = await new MemorySessionRepo().create({}, ctx)
-    const { lane } = await attach(session, async () => 'Automatic continuity checkpoint fixture')
-    await history(lane, 'threshold-evidence', 20)
-    await lane.appendMessage({ ...assistant('Threshold usage fixture'), usage: { ...usage, input: 127500, totalTokens: 127505 } }, ctx)
-    expect((await lane.prompt('Next fictional turn', undefined, ctx)).ok).toBe(true)
-    expect(provider.requests.some(r => r.messages[0].content === 'Automatic continuity checkpoint fixture')).toBe(true)
-    expect((await lane.findEntries({ order: 'oldestFirst' }, ctx)).some(e => e.type === 'compaction')).toBe(true)
-  } finally { provider.fetch.mockRestore() }
-})
-
-it('overflow recovery makes the real next summary request with the effective prompt, then retries the conversation', async () => {
-  const provider = offlineProvider()
-  try {
-    const session = await new MemorySessionRepo().create({}, ctx)
-    const { lane } = await attach(session, async () => 'Overflow continuity checkpoint fixture', { enabled: true, reserveTokens: 1000, keepRecentTokens: 100 })
-    await history(lane, 'overflow-evidence', 5)
-    provider.overflow()
-    const result = await lane.prompt('Overflow next fictional turn', undefined, ctx)
-    expect(result.ok && result.value.status).toBe('completed')
-    expect(provider.requests.some(r => r.messages[0].content === 'Overflow continuity checkpoint fixture')).toBe(true)
-    expect(provider.requests.length).toBe(3)
-    expect((await lane.findEntries({ order: 'oldestFirst' }, ctx)).some(e => e.type === 'compaction')).toBe(true)
-  } finally { provider.fetch.mockRestore() }
+it('native failed companion summarization declines without applying another policy or replacing active context',async()=>{
+  const fetch=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({error:{message:'fixture rejection'}},{status:400}))
+  const harness=await createPiHarness(nativeOptions())
+  try{
+    const root=await harness.root(context,{agent:{model:{provider:'openrouter',modelId:'openai/gpt-4o'}}});await history(root,'Original fixture')
+    const before=await root.context(context)
+    await harness.waitForTask(await root.compact(undefined,context),context);await root.waitForIdle(context)
+    expect(await root.context(context)).toEqual(before)
+    expect(fetch).toHaveBeenCalledTimes(1)
+  }finally{await harness.close(context);fetch.mockRestore()}
 })

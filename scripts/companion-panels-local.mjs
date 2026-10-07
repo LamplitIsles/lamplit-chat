@@ -11,13 +11,13 @@ if (!root.startsWith(join(repo, '.scratch/default-shared-frontend') + '/')) thro
 mkdirSync(root, { recursive: true })
 const data = JSON.parse(execFileSync('bun', ['--eval', `import {panelsFixture,fixtureImage} from ${JSON.stringify(join(artifactRoot, 'acceptance/panels-fixture.ts'))}; const f=panelsFixture(); console.log(JSON.stringify({dates:f.dates,images:f.images,records:f.records,reminders:f.reminders,image:Array.from(fixtureImage)}))`], { encoding: 'utf8' }))
 writeFileSync(join(root, 'fixture.json'), JSON.stringify(data, null, 2))
-const config = JSON.parse(readFileSync(join(repo, 'wrangler.jsonc')))
+const config = JSON.parse(readFileSync(join(repo, 'wrangler.test.jsonc')))
 config.name = 'lamplit-panels-local-fixture'
 config.main = join(root, 'entry.ts')
-config.assets.directory = join(artifactRoot, 'browser')
+config.assets = {directory: join(artifactRoot, 'browser'), binding:'ASSETS',not_found_handling:'none',html_handling:'none',run_worker_first:true}
 config.r2_buckets = [{ binding: 'COMPUTER_R2', bucket_name: 'panels-test-owned' }]
 delete config.secrets
-config.vars = { ...config.vars, AI_MODEL: 'fixture-model', AI_MEMORY_MODEL: 'fixture-model', MODEL_BASE_URL: 'https://example.invalid/v1', MODEL_API_KEY: 'fixture-key', AUTH_PASSWORD: 'fixture-password-long-enough', VOICE_API_KEY: 'fixture-voice-key' }
+config.vars = { ...config.vars, MODEL_PROVIDER:'openrouter', AI_MODEL:'openai/gpt-4o', MODEL_API_KEY: 'fixture-key', AUTH_PASSWORD: 'fixture-password-long-enough', VOICE_API_KEY: 'fixture-voice-key' }
 writeFileSync(join(root, 'pi-fixture.jsonc'), JSON.stringify(config, null, 2))
 writeFileSync(config.main, `
 import worker from ${JSON.stringify(join(repo, 'src/server.ts'))};
@@ -29,7 +29,7 @@ const fixture = ${JSON.stringify(data)};
 const state = { modelCalls: 0, frames: 0, bytes: 0, closes: 0, seeded: false };
 globalThis.fetch = async (input, init) => {
   const url = input instanceof Request ? input.url : String(input);
-  if (url.startsWith('https://example.invalid/')) {
+  if (url.startsWith('https://openrouter.ai/')) {
     state.modelCalls++;
     const chunk = (delta, finish_reason) => 'data: ' + JSON.stringify({id:'fixture', object:'chat.completion.chunk', created:1, model:'fixture-model', choices:[{index:0, delta, finish_reason}]}) + '\\n\\n';
     return new Response(chunk({role:'assistant', content:'fixture reply'},null) + chunk({},'stop') + 'data: [DONE]\\n\\n', {headers:{'content-type':'text/event-stream'}});
@@ -65,15 +65,14 @@ export class PiSession extends NativeSession {
   async seedPanels() {
     const storage = new PiSessionStorage(this.ctx.storage);
     const metadata=storage.getMetadataSync();
-    await this.importSession({metadata,entries:[],compaction:{enabled:true,reserveTokens:16384,keepRecentTokens:20000},files:[
-      ...fixture.dates.map((name,i)=>({path:'/memory/'+name,content:i===2?'灯'.repeat(43690)+'xxx':'# 灯火日记\\n\\n今天一起走过小岛。\\n\\n[看看海](https://example.com/diary)'})),
-      {path:'/memory/notes.md',content:'private fixture'},
-    ]});
+    await this.workspace.mkdir('/workspace/memory', {recursive:true});
+    for(const [i,name] of fixture.dates.entries()) await this.workspace.writeFile('/workspace/memory/'+name,i===2?'灯'.repeat(43690)+'xxx':'# 灯火日记\\n\\n今天一起走过小岛。\\n\\n[看看海](https://example.com/diary)');
+    await this.workspace.writeFile('/workspace/memory/notes.md','private fixture');
     for(const image of fixture.images){
       const id=crypto.randomUUID(),operationId=crypto.randomUUID();
       const png=btoa(String.fromCharCode(...fixture.image));const jpeg=btoa(String.fromCharCode(255,216,255,217));
       await this.uploadPhoto({id,operationId,order:0,name:image.filename,mediaType:'image/png',original:png,preview:jpeg,model:jpeg});
-      storage.admitPromptSubmission(operationId,'fixture-native-membership',[id]);storage.acceptPromptSubmission(operationId,'fixture-entry-'+id);
+      await this.submitChat({operationId,text:'Test-owned photo',images:[{attachmentId:id,name:image.filename,mediaType:'image/png',availability:'available'}]}); await this.native.wait(operationId);
       this.ctx.storage.sql.exec('UPDATE conversation_photos SET created_at = ? WHERE id = ?',image.createdAt,id);
       if(!image.available)await this.env.COMPUTER_R2.delete('conversation-photos/'+metadata.id+'/'+id+'/original');
     }
@@ -81,7 +80,7 @@ export class PiSession extends NativeSession {
     const wake=await this.saveTimedWake({title:'Fixture source',reminder:'带上围巾',plan:{type:'once',at:new Date(Date.now()+120000).toISOString()}});
     const due={...wake,nextAt:new Date(Date.now()-500).toISOString()};storage.setSetting('timedWakes',[due]);
     await this.acceptTimedWake({wakeId:due.id,revision:due.revision,scheduledAt:due.nextAt,title:due.title,reminder:due.reminder});
-    await this.drainPendingWork();
+    await this.drainPendingWork(); await (await this.getHarness()).waitForIdle(this.nativeContext); await this.getBranch();
     for(const reminder of fixture.reminders){
       const s=reminder.schedule;
       const plan=s.kind==='once'?{type:'once',at:new Date(Math.max(s.at,Date.now()+3600000)).toISOString()}:s.kind==='interval'?{type:'interval',seconds:s.everySeconds,anchor:new Date(s.anchor).toISOString()}:{type:s.kind,time:String(s.hour).padStart(2,'0')+':'+String(s.minute).padStart(2,'0'),timeZone:s.timeZone,...(s.kind==='weekly'?{weekday:s.weekday}:{})};

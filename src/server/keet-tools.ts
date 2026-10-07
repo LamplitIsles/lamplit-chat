@@ -1,6 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import type { AgentHarnessTool } from '@earendil-works/pi-agent-core'
+import type { ToolRegistration } from '@earendil-works/pi-durable'
 import { Type } from 'typebox'
 import { Value } from 'typebox/value'
 
@@ -94,15 +94,15 @@ function argumentsObject(input: unknown): Record<string, unknown> {
   return input as Record<string, unknown>
 }
 
-export function createKeetTools(env: Env): AgentHarnessTool<undefined>[] {
+export function createKeetTools(env: Env): ToolRegistration[] {
   return [
-    { name: 'keet_list_destinations', label: 'List Keet destinations', description: 'List destinations admitted by Keet.', parameters: noArgs, executionMode: 'sequential',
-      execute: async (_id, _input, _update, _context, _invocation, context) => toolResult(await callKeetTool(env, 'list_destinations', {}, context.abortSignal)) },
-    { name: 'keet_list_members', label: 'List Keet members', description: 'List members in one admitted Keet destination.', parameters: named, executionMode: 'sequential',
-      execute: async (_id, input, _update, _context, _invocation, context) => toolResult(await callKeetTool(env, 'list_members', argumentsObject(input), context.abortSignal)) },
-    { name: 'keet_read_recent_messages', label: 'Read Keet messages', description: 'Read 1–50 recent text messages from an admitted Keet destination without changing read state.', parameters: recent, executionMode: 'sequential',
-      execute: async (_id, input, _update, _context, _invocation, context) => toolResult(await callKeetTool(env, 'read_recent_messages', argumentsObject(input), context.abortSignal)) },
-    { name: 'keet_send_message', label: 'Send Keet message', description: 'Send required text to an admitted Keet destination. A regular Group may include a replyTo message ID and exact member-name mentions. A Group or DM may also include one emoji reaction to an exact message. For a DM, react only to the current Keet turn\'s triggering message. A reaction failure after a successful send does not undo the text. A timed out send may have succeeded; never retry it automatically.', parameters: send, executionMode: 'sequential',
-      execute: async (_id, input, _update, _context, _invocation, context) => toolResult(await callKeetTool(env, 'send_message', argumentsObject(input), context.abortSignal)) },
+    { name: 'keet_list_destinations', replay: 'safe', description: 'List destinations admitted by Keet.', parameters: noArgs, executionMode: 'sequential',
+      execute: async (_input, _api, context) => toolResult(await callKeetTool(env, 'list_destinations', {}, context.abortSignal)) },
+    { name: 'keet_list_members', replay: 'safe', description: 'List members in one admitted Keet destination.', parameters: named, executionMode: 'sequential',
+      execute: async (input, _api, context) => toolResult(await callKeetTool(env, 'list_members', argumentsObject(input), context.abortSignal)) },
+    { name: 'keet_read_recent_messages', replay: 'safe', description: 'Read 1–50 recent text messages from an admitted Keet destination without changing read state.', parameters: recent, executionMode: 'sequential',
+      execute: async (input, _api, context) => toolResult(await callKeetTool(env, 'read_recent_messages', argumentsObject(input), context.abortSignal)) },
+    { name: 'keet_send_message', description: 'Send required text to an admitted Keet destination. A regular Group may include a replyTo message ID and exact member-name mentions. A Group or DM may also include one emoji reaction to an exact message. For a DM, react only to the current Keet turn\'s triggering message. A reaction failure after a successful send does not undo the text. A timed out send may have succeeded; never retry it automatically.', parameters: send, executionMode: 'sequential',
+      execute: async (input, _api, context) => toolResult(await callKeetTool(env, 'send_message', argumentsObject(input), context.abortSignal)) },
   ]
 }

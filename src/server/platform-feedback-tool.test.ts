@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createPlatformFeedbackTools, type FeedbackEnvironment } from './platform-feedback-tool'
 const instance = '11111111-1111-4111-8111-111111111111'
 const session = '22222222-2222-4222-8222-222222222222'
@@ -9,8 +9,8 @@ function setup(fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit
   const env: FeedbackEnvironment = { HOSTED_MODE: 'true', CHAT_INTERNAL_SECRET: 'SECRET-fixture', PLATFORM: { fetch } }
   const call = async (value: unknown = input, id = 'call', signal?: AbortSignal, sessionId = session) => {
     const tool = createPlatformFeedbackTools(env, instance, sessionId)[0]
-    const result = await tool.execute(id, value as never, () => {}, undefined, undefined!, { ...BACKGROUND_CONTEXT, abortSignal: signal })
-    return JSON.parse((result.content[0] as { text: string }).text)
+    const result = await tool.execute(value as never, { callId: id } as never, { ...BACKGROUND_CONTEXT, abortSignal: signal })
+    return JSON.parse((result.content![0] as { text: string }).text)
   }
   return { env, fetch, call }
 }
@@ -35,7 +35,7 @@ describe('platform feedback execute', () => {
     await call(); await call(input, 'other'); await call(input, 'call', undefined, instance)
     const keys = fetch.mock.calls.map(([, init]) => JSON.parse(init!.body as string).submission_key)
     expect(keys[0]).toBe(keys[1]); expect(new Set(keys).size).toBe(3)
-    await createPlatformFeedbackTools(env, receipt.id, session)[0].execute('call', input, () => {}, undefined, undefined!, BACKGROUND_CONTEXT)
+    await createPlatformFeedbackTools(env, receipt.id, session)[0].execute(input, { callId: 'call' } as never, BACKGROUND_CONTEXT)
     expect(JSON.parse(fetch.mock.calls.at(-1)![1]!.body as string).submission_key).not.toBe(keys[0])
     expect(JSON.stringify(await call())).not.toMatch(/PRIVATE|SECRET|account|problem/)
   })

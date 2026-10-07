@@ -3,8 +3,8 @@ import { runInDurableObject } from 'cloudflare:test'
 import { expect, it, vi } from 'vitest'
 import { openChat } from '@lamplit/contracts/client'
 import type { ChatView, ImageUpload, Submission } from '@lamplit/contracts'
-import type { AgentLane } from '@earendil-works/pi-agent-core'
-import { BACKGROUND_CONTEXT as context } from '@earendil-works/pi-agent-core/harness/context'
+import { nativeReply } from './fixtures/native-provider'
+import type { NativeFixture } from './fixtures/native-session'
 import worker from '../server'
 import type { PiSession } from './pi-session'
 import { PiSessionStorage } from './pi-session-storage'
@@ -53,23 +53,20 @@ it('validates public intake before allocation, enforces session/operation owners
     expect((await f.request(`/api/chat/media/${image.attachmentId}/original`)).status).toBe(404) // staging alone is not membership
     expect((await other.request(`/api/chat/media/${image.attachmentId}/model`)).status).toBe(404)
     expect((await worker.fetch(new Request(`http://images.fixture/api/chat/media/${image.attachmentId}/original`), env)).status).toBe(401)
-    await expect(f.client.submit({ operationId: crypto.randomUUID(), text: '', images: uploaded.images })).rejects.toThrow()
-    let driveCalls = 0
-    await runInDurableObject(f.stub, async instance => {
-      const lane = await (instance as unknown as { getLane(): Promise<AgentLane> }).getLane()
-      vi.spyOn(lane, 'drive').mockImplementation(async () => { driveCalls++; return { ok: true, value: { kind: 'waiting', reason: 'deferred' } } as Awaited<ReturnType<AgentLane['drive']>> })
-    })
+    expect(await f.client.submit({ operationId: crypto.randomUUID(), text: '', images: uploaded.images })).toMatchObject({ state: 'failed' })
+    const fake = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => nativeReply('openrouter', 'Native image reply'))
     const submitted = { operationId: input.operationId, text: '', images: uploaded.images }
-    expect((await f.client.submit(submitted)).state).toBe('consumed')
+    expect((await f.client.submit(submitted)).state).toBe('submitted')
     await expect(f.client.submit({ ...submitted, text: 'changed' })).rejects.toThrow()
-    expect((await f.client.submit(submitted)).state).toBe('consumed')
-    await runInDurableObject(f.stub, (_instance, state) => {
-      const storage = new PiSessionStorage(state.storage)
-      const nativeEntry = storage.entriesInOrder().find(e => e.type === 'message' && e.message.role === 'user')
-      expect(nativeEntry).toMatchObject({ message: { content: [{ type: 'image', mimeType: 'image/jpeg', data: model }] } })
-      expect(storage.entriesInOrder().filter(e => e.type === 'message' && e.message.role === 'user')).toHaveLength(1)
-      expect(driveCalls).toBe(1)
+    expect((await f.client.submit(submitted)).state).toBe('submitted')
+    await runInDurableObject(f.stub, async instance => {
+      await (instance as unknown as NativeFixture).native.wait(input.operationId)
+      await instance.getBranch()
+      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
+      expect(storage.entriesInOrder().filter(entry => entry.type === 'message' && entry.message.role === 'user')).toHaveLength(1)
+      expect(storage.entriesInOrder().find(entry => entry.type === 'message' && entry.message.role === 'user')).toMatchObject({ message: { content: [{ type: 'image', mimeType: 'image/jpeg', data: model }] } })
     })
+    expect(fake).toHaveBeenCalledTimes(1)
     const read = await f.request(`/api/chat/media/${image.attachmentId}/model`)
     expect(read.status).toBe(200); expect(read.headers.get('cache-control')).toBe('no-store')
     expect(new Uint8Array(await read.arrayBuffer())).toEqual(Uint8Array.from(atob(model), c => c.charCodeAt(0)))
@@ -78,87 +75,6 @@ it('validates public intake before allocation, enforces session/operation owners
     await env.COMPUTER_R2!.put(`conversation-photos/${f.id}/${image.attachmentId}/original`, large)
     expect((await f.request(`/api/chat/media/${image.attachmentId}/original`)).status).toBe(200)
   } finally { f.close(); other.close(); vi.restoreAllMocks() }
-})
-
-it('projects proven native-origin dropped input, restages edited recovery and never resurrects a replaced source', async () => {
-  const f = await fixture()
-  try {
-    const operation = crypto.randomUUID(), photoId = crypto.randomUUID()
-    await f.stub.uploadPhoto({ operationId: operation, id: photoId, order: 0, name: 'native.jpg', mediaType: 'image/jpeg', original: jpeg, preview: jpeg, model })
-    await runInDurableObject(f.stub, async instance => {
-      const internals = instance as unknown as { getLane(): Promise<AgentLane>; schedulePendingDrain(): Promise<void> }
-      const lane = await internals.getLane()
-      vi.spyOn(internals, 'schedulePendingDrain').mockResolvedValue()
-      const accepted = await lane.accept({ kind: 'prompt', operationId: crypto.randomUUID(), prompt: 'fixture holds a turn' }, context)
-      if (!accepted.ok) throw accepted.error
-      const steer = await instance.submitSteer({ submissionId: operation, prompt: '  native exact input\n ', photoIds: [photoId] })
-      expect(steer.state).toBe('accepted')
-      if (!('entryId' in steer)) throw new Error('No native entry')
-      expect(await instance.chatRecovery()).toEqual([]) // still queued, not unconsumed
-      const canceled = await lane.cancelQueued(steer.entryId, context)
-      expect(canceled).toMatchObject({ ok: true, value: { kind: 'cancelled' } })
-    })
-    const recovery = await f.stub.chatRecovery()
-    expect(recovery).toMatchObject([{ sourceId: operation, operationId: operation, text: '  native exact input\n ', replacementEligible: true, state: 'unconsumed', images: [{ attachmentId: photoId }] }])
-    expect((await f.request(`/api/chat/media/${photoId}/original`)).status).toBe(200)
-    const fresh = f.makeUpload()
-    const images = (await (await f.upload(fresh)).json() as { images: Submission['images'] }).images
-    const input = { operationId: fresh.operationId, text: 'edited', images, replacementSourceIds: [operation] }
-    expect((await f.client.submit(input)).state).toBe('accepted')
-    expect(await f.stub.chatRecovery()).toEqual([])
-    // Idempotent retry must reconcile before checking the now-replaced source.
-    expect((await f.client.submit(input)).state).toBe('accepted')
-    await expect(f.client.submit({ operationId: crypto.randomUUID(), text: 'again', replacementSourceIds: [operation] })).rejects.toThrow()
-    expect((await f.request(`/api/chat/media/${photoId}/original`)).status).toBe(404)
-    await runInDurableObject(f.stub, async instance => {
-      const lane = await (instance as unknown as { getLane(): Promise<AgentLane> }).getLane()
-      const drive = vi.spyOn(lane, 'drive').mockResolvedValue({ ok: true, value: { kind: 'waiting', reason: 'deferred' } } as Awaited<ReturnType<AgentLane['drive']>>)
-      try {
-        const steer = await instance.getSteerAdmission(fresh.operationId)
-        expect(steer).toMatchObject({ state: 'accepted' })
-        if (!('entryId' in steer)) throw new Error('No steer')
-        const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
-        expect(storage.getValueSync((await import('@earendil-works/pi-agent-core/harness/session')).pendingEntry(steer.entryId))?.value).toMatchObject({ payload: { content: [{ type: 'text', text: 'edited' }, { type: 'image', data: model, mimeType: 'image/jpeg' }] } })
-      } finally { drive.mockRestore() }
-    })
-  } finally { f.close(); vi.restoreAllMocks() }
-})
-
-it('rejects consumed recovery atomically even when native consumption races shared validation', async () => {
-  const f = await fixture()
-  try {
-    const id = crypto.randomUUID()
-    await runInDurableObject(f.stub, async (instance) => {
-      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
-      storage.recordChat(id, { operationId: id, text: 'rejected input', kind: 'prompt', turnId: id, rejected: true })
-      expect(storage.eligible(id)).toBe(true)
-      expect(storage.recordChat(id, { operationId: id, text: 'rejected input', kind: 'steer', turnId: null })).toBe(false)
-      expect(() => storage.recordChat(id, { operationId: id, text: 'changed input', kind: 'prompt', turnId: id })).toThrow('identity conflict')
-      const next = crypto.randomUUID()
-      // The exact source was consumed after preliminary validation, before the new harness commit.
-      storage.recordChat(next, { operationId: next, text: 'replacement', kind: 'prompt', turnId: next, replacementSourceIds: [id] })
-      storage.setChatRejected(id, false)
-      const lane = await (instance as unknown as { getLane(): Promise<AgentLane> }).getLane()
-      await expect(lane.accept({ kind: 'prompt', operationId: next, prompt: 'replacement' }, context)).rejects.toThrow()
-      expect(storage.replaced(id)).toBe(false)
-      expect(storage.entriesInOrder().some(e => e.type === 'message' && e.message.role === 'user')).toBe(false)
-    })
-  } finally { f.close(); vi.restoreAllMocks() }
-})
-
-it('never turns an envelope or missing native ledger into replayable recovery; media-disabled text remains usable', async () => {
-  const f = await fixture()
-  try {
-    const id = crypto.randomUUID()
-    await runInDurableObject(f.stub, instance => {
-      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
-      storage.recordChat(id, { operationId: id, text: 'uncertain', kind: 'prompt', turnId: id })
-    })
-    expect((await f.client.lookup(id)).state).toBe('uncertain')
-    expect(await f.stub.chatRecovery()).toMatchObject([{ operationId: id, state: 'uncertain', replacementEligible: false }])
-    await expect(f.client.submit({ operationId: crypto.randomUUID(), text: 'unsafe retry', replacementSourceIds: [id] })).rejects.toThrow()
-    expect((await worker.fetch(new Request('http://images.fixture/api/chat/images', { method: 'POST', headers: { authorization, origin: 'http://images.fixture', 'content-type': 'application/json' }, body: JSON.stringify(f.makeUpload()) }), Object.assign({}, env, { COMPANION_SESSION_ID: f.id, COMPUTER_R2: undefined }))).status).toBe(503)
-  } finally { f.close(); vi.restoreAllMocks() }
 })
 
 it('keeps partial R2 uploads unusable until every exact variant is retried, and enforces body/variant caps', async () => {
@@ -180,146 +96,112 @@ it('keeps partial R2 uploads unusable until every exact variant is retried, and 
   } finally { f.close(); vi.restoreAllMocks() }
 })
 
-it('the real native fake model receives the exact uploaded JPEG bytes for both prompt and active-turn steer', async () => {
-  const requests: unknown[] = []
-  const original = globalThis.fetch
-  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-    const url = input instanceof Request ? input.url : String(input)
-    if (!url.startsWith('https://openrouter.ai/')) return original(input, init)
-    if (typeof init?.body !== 'string') throw new Error('Expected native model JSON request body')
-    requests.push(JSON.parse(init.body))
-    return new Response('data: {"id":"fixture","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[{"index":0,"delta":{"role":"assistant","content":"Native model observed image"},"finish_reason":null}]}\n\ndata: {"id":"fixture","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+
+async function hold(f: Awaited<ReturnType<typeof fixture>>) {
+  let release!: () => void
+  let first = true
+  const fake = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+    const reply = nativeReply('openrouter', 'Fixture resumed')
+    if (!first) return reply
+    first = false
+    const bytes = await reply.arrayBuffer()
+    return new Response(new ReadableStream({ start(controller) { release = () => { controller.enqueue(new Uint8Array(bytes)); controller.close() } } }), { headers: { 'content-type': 'text/event-stream' } })
   })
-  const f = await fixture()
-  try {
-    const first = f.makeUpload()
-    const images = (await (await f.upload(first)).json() as { images: Submission['images'] }).images
-    await f.client.submit({ operationId: first.operationId, text: 'image prompt', images })
-    await vi.waitFor(() => expect(requests.length).toBe(1))
-    expect(JSON.stringify(requests[0])).toContain(`data:image/jpeg;base64,${model}`)
-    await vi.waitFor(async () => expect(f.view()?.activeTurnId).toBeNull())
-    const activeId = crypto.randomUUID()
-    await runInDurableObject(f.stub, async instance => {
-      const internals = instance as unknown as { getLane(): Promise<AgentLane>; schedulePendingDrain(): Promise<void> }
-      vi.spyOn(internals, 'schedulePendingDrain').mockResolvedValue()
-      const result = await (await internals.getLane()).accept({ kind: 'prompt', operationId: activeId, prompt: 'active fixture turn' }, context)
-      if (!result.ok) throw result.error
-    })
-    const second = f.makeUpload()
-    const next = (await (await f.upload(second)).json() as { images: Submission['images'] }).images
-    expect((await f.client.submit({ operationId: second.operationId, text: 'image steering', images: next })).state).toBe('accepted')
-    await runInDurableObject(f.stub, async instance => {
-      const result = await (await (instance as unknown as { getLane(): Promise<AgentLane> }).getLane()).drive({ operationId: activeId }, context)
-      if (!result.ok) throw result.error
-    })
-    expect(JSON.stringify(requests.at(-1))).toContain(`data:image/jpeg;base64,${model}`)
-    expect(JSON.stringify(requests.at(-1))).toContain('image steering')
-    expect((await f.client.lookup(second.operationId)).state).toBe('consumed')
-    expect((await f.stub.listConversationPhotos()).images).toHaveLength(2)
-  } finally { f.close(); vi.restoreAllMocks() }
-})
+  const operationId = crypto.randomUUID()
+  expect(await f.client.submit({ operationId, text: 'hold actual native generation' })).toMatchObject({ state: 'submitted' })
+  await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+  let released = false
+  return { release: () => runInDurableObject(f.stub, () => { if (!released) { released = true; release() } }), fake, operationId }
+}
+async function withdraw(f: Awaited<ReturnType<typeof fixture>>, input: Submission) {
+  expect(await f.client.submit(input)).toMatchObject({ state: 'submitted', messageId: null })
+  expect(await f.stub.chatRecovery()).toEqual([])
+  await runInDurableObject(f.stub, async instance => {
+    expect(await (instance as unknown as NativeFixture).native.abort({ operationId: input.operationId })).toBe(true)
+  })
+  expect(await f.client.lookup(input.operationId)).toMatchObject({ state: 'submitted' })
+}
 
-it.each(['prompt', 'steer'] as const)('does not admit or execute %s revoked during actual R2 model reads', async kind => {
-  const f = await fixture(), operationId = crypto.randomUUID(), photoId = crypto.randomUUID()
+it.each(['', '  exact ordered text\n '])('recovers only a withdrawn native queued input, retains media identity and consumes replacement once (%s)', async text => {
+  const f = await fixture(), held = await hold(f)
   try {
-    await f.stub.uploadPhoto({ operationId, id: photoId, order: 0, name: 'revoked.jpg', mediaType: 'image/jpeg', original: jpeg, preview: jpeg, model })
-    await runInDurableObject(f.stub, async instance => {
-      const inner = instance as unknown as { getLane(): Promise<AgentLane>; env: Env; sessionStorage: PiSessionStorage }
-      const lane = await inner.getLane()
-      const accept = vi.spyOn(lane, 'accept'), steer = vi.spyOn(lane, 'steer'), drive = vi.spyOn(lane, 'drive')
-      let active = true
-      vi.spyOn(instance, 'verifyCurrentConnection').mockImplementation(async () => { if (!active) throw new Error('Session expired') })
-      const get = inner.env.COMPUTER_R2!.get.bind(inner.env.COMPUTER_R2!)
-      vi.spyOn(inner.env.COMPUTER_R2!, 'get').mockImplementation(async (...args: Parameters<typeof get>) => { const value = await get(...args); active = false; return value })
-      const result = kind === 'steer' ? instance.submitSteer({ submissionId: operationId, prompt: 'revoked', photoIds: [photoId] }) : instance.prompt({ send: () => true, end: () => true }, { operationId, prompt: 'revoked', photoIds: [photoId] })
-      await expect(result).rejects.toThrow('Session expired')
-      expect(active).toBe(false)
-      expect(inner.sessionStorage.getPromptSubmission(operationId)).toBeUndefined()
-      expect(inner.sessionStorage.steerRecord(operationId)).toBeUndefined()
-      expect(inner.sessionStorage.nativeInputs()).toEqual([])
-      expect(accept).not.toHaveBeenCalled(); expect(steer).not.toHaveBeenCalled(); expect(drive).not.toHaveBeenCalled()
-    })
-  } finally { f.close(); vi.restoreAllMocks() }
-})
-
-it.each(['', 'native text plus images'])('retains exact ordered native recovery metadata after photo deletion (%s)', async text => {
-  const f = await fixture(), operationId = crypto.randomUUID(), ids = [crypto.randomUUID(), crypto.randomUUID()]
-  try {
-    for (const [order, id] of ids.entries()) await f.stub.uploadPhoto({ operationId, id, order, name: `native-${order}.jpg`, mediaType: 'image/jpeg', original: jpeg, preview: jpeg, model })
-    await runInDurableObject(f.stub, async instance => {
-      const inner = instance as unknown as { getLane(): Promise<AgentLane>; schedulePendingDrain(): Promise<void> }
-      vi.spyOn(inner, 'schedulePendingDrain').mockResolvedValue()
-      const lane = await inner.getLane(), hold = await lane.accept({ kind: 'prompt', operationId: crypto.randomUUID(), prompt: 'hold' }, context)
-      if (!hold.ok) throw hold.error
-      const input = await instance.submitSteer({ submissionId: operationId, prompt: text, photoIds: ids })
-      if (!('entryId' in input)) throw new Error('Missing native admission')
-      const cancel = await lane.cancelQueued(input.entryId, context)
-      if (!cancel.ok) throw cancel.error
-    })
-    await f.stub.deleteConversationPhoto(ids[0]!)
-    expect(await f.stub.chatRecovery()).toMatchObject([{ sourceId: operationId, text, state: 'unconsumed', replacementEligible: true, images: [{ attachmentId: ids[0], name: 'native-0.jpg', availability: 'missing' }, { attachmentId: ids[1], name: 'native-1.jpg', availability: 'available' }] }])
-    expect((await f.request(`/api/chat/media/${ids[0]}/original`)).status).toBe(404)
-    const response = await f.request('/api/chat/socket', { headers: { origin: 'http://images.fixture', upgrade: 'websocket' } }), socket = response.webSocket!; socket.accept()
-    let view: ChatView | undefined
-    const client = await openChat(socket, value => { view = value }, () => {})
-    try { await vi.waitFor(() => expect(view?.recovery[0]?.images.map(image => image.attachmentId)).toEqual(ids)) } finally { client.close(); socket.close() }
-    await expect(f.client.submit({ operationId: crypto.randomUUID(), text, images: (await f.stub.chatRecovery())[0]!.images, replacementSourceIds: [operationId] })).rejects.toThrow()
-    expect((await f.stub.chatRecovery())[0]?.replacementEligible).toBe(true)
-  } finally { f.close(); vi.restoreAllMocks() }
-})
-
-it('retains the immutable shared image refs after native photo deletion', async () => {
-  const f = await fixture()
-  try {
-    await runInDurableObject(f.stub, async instance => {
-      const inner = instance as unknown as { getLane(): Promise<AgentLane>; schedulePendingDrain(): Promise<void> }
-      vi.spyOn(inner, 'schedulePendingDrain').mockResolvedValue()
-      const hold = await (await inner.getLane()).accept({ kind: 'prompt', operationId: crypto.randomUUID(), prompt: 'hold' }, context)
-      if (!hold.ok) throw hold.error
-    })
-    const input = f.makeUpload(), images = (await (await f.upload(input)).json() as { images: Submission['images'] }).images!
-    const receipt = await f.client.submit({ operationId: input.operationId, text: '', images })
-    await runInDurableObject(f.stub, async instance => {
-      const cancel = await (await (instance as unknown as { getLane(): Promise<AgentLane> }).getLane()).cancelQueued(receipt.messageId!, context)
-      if (!cancel.ok) throw cancel.error
-    })
-    await f.stub.deleteConversationPhoto(images[0]!.attachmentId)
-    expect((await f.stub.chatRecovery())[0]).toMatchObject({ operationId: input.operationId, text: '', images: [{ ...images[0], availability: 'missing' }], replacementEligible: true })
-    expect((await f.client.lookup(input.operationId)).state).toBe('unconsumed')
-  } finally { f.close(); vi.restoreAllMocks() }
-})
-
-it.each([201, 255])('abbreviates native %i-character names in history/recovery while preserving media and fresh resend identity', async length => {
-  const f = await fixture(), name = 'n'.repeat(length), expected = 'n'.repeat(199) + '…', historyId = crypto.randomUUID(), historyPhoto = crypto.randomUUID(), source = crypto.randomUUID(), sourcePhoto = crypto.randomUUID()
-  try {
-    for (const [operationId, id] of [[historyId, historyPhoto], [source, sourcePhoto]]) await f.stub.uploadPhoto({ operationId: operationId!, id: id!, order: 0, name, mediaType: 'image/jpeg', original: jpeg, preview: jpeg, model })
-    await runInDurableObject(f.stub, async instance => {
-      const inner = instance as unknown as { getLane(): Promise<AgentLane>; schedulePendingDrain(): Promise<void>; sessionStorage: PiSessionStorage }
-      vi.spyOn(inner, 'schedulePendingDrain').mockResolvedValue()
-      const lane = await inner.getLane()
-      vi.spyOn(lane, 'drive').mockResolvedValue({ ok: true, value: { kind: 'waiting', reason: 'deferred' } } as Awaited<ReturnType<AgentLane['drive']>>)
-      await instance.prompt({ send: () => true, end: () => true }, { operationId: historyId, prompt: '', photoIds: [historyPhoto] })
-      const input = await instance.submitSteer({ submissionId: source, prompt: '', photoIds: [sourcePhoto] })
-      if (!('entryId' in input)) throw new Error('Missing native entry')
-      const cancel = await lane.cancelQueued(input.entryId, context)
-      if (!cancel.ok) throw cancel.error
-      expect(inner.sessionStorage.photo(historyPhoto)?.name).toBe(name)
-      expect(inner.sessionStorage.photo(sourcePhoto)?.name).toBe(name)
-    })
-    const recovery = (await f.stub.chatRecovery())[0]!
-    expect(recovery.images).toMatchObject([{ attachmentId: sourcePhoto, name: expected, availability: 'available' }])
-    const response = await f.request('/api/chat/socket', { headers: { origin: 'http://images.fixture', upgrade: 'websocket' } }), socket = response.webSocket!; socket.accept()
-    let view: ChatView | undefined
-    const client = await openChat(socket, value => { view = value }, () => {})
-    try { await vi.waitFor(() => expect(view?.messages.find(message => message.images?.[0]?.attachmentId === historyPhoto)?.images).toMatchObject([{ attachmentId: historyPhoto, name: expected }]), { timeout: 5000 }) } finally { client.close(); socket.close() }
-    for (const id of [historyPhoto, sourcePhoto]) expect(await (await f.request(`/api/chat/media/${id}/original`)).arrayBuffer()).toEqual(Uint8Array.from(atob(jpeg), c => c.charCodeAt(0)).buffer)
-    const fresh = f.makeUpload(); fresh.images[0]!.name = recovery.images[0]!.name
-    const images = (await (await f.upload(fresh)).json() as { images: Submission['images'] }).images
-    const replacement = { operationId: fresh.operationId, text: 'edited', images, replacementSourceIds: [source] }
-    expect((await f.client.submit(replacement)).state).toBe('accepted')
-    expect((await f.client.submit(replacement)).state).toBe('accepted')
+    const upload = f.makeUpload()
+    upload.images.push({ ...upload.images[0]!, id: 'second', order: 1, name: 'second.jpg' })
+    const images = (await (await f.upload(upload)).json() as { images: NonNullable<Submission['images']> }).images
+    await withdraw(f, { operationId: upload.operationId, text, images })
+    expect(await f.stub.chatRecovery()).toMatchObject([{ sourceId: upload.operationId, operationId: upload.operationId, text, images, replacementEligible: true }])
+    expect((await f.request(`/api/chat/media/${images[0]!.attachmentId}/original`)).status).toBe(200)
+    const fresh = f.makeUpload()
+    const replacementImages = (await (await f.upload(fresh)).json() as { images: Submission['images'] }).images
+    const replacement = { operationId: fresh.operationId, text: 'edited recovery', images: replacementImages, replacementSourceIds: [upload.operationId] }
+    expect(await f.client.submit(replacement)).toMatchObject({ state: 'submitted' })
+    expect(await f.client.submit(replacement)).toMatchObject({ state: 'submitted' })
     expect(await f.stub.chatRecovery()).toEqual([])
-    expect(images![0]!.attachmentId).not.toBe(sourcePhoto)
-    await runInDurableObject(f.stub, instance => { expect((instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage.photo(sourcePhoto)?.name).toBe(name) })
+    expect(await f.client.submit({ operationId: crypto.randomUUID(), text: 'duplicate recovery', replacementSourceIds: [upload.operationId] })).toMatchObject({ state: 'failed' })
+    await expect(f.client.submit({ ...replacement, replacementSourceIds: [] })).rejects.toThrow()
+    await held.release()
+    await runInDurableObject(f.stub, async instance => { await (instance as unknown as NativeFixture).native.wait(fresh.operationId) })
+    expect(await f.client.lookup(fresh.operationId)).toMatchObject({ state: 'submitted' })
+  } finally { await held.release(); await runInDurableObject(f.stub, async instance => { await (instance as unknown as NativeFixture).native.wait(held.operationId) }); f.close(); vi.restoreAllMocks() }
+})
+
+it('keeps an unproven domain association ambiguous and prevents replayable recovery', async () => {
+  const f = await fixture()
+  try {
+    const operationId = crypto.randomUUID()
+    await runInDurableObject(f.stub, (_instance, state) => new PiSessionStorage(state.storage).recordChat(operationId, { operationId, text: 'uncertain input', turnId: operationId }))
+    expect(await f.client.lookup(operationId)).toBeNull()
+    expect(await f.stub.chatRecovery()).toEqual([])
+    expect(await f.client.submit({ operationId: crypto.randomUUID(), text: 'unsafe replay', replacementSourceIds: [operationId] })).toMatchObject({ state: 'failed' })
+    expect((await worker.fetch(new Request('http://images.fixture/api/chat/images', { method: 'POST', headers: { authorization, origin: 'http://images.fixture', 'content-type': 'application/json' }, body: JSON.stringify(f.makeUpload()) }), Object.assign({}, env, { COMPANION_SESSION_ID: f.id, COMPUTER_R2: undefined }))).status).toBe(503)
   } finally { f.close(); vi.restoreAllMocks() }
+})
+
+it.each([201, 255])('preserves withdrawn image refs after deletion and abbreviates a %i-character name', async length => {
+  const f = await fixture(), held = await hold(f)
+  try {
+    const operationId = crypto.randomUUID(), attachmentId = crypto.randomUUID(), name = 'n'.repeat(length)
+    await f.stub.uploadPhoto({ operationId, id: attachmentId, order: 0, name, mediaType: 'image/jpeg', original: jpeg, preview: jpeg, model })
+    const images = [{ attachmentId, name: 'n'.repeat(199) + '…', mediaType: 'image/jpeg' as const, availability: 'available' as const }]
+    await withdraw(f, { operationId, text: '', images })
+    await f.stub.deleteConversationPhoto(attachmentId)
+    expect(await f.stub.chatRecovery()).toMatchObject([{ operationId, text: '', images: [{ ...images[0], availability: 'missing' }], replacementEligible: true }])
+    expect(await f.client.lookup(operationId)).toMatchObject({ state: 'submitted' })
+    expect((await f.request(`/api/chat/media/${attachmentId}/original`)).status).toBe(404)
+    await expect(f.client.submit({ operationId: crypto.randomUUID(), text: '', images: (await f.stub.chatRecovery())[0]!.images, replacementSourceIds: [operationId] })).rejects.toThrow('Invalid submitted images')
+  } finally { await held.release(); await runInDurableObject(f.stub, async instance => { await (instance as unknown as NativeFixture).native.wait(held.operationId) }); f.close(); vi.restoreAllMocks() }
+})
+
+it('revalidates the captured authenticated socket after actual R2 preparation and admits no revoked input', async () => {
+  const f = await fixture()
+  const fake = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => nativeReply('openrouter', 'Must not execute'))
+  try {
+    const upload = f.makeUpload(), images = (await (await f.upload(upload)).json() as { images: Submission['images'] }).images
+    let revoked = false
+    await runInDurableObject(f.stub, instance => {
+      const inner = instance as unknown as { env: Env; verifyConnection(connection: unknown): Promise<void> }
+      const get = inner.env.COMPUTER_R2!.get.bind(inner.env.COMPUTER_R2!)
+      vi.spyOn(inner.env.COMPUTER_R2!, 'get').mockImplementation(async (...args: Parameters<typeof get>) => { const object = await get(...args); revoked = true; return object })
+      vi.spyOn(inner, 'verifyConnection').mockImplementation(async () => { if (revoked) throw new Error('Revoked fixture connection') })
+    })
+    await expect(f.client.submit({ operationId: upload.operationId, text: 'revoked input', images })).rejects.toThrow()
+    expect(revoked).toBe(true)
+    expect(await f.stub.lookupChat(upload.operationId)).toBeNull()
+    expect(await f.stub.chatRecovery()).toEqual([])
+    expect(fake).not.toHaveBeenCalled()
+  } finally { f.close(); vi.restoreAllMocks() }
+})
+
+it('keeps one public message identity when a published queued input becomes a placed native entry', async () => {
+  const f = await fixture(), held = await hold(f)
+  try {
+    const upload = f.makeUpload(), images = (await (await f.upload(upload)).json() as { images: Submission['images'] }).images
+    const input = { operationId: upload.operationId, text: 'queued image publication', images }
+    expect(await f.client.submit(input)).toMatchObject({ state: 'submitted', messageId: null })
+    await vi.waitFor(() => expect(f.view()?.messages.find(message => message.operationId === input.operationId)?.id).toBe(`submission:${input.operationId}`), { timeout: 10000 })
+    await held.release()
+    await runInDurableObject(f.stub, async instance => { await (instance as unknown as NativeFixture).native.wait(input.operationId) })
+    expect(await f.client.lookup(input.operationId)).toMatchObject({ messageId: `submission:${input.operationId}` })
+    await vi.waitFor(() => expect(f.view()?.messages.filter(message => message.operationId === input.operationId)).toMatchObject([{ id: `submission:${input.operationId}`, text: input.text }]), { timeout: 10000 })
+  } finally { await held.release(); f.close(); vi.restoreAllMocks() }
 })

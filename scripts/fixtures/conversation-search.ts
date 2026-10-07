@@ -1,10 +1,9 @@
 // Test-owned workerd entry only. Seed native entries/archives; never fabricate public hits/context.
 import worker from '../../src/server'
-import { PiSession as ImageSession, fixture } from './image-send-recovery'
+import { PiSession as ImageSession } from './native-submissions'
+import { archiveFixture } from '../../src/server/fixtures/archive-entry'
 import { PiRegistry as NativeRegistry } from '../../src/server/pi-registry'
 import { searchId } from '../../src/server/conversation-search'
-import { BACKGROUND_CONTEXT as context } from '@earendil-works/pi-agent-core/harness/context'
-import { branchTip, setValue } from '@earendil-works/pi-agent-core/harness/session'
 const at = '2026-10-02T12:00:00Z', timestamp = Date.parse(at)
 const suffix = ' <img src=x onerror=alert(1)>'
 
@@ -27,16 +26,13 @@ export class PiSession extends ImageSession {
     add('archive-1', '灯塔 lighthouse repeated' + suffix)
     add('nearby-repeated', 'nearby summary ' + '🕯'.repeat(13000), true)
     for (let i = 3; i < 22; i++) add(`archive-${i}`, `灯塔 lighthouse record ${i}` + suffix)
-    await this.importSession({ metadata, entries, compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 }, files: [] })
+    for (const entry of entries) archiveFixture(this.sessionStorage, entry)
     // Real outbox and existing targeted summary refresh feed the same native FTS.
     return metadata.id
   }
   async resetSearchChat() {
-    fixture.hold = false; fixture.mode = 'consumed'; fixture.regressions = true
-    for (const release of fixture.releases.splice(0)) release()
-    const metadata = this.sessionStorage.getMetadataSync()
-    await this.importSession({ metadata, entries: [], compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 }, files: [] })
-    await this.sessionStorage.commit([setValue(branchTip('main'), null)], context)
+    await this.native.abort()
+    await (await this.getHarness()).waitForIdle(this.nativeContext)
   }
   async searchState() {
     const branch = await this.getBranch()
@@ -45,6 +41,7 @@ export class PiSession extends ImageSession {
 }
 
 export class PiRegistry extends NativeRegistry {
+  async ensureDefaultSession() { const ids = await this.ctx.storage.get('searchFixtureIds'); return ids ? (await this.listSessions()).find(s => s.id === ids.active) : super.ensureDefaultSession() }
   calls = []
   failures = new Set()
   holdKey
@@ -82,7 +79,8 @@ export class PiRegistry extends NativeRegistry {
       const events = await this.session(ids.archive).flushOutbox()
       await this.applyIndexEvents(ids.archive, events)
       await this.session(ids.archive).acknowledgeOutbox(events.map(e => e.eventId))
-      await this.session(ids.active).resetSearchChat()
+      ids.active = (await this.createSession({name:'Test-owned active search'})).id
+      await this.ctx.storage.put('searchFixtureIds',ids)
     }
     if (input.action === 'failure') input.enabled ? this.failures.add(input.method) : this.failures.delete(input.method)
     if (input.action === 'hold') this.holdKey = input.key

@@ -1,133 +1,55 @@
 import { env } from 'cloudflare:workers'
 import { runInDurableObject } from 'cloudflare:test'
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentLane } from '@earendil-works/pi-agent-core'
-import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
+import type { NativeFixture } from './fixtures/native-session'
+import { nativeReply } from './fixtures/native-provider'
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import type { PiRegistry } from './pi-registry'
 import type { PiSession } from './pi-session'
 import { PiSessionStorage } from './pi-session-storage'
 import type { SessionIndexEvent } from '../shared/pi-contract'
 
 type RegistryStub = DurableObjectStub<PiRegistry>
-type SessionStub = {
-  getOverview(): ReturnType<import('./pi-session').PiSession['getOverview']>
-  getBranch(leafId?: string): ReturnType<import('./pi-session').PiSession['getBranch']>
-  listFiles(): ReturnType<import('./pi-session').PiSession['listFiles']>
-  importSession(snapshot: unknown): ReturnType<import('./pi-session').PiSession['getOverview']>
-  exportClone(): Promise<{ files: Array<{ path: string; content: string; encoding?: 'base64' }> }>
-  readWorkspaceFile(path: string): ReturnType<import('./pi-session').PiSession['readWorkspaceFile']>
-  listDiary(): ReturnType<import('./pi-session').PiSession['listDiary']>
-  readDiary(name: string): ReturnType<import('./pi-session').PiSession['readDiary']>
-  getPromptAdmission(operationId: string): ReturnType<import('./pi-session').PiSession['getPromptAdmission']>
-}
-
 const registry = () => env.PiRegistry.getByName('singleton') as RegistryStub
-const session = (id: string) => env.PiSession.getByName(id) as unknown as SessionStub
+const session = (id: string) => env.PiSession.getByName(id) as DurableObjectStub<PiSession>
 
 describe('durable sessions', () => {
   it('registers file tools without code execution, Git, publish, or app tools', async () => {
     const created = await registry().createSession({ name: 'Free tool surface' })
     const stub = env.PiSession.getByName(created.id) as DurableObjectStub<PiSession>
     await runInDurableObject(stub, async (instance) => {
-      const lane = await (instance as unknown as { getLane(): Promise<AgentLane> }).getLane()
-      const names = await lane.getActiveTools(BACKGROUND_CONTEXT)
+      const lane = await (instance as unknown as NativeFixture).getLane()
+      const names = (await lane.agent(BACKGROUND_CONTEXT)).tools.map(tool => tool.name)
       expect(names).toEqual(expect.arrayContaining(['read', 'write', 'edit', 'list', 'find', 'grep', 'session_search']))
       for (const forbidden of ['exec', 'javascript', 'publish', 'initialize_app']) expect(names).not.toContain(forbidden)
     })
   })
 
-  it('keeps exclusive operations blocked throughout restart recovery', async () => {
-    const created = await registry().createSession({ name: 'Recovery exclusivity' })
-    const stub = env.PiSession.getByName(created.id) as DurableObjectStub<PiSession>
-    await runInDurableObject(stub, async (instance, state) => {
-      const internals = instance as unknown as {
-        getLane(): Promise<AgentLane>
-        flushOutboxToRegistry(): Promise<void>
-        scheduleMemoryExtraction(): void
-        schedulePendingDrain(): Promise<void>
-        active: boolean
-        promptOperationId?: string
-      }
-      const lane = await internals.getLane()
-      const operationId = crypto.randomUUID()
-      new PiSessionStorage(state.storage).admitPromptSubmission(operationId, 'test-fingerprint')
-      const accepted = await lane.accept({ kind: 'prompt', operationId, prompt: 'Recovery test' }, BACKGROUND_CONTEXT)
-      expect(accepted.ok).toBe(true)
-
-      let finishResume!: (result: Awaited<ReturnType<AgentLane['resume']>>) => void
-      const pendingResume = new Promise<Awaited<ReturnType<AgentLane['resume']>>>((resolve) => { finishResume = resolve })
-      const getLane = vi.spyOn(internals, 'getLane').mockResolvedValue(lane)
-      const resume = vi.spyOn(lane, 'resume').mockReturnValue(pendingResume)
-      const flush = vi.spyOn(internals, 'flushOutboxToRegistry').mockResolvedValue()
-      const memory = vi.spyOn(internals, 'scheduleMemoryExtraction').mockImplementation(() => {})
-      const drain = vi.spyOn(internals, 'schedulePendingDrain').mockResolvedValue()
-      try {
-        await instance.onStart()
-        await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(1))
-        expect(internals.active).toBe(true)
-        expect(internals.promptOperationId).toBe(operationId)
-        await expect(instance.compact()).rejects.toThrow('Pi is currently running.')
-        await expect(instance.exportSession()).rejects.toThrow('Pi is currently running.')
-      } finally {
-        finishResume({ ok: true, value: { operationId, status: 'completed' } } as Awaited<ReturnType<AgentLane['resume']>>)
-        await vi.waitFor(() => expect(internals.active).toBe(false))
-        await vi.waitFor(() => expect(drain).toHaveBeenCalled())
-        expect(internals.promptOperationId).toBeUndefined()
-        flush.mockRestore()
-        memory.mockRestore()
-        drain.mockRestore()
-        resume.mockRestore()
-        getLane.mockRestore()
-      }
+  it('keeps exclusive operations blocked while actual native work is active and reuses durable submission identity', async () => {
+    const created = await registry().createSession({ name: 'Native exclusivity' })
+    const stub = session(created.id)
+    let release!: () => void
+    const fake = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      await new Promise<void>(resolve => { release = resolve })
+      return nativeReply('openrouter', 'Finished native fixture')
     })
-  })
-
-  it('persists one prompt identity and rejects conflicting reuse', async () => {
-    const created = await registry().createSession({ name: 'Prompt ledger' })
-    const stub = env.PiSession.getByName(created.id) as DurableObjectStub<PiSession>
-    const operationId = crypto.randomUUID()
-    await runInDurableObject(stub, (_instance, state) => {
-      const ledger = new PiSessionStorage(state.storage)
-      const first = ledger.admitPromptSubmission(operationId, 'fingerprint-1')
-      expect(first.created).toBe(true)
-      expect(first.record).toMatchObject({ operationId, state: 'submitting' })
-      expect(ledger.admitPromptSubmission(operationId, 'fingerprint-1').created).toBe(false)
-      expect(() => ledger.admitPromptSubmission(operationId, 'fingerprint-2')).toThrow('identity conflict')
-      expect(ledger.acceptPromptSubmission(operationId, 'user-entry')).toMatchObject({ state: 'accepted', entryId: 'user-entry' })
-      expect(ledger.acceptPromptSubmission(operationId, 'user-entry').entryId).toBe('user-entry')
-      expect(() => ledger.acceptPromptSubmission(operationId, 'other-entry')).toThrow('entry identity conflict')
-    })
-    await runInDurableObject(stub, (_instance, state) => {
-      expect(new PiSessionStorage(state.storage).getPromptSubmission(operationId))
-        .toMatchObject({ operationId, fingerprint: 'fingerprint-1', state: 'accepted', entryId: 'user-entry' })
-    })
-  })
-
-  it('recovers a pre-upgrade text-only prompt without a frozen photo group', async () => {
-    const created = await registry().createSession({ name: 'Legacy prompt recovery' })
-    const stub = env.PiSession.getByName(created.id) as DurableObjectStub<PiSession>
-    const operationId = crypto.randomUUID()
-    const prompt = 'Text sent before photo support'
-    await runInDurableObject(stub, async (instance, state) => {
-      const storage = new PiSessionStorage(state.storage)
-      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(prompt)))
-      const fingerprint = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
-      state.storage.sql.exec("INSERT INTO pi_prompt_submissions(operation_id, fingerprint, state, entry_id, created_at) VALUES (?, ?, 'submitting', NULL, ?)", operationId, fingerprint, new Date().toISOString())
-      const lane = await (instance as unknown as { getLane(): Promise<AgentLane> }).getLane()
-      const accepted = await lane.accept({ kind: 'prompt', operationId, prompt }, BACKGROUND_CONTEXT)
-      expect(accepted.ok).toBe(true)
-      const admission = await instance.getPromptAdmission(operationId)
-      expect(admission).toMatchObject({ state: 'accepted' })
-      if (admission.state !== 'accepted') throw new Error('Legacy prompt was not recovered.')
-      const entryId = admission.entryId
-      expect(storage.getPromptSubmission(operationId)).toMatchObject({ state: 'accepted', entryId })
-      expect(state.storage.sql.exec('SELECT 1 FROM conversation_photo_groups WHERE operation_id = ?', operationId).toArray()).toHaveLength(0)
-
-      const events: unknown[] = []
-      await instance.prompt({ send: (event: unknown) => { events.push(event) }, end: () => {} } as unknown as Parameters<PiSession['prompt']>[0], { operationId, prompt })
-      expect(events).toContainEqual({ type: 'accepted', operationId, entryId })
-      expect(storage.photosForEntry(entryId)).toHaveLength(0)
-    })
+    try {
+      await runInDurableObject(stub, async instance => {
+        vi.spyOn(instance as unknown as { scheduleMemoryExtraction(): void }, 'scheduleMemoryExtraction').mockImplementation(() => {})
+        const input = { operationId: crypto.randomUUID(), text: 'Hold native fixture' }
+        const first = await instance.submitChat(input)
+        expect(first.state).toBe('submitted')
+        expect(await instance.submitChat(input)).toMatchObject({ state: 'submitted' })
+        await expect(instance.submitChat({ ...input, text: 'conflict' })).rejects.toThrow('identity conflict')
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+        expect(await instance.materialsRequest({ action: 'file-create', id: 'busy.md', input: { content: 'fixture' } })).toMatchObject({ status: 409 })
+        await expect(instance.updateCompactionSettings({ enabled: true, reserveTokens: 1000, keepRecentTokens: 100 })).rejects.toThrow('currently running')
+        release()
+        await (instance as unknown as NativeFixture).native.wait(input.operationId)
+        expect(await instance.lookupChat(input.operationId)).toMatchObject({ state: 'submitted', messageId: expect.any(String) })
+      })
+      expect(fake).toHaveBeenCalledTimes(1)
+    } finally { release?.(); fake.mockRestore() }
   })
 
   it('refuses photo correlation without a frozen group when an upload row exists', async () => {
@@ -144,23 +66,16 @@ describe('durable sessions', () => {
   it('reports an operation that was never admitted as missing', async () => {
     const created = await registry().createSession({ name: 'Admission lookup' })
     const operationId = crypto.randomUUID()
-    await expect(session(created.id).getPromptAdmission(operationId))
-      .resolves.toEqual({ state: 'missing', operationId })
+    await expect(session(created.id).lookupChat(operationId)).resolves.toBeNull()
   })
 
   it('reads only dated memory files from the session workspace', async () => {
     const created = await registry().createSession({ name: 'Diary source' })
     const current = session(created.id)
-    await current.importSession({
-      metadata: { id: created.id, createdAt: created.createdAt, updatedAt: created.updatedAt, lineage: { type: 'new' } },
-      entries: [],
-      compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 },
-      files: [
-        { path: '/memory/2026-09-27.md', content: '# Today' },
-        { path: '/memory/2026-09-26.md', content: '# Yesterday' },
-        { path: '/memory/notes.md', content: 'Private note' },
-        { path: '/memory/2026-09-25.md', content: 'x'.repeat(128 * 1024 + 1) },
-      ],
+    await runInDurableObject(current, async instance => {
+      const workspace = Reflect.get(instance, 'workspace') as import('./computer-workspace').ComputerWorkspace
+      await workspace.mkdir('/workspace/memory', { recursive: true })
+      for (const [name, content] of [['2026-09-27.md', '# Today'], ['2026-09-26.md', '# Yesterday'], ['notes.md', 'Private note'], ['2026-09-25.md', 'x'.repeat(128 * 1024 + 1)]]) await workspace.writeFile(`/workspace/memory/${name}`, content)
     })
 
     expect(await current.listDiary()).toEqual(['2026-09-27.md', '2026-09-26.md', '2026-09-25.md'])
@@ -209,52 +124,6 @@ describe('durable sessions', () => {
       role: 'user', timestamp: new Date().toISOString(), text: '今天喜欢梅花茶和散步',
     }])
     expect((await registry().searchSessions({ query: '梅花' })).map(({ session }) => session.id)).toContain(created.id)
-  })
-
-  it('forks before a selected user message and copies the current workspace', async () => {
-    const source = await registry().createSession({ name: 'Fork source' })
-    const timestamp = new Date().toISOString()
-    const messageTimestamp = Date.now()
-    await session(source.id).importSession({
-      metadata: { id: source.id, createdAt: source.createdAt, updatedAt: timestamp, lineage: { type: 'new' } },
-      entries: [
-        { type: 'message', id: 'user-1', parentId: null, seq: 1, timestamp: messageTimestamp, message: { role: 'user', content: 'First prompt', timestamp: messageTimestamp } },
-        { type: 'message', id: 'assistant-1', parentId: 'user-1', seq: 2, timestamp: messageTimestamp, message: { role: 'assistant', content: [{ type: 'text', text: 'First answer' }], api: 'openai-completions', provider: 'test', model: 'test', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop', timestamp: messageTimestamp } },
-        { type: 'message', id: 'user-2', parentId: 'assistant-1', seq: 3, timestamp: messageTimestamp, message: { role: 'user', content: 'Fork this prompt', timestamp: messageTimestamp } },
-      ],
-      compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 },
-      files: [{ path: '/notes.txt', content: 'current workspace' }],
-    })
-
-    const forked = await registry().forkSession({ sourceSessionId: source.id, entryId: 'user-2', name: 'Forked' })
-    const branch = await session(forked.id).getBranch()
-    expect(branch.entries[0]?.timestamp).toBe(new Date(messageTimestamp).toISOString())
-
-    expect(branch.entries.filter(({ type }) => type === 'message').map(({ id }) => id)).toEqual(['user-1', 'assistant-1'])
-    expect((await session(forked.id).readWorkspaceFile('/notes.txt')).content).toBe('current workspace')
-    expect(await session(forked.id).listFiles()).toContainEqual(expect.objectContaining({ path: '/workspace/notes.txt', size: 17 }))
-    expect((await session(forked.id).getOverview()).lineage).toEqual({
-      type: 'fork',
-      parentSessionId: source.id,
-      sourceEntryId: 'user-2',
-    })
-    expect((await registry().searchSessions({ query: 'First answer' })).some(({ session: item }) => item.id === forked.id)).toBe(true)
-  })
-
-  it('preserves binary workspace files in session snapshots', async () => {
-    const source = await registry().createSession({ name: 'Binary source' })
-    await session(source.id).importSession({
-      metadata: { id: source.id, createdAt: source.createdAt, updatedAt: source.updatedAt, lineage: { type: 'new' } },
-      entries: [],
-      compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 },
-      files: [{ path: '/asset.bin', content: 'AP+AQA==', encoding: 'base64' }],
-    })
-
-    expect((await session(source.id).exportClone()).files).toContainEqual({
-      path: '/workspace/asset.bin',
-      content: 'AP+AQA==',
-      encoding: 'base64',
-    })
   })
 
   it('tombstones and removes deleted sessions from discovery', async () => {

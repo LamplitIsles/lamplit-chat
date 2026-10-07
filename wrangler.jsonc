@@ -7,7 +7,7 @@
   "workers_dev": true,
   "preview_urls": false,
   "assets": {
-    "directory": "../lamplit-app/apps/web/build",
+    "directory": ".scratch/native-durable-submissions/app-browser",
     "binding": "ASSETS",
     "not_found_handling": "none",
     "html_handling": "none",

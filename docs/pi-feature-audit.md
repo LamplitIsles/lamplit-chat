@@ -1,3 +1,6 @@
+> Historical audit of Pi 0.82.1; this is not current runtime or acceptance evidence.
+> Current public durable behavior is documented in native-durable-submissions.md.
+
 # Pi Feature and Cloudflare Platform Audit
 
 This document records how the current Pi coding agent works, which capabilities

@@ -121,7 +121,7 @@ export async function accountModels(selection: ModelSelection) {
   await credentials.modify(selection.provider, async () => ({ type: 'api_key', key: selection.apiKey }))
   const models = createModels({ credentials, authContext: { env: async () => undefined, fileExists: async () => false } })
   const provider = nativeProviders().find(provider => provider.id === selection.provider)!
-  // Harness 0.99.1 does not forward maxTokens. Use the public Provider seam,
+  // Durable Harness settings do not forward maxTokens. Use the public Provider seam,
   // retaining the factory's protocol, auth and complete native model metadata.
   models.setProvider({ ...provider, streamSimple: (model, context, options) => provider.streamSimple(model, context, {
     ...options, ...(selection.maxOutputTokens === null ? {} : { maxTokens: selection.maxOutputTokens }),

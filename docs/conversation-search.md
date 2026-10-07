@@ -3,7 +3,7 @@
 
 # Shared conversation search · spec #3143
 
-The authenticated shared App exposes `lamplit.chat.v1.search({query})` and
+The authenticated shared App exposes `lamplit.chat.v2.search({query})` and
 `searchRead({id})` through `/api/chat/socket`. Schemas and transport validation
 come from `@lamplit/contracts`; the App owns the Framework7 card and reader UI.
 These reads use the current instance's PiRegistry, without navigating, resuming,
@@ -51,51 +51,11 @@ limits set `truncated`. Selected text remains complete separately. There is no
 against its existing 2 MiB UTF-8 frame limit. Lookup, storage and oversize failures
 are ordinary RPC read errors with retry, leaving the socket/chat usable.
 
-## Isolated native acceptance
+## Isolated verification
 
-Approved App #3142 source HEAD is
-`512ed6656c0564426838b7a82245453e6dd34114`. Frozen source:
-`../lamplit-app/.scratch/conversation-search/frozen-512ed66`. Read `identity.json`
-and `owner-approval.json`; approval permits adapter implementation, while merge
-remains held for both native hosts and joint user approval.
-
-Extract `lamplit-web-search.tgz`, `lamplit-contracts-search.tgz` and
-`lamplit-acceptance-search.tgz` into this repository's test-owned sibling
-`.scratch/conversation-search/artifacts/browser`, `contracts`, `acceptance`
-directories. Verify archive/manifest hashes and every extracted file before using
-it. Install dependencies in `contracts/package` first, then `acceptance` (the
-frozen runner's README uses `bun install`). Do not rebuild or edit these bytes.
-For native acceptance, the root `node_modules/@lamplit/contracts` must resolve to
-that exact extracted package; `verifySearchArtifacts()` checks it too. Normal
-repository development continues to use the npm/package-lock workflow and the
-adjacent contract dependency. No dependency or SDK patch upgrade is required.
-
-```sh
-node --input-type=module -e "import { verifySearchArtifacts } from './scripts/conversation-search-artifacts.mjs'; verifySearchArtifacts()"
-node scripts/conversation-search-local.mjs .scratch/conversation-search/native
-# In artifacts/acceptance, with the isolated host running:
-APP_ACCEPTANCE_URL=http://127.0.0.1:8975/ \
-APP_ACCEPTANCE_CONTROL_URL=http://127.0.0.1:8975/__test/conversation-search \
-APP_ACCEPTANCE_USERNAME=fixture \
-APP_ACCEPTANCE_PASSWORD=fixture-password-long-enough \
-APP_ACCEPTANCE_EVIDENCE=/absolute/repo/.scratch/conversation-search/evidence \
-bun search-browser.mjs
-# Repeat verifySearchArtifacts() after acceptance.
-```
-
-The launcher confines state, configuration, logs, registry and caches to its
-scratch root, disables real dotenv loading/metrics and binds only loopback.
-The test entry seeds actual native entries and an actual DeepSeek archive,
-delivers their real outbox events, and serves the frozen browser. Its separate
-control route can reset owned data, delay/fail delivery and return native IDs/state;
-it never substitutes public hits/context. Model calls use the existing fictional
-Pi provider fixture; no real history, credentials or paid services are used.
-Evidence includes prompt/loading/results/reader/failure screenshots at 390/1280
-and `results.json`. This entry/control route is never production routing.
-
-Run `npm run test:worker -- src/server/conversation-search.worker.test.ts` for
-native ranking, stored/new summaries, branch/import context, unknown-zone time,
-record selection, owner isolation, full selected text and context limits. Finish
-with the existing lint, typecheck, `npm test` and frontend build.
-The SDK 0.99.1 export-only quiet-compaction patch and licenses remain unchanged.
-Repository AGENTS.md is absent; no agent workflow change requires a new file.
+Use the immutable approved App #3439 artifact and current public native host in
+[native durable submissions](native-durable-submissions.md). Search checks read
+original archive records/IDs and FTS results from test-owned SQLite, without
+switching execution or replaying historical inputs. Public native conversion keeps
+old compaction summaries and alternate source paths readable. No old SDK export
+patch or private engine API is used. Orc joint native acceptance remains separate.

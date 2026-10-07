@@ -6,7 +6,7 @@ const state = { executions: 0, text: 'recognized final', hold: false, availabili
 const chunk = (delta, finish_reason) => 'data: ' + JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture-model', choices: [{ index: 0, delta, finish_reason }] }) + '\n\n'
 globalThis.fetch = async (input, init) => {
   const url = input instanceof Request ? input.url : String(input)
-  if (url.startsWith('https://example.invalid/')) {
+  if (url.startsWith('https://openrouter.ai/')) {
     state.executions++
     let release
     const body = new ReadableStream({ start(controller) {
@@ -38,12 +38,12 @@ export class PiSession extends NativeSession {
   async resetFixture() {
     if (this.active) await this.abort()
     for (const release of state.releases.splice(0)) release()
-    const metadata = this.sessionStorage.getMetadataSync()
-    await this.importSession({ metadata, entries: [], compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 }, files: [] })
+    await this.native.abort()
+    await (await this.getHarness()).waitForIdle(this.nativeContext)
   }
   async disconnectFixture() { for (const connection of this.getConnections()) connection.close(1012, 'Test-owned observation loss') }
   async settleFixture() {
-    for (let i = 0; i < 300; i++) { if (!this.active) return; await new Promise(resolve => setTimeout(resolve, 10)) }
+    for (let i = 0; i < 300; i++) { if (!(await this.native.pending()).length) return; await new Promise(resolve => setTimeout(resolve, 10)) }
     throw new Error('Held native turn did not settle')
   }
 }

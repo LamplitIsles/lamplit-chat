@@ -1,9 +1,9 @@
 # Native Pi Keet text ingress
 
 Spec #3410 restores the bounded text feed, durable queue, source association and
-four native tools from `lamplit-cloudflare`. It uses the installed Pi 0.99.1 public
-harness/lane/storage APIs and the existing serialized execution owner. It adds
-feature-local SQLite tables; it neither imports old DO data nor changes SDK/runtime.
+four native tools from `lamplit-cloudflare`. It uses the public Pi Durable 1.0.4 and Agents 0.26.0 PiHarness
+submission/storage APIs. It adds
+feature-local SQLite tables; domain data survives the native format conversion in #3436.
 
 ## Optional self-host setup
 
@@ -49,7 +49,7 @@ last eight context snippets (500 UTF-16 units each) per destination. The next
 trigger consumes that context; broadcast events only advance the checkpoint.
 
 Triggers queue FIFO behind active web/native work. Queue operation identities are
-durable. Restart repairs entry association from Pi's operation metadata and resumes
+durable. Restart repairs entry association from native request identity and resumes
 accepted native work; a terminal result settles without re-admission. Source
 association and queue acknowledgement are one SQLite transaction. Native input
 and reminder inbox work retain the existing lane behavior.
@@ -66,7 +66,7 @@ message identity, group/reaction context and private provider prompt separately.
 The provider projection restores the prior Keet DM/Group attribution and authority
 rules; neither source inherits the web Human's administrative authority. A native
 message's admission timestamp still receives existing host-turn-time projection.
-Compaction (including split-turn prefixes), branch summaries and memory extraction
+Compaction (including split-turn prefixes), memory extraction
 also restore the persisted attribution before provider requests. Memory uses exact
 entry IDs; maintenance leaves original stored display text unchanged.
 
@@ -99,57 +99,13 @@ actual shared sockets, private provider projection, unavailable images, configur
 native tool execution and disabled tools. Unit tests use owned fake MCP HTTP.
 No live chat/gallery, credentials, provider or Keet service is used.
 
-The approved original archive is App HEAD
-`09bf71009ff931cfdc75c675d9b16037bbb1d881`, SHA-256
-`c7219de5bf1596af8b27de3da38e3e75d375c7b8e7a9a975d822690a1aef31c2`.
-Extract it to `.scratch/keet-source-restoration/artifact`, install with
-`bun install --frozen-lockfile` in `contracts/package`, then `acceptance`. After
-`npm ci`, copy the extracted contract package's `dist`, `LICENSE`, `package.json`
-and `bun.lock` into `node_modules/@lamplit/contracts`. Do not build/refreeze App or
-contracts. `scripts/keet-source-restoration-artifacts.mjs` checks all 307 manifest
-files, archive/manifest identities and installed contract bytes.
+The approved App #3439 artifact replaces previous handoffs. See
+[native durable submissions](native-durable-submissions.md) for exact immutable
+identity, preparation and local/native acceptance. Generation, native compaction
+and memory tests retain private DM/Group attribution while visible entries and
+search retain original text. Historical summaries remain readable; there is no
+branch navigation or new summary-generation product interface.
 
-Start `node scripts/keet-source-restoration-local.mjs` for an actual isolated
-workerd on port 8985 with fresh scratch SQLite/R2 and fake model transport. Controls
-use the real webhook, native lane, persistence and shared socket; acknowledgements
-await native completion and shared publication. Reset selects a new owned session
-and seeds the fixed historical group and DM through real ingress, then 16 ordinary native
-turns; the runner's history controls replay the identical historical events. This
-places it behind the current page without fabricating source DTOs or storage.
-
-The original frozen runner's Group-image assertion is superseded by the Orc's
-approved runner-only correction at `7061b0972266ef1a525ff9430278cde2384ea1e1`.
-Correction archive SHA-256:
-`effb16db242eaa7686623bf07cb1469919c91d79340528ba9fe44422078e3c42`;
-runner SHA-256 `d9d2f05eb051dcda9a5334ab706f5edae0c7dbb2035753d62f7f0fe0a800a7eb`.
-Extract its `runner/` alongside the unchanged original `acceptance/` and install
-with `bun install --frozen-lockfile`; keep `runner.sha256` in owned
-`.scratch/keet-source-restoration/runner-correction/`. The verifier's
-`verifyCorrectedKeetRunner()` additionally checks all 11 correction files and the
-identical inherited Bun lock. No original artifact is overwritten.
-
-From `.scratch/keet-source-restoration/artifact/runner/`, run:
-
-```sh
-APP_ACCEPTANCE_URL=http://127.0.0.1:8985/ \
-APP_ACCEPTANCE_CONTROL_URL=http://127.0.0.1:8985/__test/keet-source-restoration \
-APP_ACCEPTANCE_KEET_IMAGE_PROFILE=text-only \
-APP_ACCEPTANCE_EVIDENCE=../../browser bun keet-browser.mjs
-```
-
-This passes on actual workerd at 390/1280/320px in light/dark with DM/Group original
-text and native unavailable notes, safe Markdown/literal hostile labels, ordinary
-composer/reply and reminder, reload/reconnect without replay and paginated native
-history. Six screenshots and results are owned scratch artifacts. The fixture
-bootstraps real native Basic-to-cookie auth only on its loopback HTML entry and
-removes Secure solely for test HTTP; other native routes retain cookie/bearer
-checks. The corrected runner receives the actual persisted image explanation.
-Pi claims no Keet image-byte coverage; final joint acceptance belongs to Orc.
-No live credentials, provider/Keet calls, migration, merge or deployment is implied.
-
-`npm run build` ordinarily builds adjacent App and must not run during this frozen
-gate. Bundle the native Worker using Wrangler `deploy --dry-run` with an owned copy
-of `wrangler.jsonc`, absolute native entry, frozen browser assets and owned output/
-config/log directories. This verifies native bundling without rebuilding App or
-contacting a deployment. Repository AGENTS.md is absent; user/host instructions
-remain applicable. Retained attribution is in `NOTICE`.
+No live model/Keet service, credentials or external messages are involved. Local
+fake-MCP/native/browser evidence does not establish remote send exactly-once or
+production behavior. Orc owns joint native acceptance and later deployment.

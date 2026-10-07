@@ -1,18 +1,17 @@
 # Lamplit Chat
 
-This repository is the canonical chat core for the self-hosted Free edition and the hosted Lamplit application. It was seeded from `pi-on-cf/feat/free-plan` at e938b28. Both deployments build the same `src/` and the shared Framework7 App from adjacent `lamplit-app`; hosted mode adds instance-scoped routing, a Platform service binding for account-bound model settings, and host-only identity enforced by the public Platform Worker. The self-hosted entry below remains independent of a Lamplit account or Platform deployment.
+This repository is the canonical chat core for the self-hosted Free edition and the hosted Lamplit application. It was seeded from `pi-on-cf/feat/free-plan` at e938b28. Both deployments build the same `src/` and the approved immutable Framework7 App artifact from `lamplit-app`; hosted mode adds instance-scoped routing, a Platform service binding for account-bound model settings, and host-only identity enforced by the public Platform Worker. The self-hosted entry below remains independent of a Lamplit account or Platform deployment.
 
 A single-user, self-hosted Pi companion on Cloudflare Workers and SQLite-backed Durable Objects. The default deployment needs no Workers Paid subscription, Worker Loader, Containers, R2, AI Gateway, work machine, Forgejo, or hosted Lamplit account. Bring one supported native provider API key or token. **This branch is a new-instance configuration; it does not migrate the author's production service.**
 
-The Companion UI supports streaming chat, durable history and branching, steer and reconnect recovery, a relationship profile, read-only timed-wake arrangements and reminder sources, learned memory, FTS5 session search, and a Markdown workspace in each session. The agent can read, write, edit, list, find, and search workspace files. It cannot run generated JavaScript or shell, use Git, build/deploy apps, or preview apps. Workspace files use the `@cloudflare/computer` SQLite file API inside the session DO; no Loader is needed. The file tools enforce `/workspace` paths, a 128 KB per-file limit, and bounded search results. Model memory extraction uses the configured model API key.
+The Companion UI supports streaming chat, durable history, native submissions and reconnect recovery, a relationship profile, read-only timed-wake arrangements and reminder sources, learned memory, FTS5 session search, and a Markdown workspace in each session. The agent can read, write, edit, list, find, and search workspace files. It cannot run generated JavaScript or shell, use Git, build/deploy apps, or preview apps. Workspace files use the `@cloudflare/computer` SQLite file API inside the session DO; no Loader is needed. The file tools enforce `/workspace` paths, a 128 KB per-file limit, and bounded search results. Model memory extraction uses the configured model API key.
 
-The chat core pins `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` to
-**0.99.1**. Offline compatibility checks load synthetic 0.87.1 committed writes
-into test-owned Durable Object SQLite, append a message and reconstruct storage;
-a fake OpenAI-compatible response exercises the existing harness's prompt,
-timezone, tool declarations, image projection and reply persistence. This upgrade
-adds no MCP, codemode, Bash, image generation or import capability. It does not
-establish production provider performance or deploy either edition.
+The chat core pins public `@earendil-works/pi-durable` and `pi-ai` **1.0.4**,
+with Cloudflare Agents **0.26.0** public-beta `PiHarness`. Native task/submission
+records own execution and restart recovery. The authenticated host adds immutable
+content checking; native requestId deduplication itself does not compare payloads.
+See [native runtime, data conversion and acceptance](docs/native-durable-submissions.md)
+for #3436, the approved App identity, local gates and remaining Orc acceptance.
 
 ## Chat on mobile
 
@@ -26,22 +25,21 @@ During recording or recognition that position becomes the accessible Cancel acti
 Photos retain type, size, count, preview, removal and upload checks. Image-only sends
 are supported; rejected drafts and attachments remain available for explicit retry.
 Chinese IME composition cannot submit, Enter sends, and Shift+Enter inserts a newline.
-Native steer and stop admission remain unchanged.
+Submitted input remains distinct from reply completion, failure and stop.
 
 Click the microphone to stream recognition while speaking, then click Stop to flush and await final text. It remains available alongside Send when text already exists. Recognition inserts at the cursor or replaces selected text, preserves attachments, and never sends automatically. The draft is read-only during recording/recognition; Cancel or Escape preserves it. Cancel, tab hide, leaving the page, or changing sessions releases capture and discards late results. Cancellation before permission resolves never starts recording later. Space/Enter activate the focused button. Voice requires HTTPS (or localhost), microphone permission, AudioWorklet, and an actual 16kHz AudioContext.
 
-Voice uses a separate Beijing-region Alibaba Model Studio key with the fixed `qwen-audio-3.1-asr-flash-streaming` WebSocket endpoint. Self-host operators set the **`VOICE_API_KEY` Worker secret** independently of the chat model key; hosted chat obtains current settings only from Platform. Capability refreshes on load, focus, and pageshow; every streaming connection resolves the current key again. See [voice setup, limits, privacy and isolated fixtures](docs/voice-input.md). The relay consumes the compiled `@lamplit/contracts/voice` package from adjacent `lamplit-app/packages/contracts`; `/api/voice/capability` alone advertises recording availability, with no competing voice flag in chat snapshots. Missing or failing capability leaves text chat usable. The shared browser inserts only finalized text into an editable draft after Finish; drafts above the shared chat's 16,000 UTF-16-unit send limit must be shortened before Send. The shared App is the default frontend; recording remains separate from sending. Exact frozen native acceptance and remaining live/device checks are documented in [default shared frontend](docs/default-shared-frontend.md).
+Voice uses a separate Beijing-region Alibaba Model Studio key with the fixed `qwen-audio-3.1-asr-flash-streaming` WebSocket endpoint. Self-host operators set the **`VOICE_API_KEY` Worker secret** independently of the chat model key; hosted chat obtains current settings only from Platform. Capability refreshes on load, focus, and pageshow; every streaming connection resolves the current key again. See [voice setup, limits, privacy and isolated fixtures](docs/voice-input.md). The relay consumes the compiled `@lamplit/contracts/voice` package from the approved immutable App artifact; `/api/voice/capability` alone advertises recording availability, with no competing voice flag in chat snapshots. Missing or failing capability leaves text chat usable. The shared browser inserts only finalized text into an editable draft after Finish; drafts above the shared chat's 16,000 UTF-16-unit send limit must be shortened before Send. The shared App is the default frontend; recording remains separate from sending. Exact frozen native acceptance and remaining live/device checks are documented in [default shared frontend](docs/default-shared-frontend.md).
 
 In a PWA, Camera uses an image file input with `capture="environment"`. The browser/device decides whether this directly opens a camera or offers a chooser. The existing Capacitor camera is used only in a native context. Real Android camera, microphone, installation, and software-keyboard behavior have not been tested for this UI update; isolated Chromium component tests and screenshots cover 390×844, 320px and desktop layouts.
 
 ## Install and run locally
 
-Use Node.js 24 or newer and npm for this repository. The adjacent `lamplit-app` uses Bun 1.3.14 and its own lockfile; install and check it there first. `.npmrc` preserves the packed local-contract dependency used by `package-lock.json`.
+Use Node.js 24 or newer and npm for this repository. App acceptance dependencies use Bun 1.3.14 inside the approved test-owned extraction. `.npmrc` preserves the packed local-contract dependency used by `package-lock.json`.
 
 ```bash
-bun install --frozen-lockfile --cwd ../lamplit-app
-bun run --cwd ../lamplit-app/packages/contracts build
 npm ci
+# Put the approved immutable App archive at the path described in docs/default-shared-frontend.md.
 cp .env.example .env.free
 # Edit .env.free with your model key and a random, unique AUTH_PASSWORD (at least 24 characters).
 # Edit MODEL_PROVIDER and AI_MODEL in wrangler.jsonc using native catalog IDs.
@@ -128,8 +126,7 @@ root-relative `/assets/*` and `/icons/*`. `/slice` and missing assets return 404
 rather than a SPA shell. The retired frontend source, resources and tests are
 removed. Native relationship validation lives in `src/server/relationship-validation.ts`;
 shared browser behavior is tested in `lamplit-app`. Management/native
-routes, import, storage, tools, instance/auth boundaries and pinned SDK 0.99.1
-export patch remain. See [the complete build and acceptance workflow](docs/default-shared-frontend.md).
+routes, import, domain stores, tools and instance/auth boundaries remain on the public native runtime. See [the complete build and acceptance workflow](docs/default-shared-frontend.md).
 No live state, provider, service or deployment is part of implementation verification.
 
 The chat page updates Android browser/PWA theme-color with its resolved light/dark/system theme so the system bar matches the header. Platform owns the hosted launch background; the standalone manifest comes from the shared App. System time/battery/gesture bars remain browser-controlled; viewport-fit=cover and existing safe-area padding protect controls.
@@ -237,7 +234,7 @@ have been saved; replay the same call identity to avoid duplicates.
 
 The authenticated shared-app socket exposes bounded relationship/history, diary,
 album and reminder reads from the existing PiRegistry/PiSession stores. Public
-schemas come from `@lamplit/contracts` in the adjacent app; panel reads do not
+schemas come from the approved immutable `@lamplit/contracts` package; panel reads do not
 start Agent turns. Images retain authenticated same-origin HTTP resources and
 instance/session membership. Timed-wake input is shown as an application reminder;
 the native 60-second lateness window and immutable admission receipts remain.
@@ -252,7 +249,7 @@ port 8951. The guide includes native seeding and read-only browser verification 
 
 The shared app now uses authenticated `/api/chat/images`, `/api/chat/media` and
 `/api/chat/socket` with Pi's existing operation-owned R2 variants and native
-prompt/steer admission. Image-only messages, ordered image history, album provenance
+durable submission admission. Image-only messages, ordered image history, album provenance
 and eligible native-origin failed input are projected from native storage. Edited
 resends upload under a fresh operation; consumed/replaced sources cannot replay.
 Uncertain delivery remains visible and never automatically resubmits. Image intake
@@ -268,16 +265,12 @@ port 8973 and fresh test-owned state; its control route is never production rout
 The shared browser's exact bare `/compact` invokes Pi's native compaction operation.
 Busy or refused commands retain the draft; native running/failure feedback is shown,
 and successful manual/automatic completion is silent. The capacity meter uses active
-native context and selected model metadata. Stale pre-compaction usage becomes null
-on the wire and displays zero until fresh valid assistant usage, retaining capacity.
+native context and selected model metadata. Stale pre-compaction usage displays zero until fresh valid assistant usage, retaining capacity.
 Reconnect and lost replies do not replay compaction.
 
-`npm ci` now applies the repository-maintained export-only patch to pinned Pi SDK
-0.99.1 with `patch-package --error-on-fail`; keep `patches/` with the package/lockfile.
-This exposes the existing native projection through the public facade without an
-SDK upgrade or algorithm change. See [quiet-compaction.md](docs/quiet-compaction.md)
-for protocol, admission, exact frozen-artifact validation and isolated native browser
-commands. Native checks retain the pinned SDK/export patch; the default shared App build workflow is documented above. This change does not deploy.
+The public native ContextView replaces the old SDK export patch. No patched or
+private engine entry point remains. See [quiet-compaction.md](docs/quiet-compaction.md)
+and [the current acceptance guide](docs/native-durable-submissions.md).
 
 ## Shared conversation archive search
 

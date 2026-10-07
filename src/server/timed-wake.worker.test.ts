@@ -3,13 +3,10 @@ import { runInDurableObject, runDurableObjectAlarm } from 'cloudflare:test'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PiSession } from './pi-session'
 import type { PiRegistry } from './pi-registry'
-import type { AgentLane } from '@earendil-works/pi-agent-core'
-import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
-import { laneState, pendingEntry } from '@earendil-works/pi-agent-core/harness/session'
+import type { NativeFixture } from './fixtures/native-session'
 import { PiSessionStorage } from './pi-session-storage'
-import { prepareOpenOperationResume } from './prompt-lifecycle'
 import { nextWake } from './timed-wake'
-import type { TimedWake, WakeSource } from '../shared/timed-wake'
+import { occurrenceKey, type TimedWake, type WakeSource } from '../shared/timed-wake'
 const source = (wake: TimedWake): WakeSource => ({ wakeId: wake.id, revision: wake.revision, scheduledAt: wake.nextAt, title: wake.title, reminder: wake.reminder })
 async function fresh() {
   const registry = env.PiRegistry.getByName('singleton') as DurableObjectStub<PiRegistry>
@@ -54,35 +51,6 @@ describe('timed wakes in local workerd', () => {
     })
     await expect(b.listTimedWakes()).resolves.toEqual([])
   })
-  it('uses the SDK alarm to durably accept without a browser, deduplicates and preserves source', async () => {
-    const stub = await fresh()
-    let snapshot!: WakeSource
-    await runInDurableObject(stub, async instance => {
-      const wake = await instance.saveTimedWake({ title: 'tea', reminder: 'synthetic reminder', plan: { type: 'once', at: new Date(Date.now() + 1000).toISOString() } })
-      snapshot = source(wake)
-    })
-    await new Promise(resolve => setTimeout(resolve, 2100))
-    await runDurableObjectAlarm(stub)
-    await runInDurableObject(stub, async (instance, _state) => {
-      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
-      const entryId = storage.wakeReceipt(snapshot)!
-      expect(entryId).toBeTruthy()
-      const pending = storage.getValueSync(pendingEntry(entryId))?.value
-      const committed = storage.getEntrySync(entryId)
-      expect(pending?.type === 'message' ? pending.payload : committed?.type === 'message' ? committed.message : undefined).toMatchObject({ role: 'custom', details: snapshot })
-      await instance.acceptTimedWake(snapshot)
-      expect(storage.wakeReceipt(snapshot)).toBe(entryId)
-      expect(await instance.listTimedWakes()).toEqual([])
-      expect((storage.getValueSync(laneState('main'))?.value.inbox ?? []).length).toBeLessThanOrEqual(1)
-    })
-    await new Promise(resolve => setTimeout(resolve, 1100))
-    await runDurableObjectAlarm(stub)
-    await vi.waitFor(() => runInDurableObject(stub, async instance => {
-      const branch = await instance.getBranch()
-      expect(branch.entries.filter(entry => entry.wakeSource)).toHaveLength(1)
-      expect(branch.entries.some(entry => entry.message?.role === 'assistant')).toBe(true)
-    }), { timeout: 10000 })
-  })
   it('skips unaccepted late occurrences, retaining interval anchor without writing messages', async () => {
     const stub = await fresh()
     await runInDurableObject(stub, async (instance, _state) => {
@@ -101,309 +69,72 @@ describe('timed wakes in local workerd', () => {
       expect(await instance.listTimedWakes()).toEqual([])
     })
   })
-  it('advances repeats before model work and recovers accepted custom input without a browser ledger', async () => {
-    const stub = await fresh()
-    await runInDurableObject(stub, async (instance, _state) => {
-      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
-      const wake = await instance.saveTimedWake({ title: 'repeat', reminder: 'synthetic', plan: { type: 'interval', anchor: new Date(Date.now() + 120000).toISOString(), seconds: 60 } })
-      const due = { ...wake, nextAt: new Date(Date.now() - 500).toISOString() }
-      storage.setSetting('timedWakes', [due])
-      await instance.acceptTimedWake(source(due))
-      expect(Date.parse((await instance.listTimedWakes())[0].nextAt)).toBeGreaterThan(Date.now())
-      const lane = await (instance as unknown as { getLane(): Promise<AgentLane> }).getLane()
-      const operationId = crypto.randomUUID()
-      expect((await lane.accept({ kind: 'prompt', operationId, prompt: '' }, BACKGROUND_CONTEXT)).ok).toBe(true)
-      const { operationMeta } = await import('@earendil-works/pi-agent-core/harness/session')
-      expect(await prepareOpenOperationResume(lane, BACKGROUND_CONTEXT, () => undefined,
-        async id => (await storage.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
-        id => storage.getEntrySync(id), () => { throw new Error('must not use browser ledger') })).toEqual({ operationId, browserPrompt: false })
-      expect(storage.entriesInOrder().find(e => e.type === 'message' && e.message.role === 'custom')).toMatchObject({ message: { details: source(due) } })
-      // Finish the accepted test-owned operation; actual failure is covered below.
-      await lane.drive({ operationId, waitForRetry: true }, BACKGROUND_CONTEXT)
-      expect(await instance.listTimedWakes()).toHaveLength(1)
-    })
-  })
-  it('accepts exactly at 60 seconds and skips after lane acquisition without faulting later inputs', async () => {
-    const stub = await fresh()
-    await runInDurableObject(stub, async instance => {
-      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
-      const fixed = Date.now()
-      const clock = vi.spyOn(Date, 'now').mockReturnValue(fixed)
-      const wake = await instance.saveTimedWake({ title: 'boundary', reminder: 'synthetic', plan: { type: 'once', at: new Date(fixed + 120000).toISOString() } })
-      const due = { ...wake, nextAt: new Date(fixed - 60000).toISOString() }
-      storage.setSetting('timedWakes', [due])
-      await instance.acceptTimedWake(source(due))
-      expect(storage.wakeReceipt(source(due))).toBeTruthy()
-      const next = { ...due, id: crypto.randomUUID() }
-      storage.setSetting('timedWakes', [next])
-      const internal = instance as unknown as { getLane(): Promise<AgentLane> }
-      const lane = await internal.getLane()
-      const slow = vi.spyOn(internal, 'getLane').mockImplementation(async () => { clock.mockReturnValue(fixed + 1); return lane })
-      await instance.acceptTimedWake(source(next))
-      expect(storage.wakeReceipt(source(next))).toBeUndefined()
-      expect(await instance.listTimedWakes()).toEqual([])
-      slow.mockRestore(); clock.mockRestore()
-      await expect(lane.inspectExecution(BACKGROUND_CONTEXT)).resolves.toBeDefined()
-      await instance.prompt({ send() {}, end() {} } as unknown as Parameters<PiSession['prompt']>[0], { operationId: crypto.randomUUID(), prompt: 'Synthetic question after cutoff' })
-      const later = await instance.saveTimedWake({ title: 'later', reminder: 'synthetic', plan: { type: 'once', at: new Date(Date.now() + 120000).toISOString() } })
-      const laterDue = { ...later, nextAt: new Date(Date.now() - 500).toISOString() }
-      storage.setSetting('timedWakes', [laterDue])
-      await instance.acceptTimedWake(source(laterDue)); await instance.drainPendingWork()
-      const entries = (await instance.getBranch()).entries
-      expect(entries.some(e => e.wakeSource?.wakeId === next.id)).toBe(false)
-      expect(entries.some(e => e.wakeSource?.wakeId === later.id)).toBe(true)
-      expect(entries.filter(e => e.message?.role === 'assistant')).toHaveLength(2)
-    })
-  })
-  it('waits behind a real in-flight synthetic model answer without interrupting or overlapping it', async () => {
-    const stub = await fresh()
-    await runInDurableObject(stub, async instance => {
-      let release!: () => void
-      let requests = 0
-      let simultaneous = 0
-      let maxSimultaneous = 0
-      const completion = (text: string, finish: boolean) => `data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture-model', choices: [{ index: 0, delta: finish ? {} : { role: 'assistant', content: text }, finish_reason: finish ? 'stop' : null }] })}\n\n`
-      const fixtureFetch = vi.mocked(globalThis.fetch).getMockImplementation()!
-      const mock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-        const url = input instanceof Request ? input.url : String(input)
-        if (!url.startsWith('https://openrouter.ai/') || !(typeof init?.body === 'string' && init.body.includes('Synthetic busy cutoff human question'))) return fixtureFetch(input, init)
-        const number = ++requests; simultaneous++; maxSimultaneous = Math.max(maxSimultaneous, simultaneous)
-        const body = new ReadableStream({ start(controller) {
-          controller.enqueue(new TextEncoder().encode(completion(number === 1 ? 'Human answer' : 'Wake answer', false)))
-          const finish = () => { controller.enqueue(new TextEncoder().encode(completion('', true) + 'data: [DONE]\n\n')); controller.close(); simultaneous-- }
-          if (number === 1) release = finish; else finish()
-        } })
-        return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
-      })
-      const answer = instance.prompt({ send() {}, end() {} } as unknown as Parameters<PiSession['prompt']>[0], { operationId: crypto.randomUUID(), prompt: 'Synthetic busy cutoff human question' })
-      await vi.waitFor(() => expect(requests).toBe(1))
-      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
-      const fixed = Date.now()
-      const clock = vi.spyOn(Date, 'now').mockReturnValue(fixed)
-      const expired = await instance.saveTimedWake({ title: 'busy expiry', reminder: 'synthetic', plan: { type: 'once', at: new Date(fixed + 120000).toISOString() } })
-      const expiredDue = { ...expired, nextAt: new Date(fixed - 60000).toISOString() }
-      storage.setSetting('timedWakes', [expiredDue])
-      const internal = instance as unknown as { getLane(): Promise<AgentLane> }
-      const lane = await internal.getLane()
-      const slow = vi.spyOn(internal, 'getLane').mockImplementation(async () => { clock.mockReturnValue(fixed + 1); return lane })
-      await instance.acceptTimedWake(source(expiredDue))
-      expect(storage.wakeReceipt(source(expiredDue))).toBeUndefined()
-      expect(await instance.listTimedWakes()).toEqual([])
-      await expect(lane.inspectExecution(BACKGROUND_CONTEXT)).resolves.toMatchObject({ current: expect.anything() })
-      slow.mockRestore(); clock.mockRestore()
-      const wake = await instance.saveTimedWake({ title: 'busy', reminder: 'synthetic', plan: { type: 'once', at: new Date(Date.now() + 120000).toISOString() } })
-      const due = { ...wake, nextAt: new Date(Date.now() - 500).toISOString() }
-      storage.setSetting('timedWakes', [due])
-      await instance.acceptTimedWake(source(due))
-      await instance.drainPendingWork()
-      expect(requests).toBe(1)
-      expect(storage.wakeReceipt(source(due))).toBeTruthy()
-      release(); await answer
-      await instance.drainPendingWork()
-      expect(requests).toBe(2); expect(maxSimultaneous).toBe(1)
-      const branch = await instance.getBranch()
-      expect(branch.entries.filter(e => e.wakeSource)).toHaveLength(1)
-      expect(branch.entries.filter(e => e.message?.role === 'assistant').map(e => e.message?.content)).toEqual(expect.arrayContaining([
-        expect.arrayContaining([expect.objectContaining({ text: 'Human answer' })]), expect.arrayContaining([expect.objectContaining({ text: 'Wake answer' })]),
-      ]))
-      mock.mockRestore()
-    })
-  })
-  it('runs through Pi after restart and keeps the next SDK schedule through actual model failure', async () => {
-    const stub = await fresh()
-    await runInDurableObject(stub, async instance => {
-      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
-      const wake = await instance.saveTimedWake({ title: 'failure', reminder: 'synthetic', plan: { type: 'interval', anchor: new Date(Date.now() + 120000).toISOString(), seconds: 60 } })
-      const due = { ...wake, nextAt: new Date(Date.now() - 500).toISOString() }
-      storage.setSetting('timedWakes', [due])
-      await instance.acceptTimedWake(source(due))
-      const next = (await instance.listTimedWakes())[0]
-      const fail = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('Synthetic failure', { status: 400 }))
-      await instance.drainPendingWork()
-      expect(fail).toHaveBeenCalled()
-      expect(await instance.listTimedWakes()).toEqual([next])
-      expect((await instance.listSchedules()).some(s => s.callback === 'acceptTimedWake' && (s.payload as WakeSource).scheduledAt === next.nextAt)).toBe(true)
-      const recovered = new PiSessionStorage((instance as unknown as { ctx: DurableObjectState }).ctx.storage)
-      expect(recovered.wakeReceipt(source(due))).toBe(storage.wakeReceipt(source(due)))
-      expect((await instance.getBranch()).entries.filter(e => e.wakeSource)).toHaveLength(1)
-      await instance.acceptTimedWake(source(due))
-      expect((await instance.getBranch()).entries.filter(e => e.wakeSource)).toHaveLength(1)
-      fail.mockRestore()
-      // Reconstruct the process after losing registration, retaining accepted history/settings.
-      for (const scheduled of await instance.listSchedules()) if (scheduled.callback === 'acceptTimedWake') await instance.cancelSchedule(scheduled.id)
-      const internal = instance as unknown as { sessionStorage: PiSessionStorage; coreSession?: unknown; harness?: unknown }
-      internal.sessionStorage = recovered; internal.coreSession = undefined; internal.harness = undefined
-      await instance.onStart()
-      await vi.waitFor(async () => expect((await instance.listSchedules()).some(s => s.callback === 'acceptTimedWake' && (s.payload as WakeSource).scheduledAt === next.nextAt)).toBe(true))
-    })
-  })
-  it('reconstructs an accepted occurrence and resumes beyond the lateness window without a browser ledger', async () => {
-    const stub = await fresh()
-    await runInDurableObject(stub, async (instance, state) => {
-      const internal = instance as unknown as {
-        getLane(): Promise<AgentLane>; sessionStorage: PiSessionStorage; coreSession?: unknown; harness?: unknown; active: boolean
-      }
-      const wake = await instance.saveTimedWake({ title: 'restart', reminder: 'synthetic restart', plan: { type: 'once', at: new Date(Date.now() + 120000).toISOString() } })
-      const due = { ...wake, nextAt: new Date(Date.now() - 500).toISOString() }
-      internal.sessionStorage.setSetting('timedWakes', [due])
-      await instance.acceptTimedWake(source(due))
-      const lane = await internal.getLane()
-      expect((await lane.accept({ kind: 'prompt', operationId: crypto.randomUUID(), prompt: '' }, BACKGROUND_CONTEXT)).ok).toBe(true)
-      internal.sessionStorage = new PiSessionStorage(state.storage)
-      internal.coreSession = undefined; internal.harness = undefined
-      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120000)
-      await instance.onStart()
-      await vi.waitFor(() => expect(internal.active).toBe(false))
-      clock.mockRestore()
-      const branch = await instance.getBranch()
-      expect(branch.entries.filter(entry => entry.wakeSource)).toHaveLength(1)
-      expect(branch.entries.some(entry => entry.message?.role === 'assistant')).toBe(true)
-      await instance.acceptTimedWake(source(due))
-      expect((await instance.getBranch()).entries.filter(entry => entry.wakeSource)).toHaveLength(1)
-    })
-  })
-  it('allows in-window public admission to commit across the deadline without fault or duplicate', async () => {
-    const stub = await fresh()
-    await runInDurableObject(stub, async instance => {
-      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
-      const fixed = Date.now()
-      const clock = vi.spyOn(Date, 'now').mockReturnValue(fixed)
-      const wake = await instance.saveTimedWake({ title: 'commit crossing', reminder: 'synthetic', plan: { type: 'once', at: new Date(fixed + 120000).toISOString() } })
-      const due = { ...wake, nextAt: new Date(fixed - 60000).toISOString() }
-      storage.setSetting('timedWakes', [due])
-      const originalCommit = storage.commit.bind(storage)
-      const delayed = vi.spyOn(storage, 'commit').mockImplementation(async (...args) => {
-        if (args[0].some(w => w.kind === 'value' && w.op === 'set' && w.namespace === pendingEntry('').namespace && w.key.startsWith(pendingEntry('').key))) clock.mockReturnValue(fixed + 1)
-        return originalCommit(...args)
-      })
-      await instance.acceptTimedWake(source(due))
-      const receipt = storage.wakeReceipt(source(due))
-      expect(receipt).toBeTruthy()
-      await instance.acceptTimedWake(source(due))
-      expect(storage.wakeReceipt(source(due))).toBe(receipt)
-      delayed.mockRestore(); clock.mockRestore()
-      await instance.drainPendingWork()
-      const branch = await instance.getBranch()
-      expect(branch.entries.filter(e => e.wakeSource)).toHaveLength(1)
-      expect(branch.entries.filter(e => e.message?.role === 'assistant')).toHaveLength(1)
-      await instance.prompt({ send() {}, end() {} } as unknown as Parameters<PiSession['prompt']>[0], { operationId: crypto.randomUUID(), prompt: 'Synthetic question after acceptance' })
-      expect((await instance.getBranch()).entries.filter(e => e.message?.role === 'assistant')).toHaveLength(2)
-    })
-  })
-  it('blocks busy followUp generation until its next SDK schedule is registered', async () => {
-    const stub = await fresh()
-    await runInDurableObject(stub, async instance => {
-      let finishHuman!: () => void, allowSchedule!: () => void
-      let requests = 0, registrationWaiting = false, registeredAtWakeRequest = false
-      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
-      const chunk = (text: string, done: boolean) => `data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture-model', choices: [{ index: 0, delta: done ? {} : { role: 'assistant', content: text }, finish_reason: done ? 'stop' : null }] })}\n\n`
-      const fixtureFetch = vi.mocked(globalThis.fetch).getMockImplementation()!
-      const mock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-        const url = input instanceof Request ? input.url : String(input)
-        if (!url.startsWith('https://openrouter.ai/') || !(typeof init?.body === 'string' && init.body.includes('Synthetic registration race human question'))) return fixtureFetch(input, init)
-        const number = ++requests
-        if (number >= 2) {
-          const next = storage.timedWakes()[0]
-          registeredAtWakeRequest = (await instance.listSchedules()).some(s => s.callback === 'acceptTimedWake' && (s.payload as WakeSource).scheduledAt === next.nextAt)
-          return new Response('Synthetic wake model failure', { status: 400 })
-        }
-        return new Response(new ReadableStream({ start(controller) {
-          controller.enqueue(new TextEncoder().encode(chunk('Human answer', false)))
-          finishHuman = () => { controller.enqueue(new TextEncoder().encode(chunk('', true) + 'data: [DONE]\n\n')); controller.close() }
-        } }), { headers: { 'content-type': 'text/event-stream' } })
-      })
-      const answer = instance.prompt({ send() {}, end() {} } as unknown as Parameters<PiSession['prompt']>[0], { operationId: crypto.randomUUID(), prompt: 'Synthetic registration race human question' })
-      await vi.waitFor(() => expect(requests).toBe(1))
-      const wake = await instance.saveTimedWake({ title: 'registration race', reminder: 'synthetic', plan: { type: 'interval', anchor: new Date(Date.now() + 120000).toISOString(), seconds: 60 } })
-      const due = { ...wake, nextAt: new Date(Date.now() - 500).toISOString() }
-      storage.setSetting('timedWakes', [due])
-      for (const scheduled of await instance.listSchedules()) if (scheduled.callback === 'acceptTimedWake') await instance.cancelSchedule(scheduled.id)
-      const originalSchedule = instance.schedule.bind(instance)
-      const schedule = vi.spyOn(instance, 'schedule').mockImplementation(async (...args) => {
-        if (args[1] === 'acceptTimedWake' && !registrationWaiting) {
-          registrationWaiting = true
-          await new Promise<void>(resolve => { allowSchedule = resolve })
-        }
-        return originalSchedule(...args)
-      })
-      const acceptance = instance.acceptTimedWake(source(due))
-      await vi.waitFor(() => expect(registrationWaiting).toBe(true))
-      finishHuman()
-      await vi.waitFor(() => expect(storage.entriesInOrder().some(e => e.type === 'message' && e.message.role === 'custom')).toBe(true))
-      // The continuation has consumed the input, but cannot call the model while insertion is gated.
-      await new Promise(resolve => setTimeout(resolve, 50))
-      const prematureRequests = requests
-      allowSchedule()
-      await acceptance; await answer
-      await instance.drainPendingWork()
-      expect(prematureRequests).toBe(1)
-      expect(requests).toBe(2)
-      expect(registeredAtWakeRequest).toBe(true)
-      const next = storage.timedWakes()[0]
-      expect((await instance.listSchedules()).some(s => s.callback === 'acceptTimedWake' && (s.payload as WakeSource).scheduledAt === next.nextAt)).toBe(true)
-      schedule.mockRestore(); mock.mockRestore()
-    })
-  })
-  it('keeps 59/60/>60 second once and repeat admission receipts and projects persisted source in public history', async () => {
-    const stub = await fresh()
-    await runInDurableObject(stub, async instance => {
-      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
-      const fixed = Date.now()
-      const clock = vi.spyOn(Date, 'now').mockReturnValue(fixed)
-      const drain = vi.spyOn(instance as unknown as { schedulePendingDrain(): Promise<void> }, 'schedulePendingDrain').mockResolvedValue()
-      const accepted: WakeSource[] = []
-      try {
-        for (const seconds of [59, 60, 60.001]) for (const repeat of [false, true]) {
-          const future = new Date(fixed + 120000).toISOString()
-          const wake = await instance.saveTimedWake({ title: 'Boundary fixture', reminder: 'Immutable reminder input', plan: repeat ? { type: 'interval', anchor: future, seconds: 90 } : { type: 'once', at: future } })
-          const due = { ...wake, nextAt: new Date(fixed - seconds * 1000).toISOString() }
-          storage.setSetting('timedWakes', [due])
-          const original = source(due)
-          await instance.acceptTimedWake(original)
-          const receipt = storage.wakeReceipt(original)
-          if (seconds <= 60) {
-            expect(receipt).toBeTruthy(); accepted.push(original)
-            await instance.acceptTimedWake(original)
-            expect(storage.wakeReceipt(original)).toBe(receipt)
-            const pending = storage.getValueSync(pendingEntry(receipt!))?.value
-            expect(pending?.type === 'message' ? pending.payload : undefined).toMatchObject({ details: original })
-            if (repeat) await instance.saveTimedWake({ title: 'Changed definition', reminder: 'Changed body', plan: wake.plan }, wake.id)
-            await instance.cancelTimedWake(wake.id)
-            expect(storage.getValueSync(pendingEntry(receipt!))?.value).toEqual(pending)
-          } else {
-            expect(receipt).toBeUndefined()
-            const remaining = await instance.listTimedWakes()
-            if (repeat) { expect(remaining).toHaveLength(1); expect(Date.parse(remaining[0].nextAt)).toBeGreaterThan(fixed); expect(remaining[0].plan).toEqual(wake.plan) }
-            else expect(remaining).toEqual([])
-          }
-        }
-      } finally { clock.mockRestore(); drain.mockRestore() }
-      await instance.drainPendingWork()
-      const branch = await instance.getBranch()
-      expect(branch.entries.filter(e => e.wakeSource)).toHaveLength(4)
-      const host = await (instance as unknown as { getChatHost(): Promise<Awaited<ReturnType<typeof import('@lamplit/contracts/server')['createChatHost']>>> }).getChatHost()
-      const frames: Array<{ id: string; result: import('@lamplit/contracts').HistoryPage }> = []
-      const channel = host.connect({ send: raw => { frames.push(JSON.parse(raw)) }, close() {} }, async () => true)
-      const call = async (member: string, args: unknown[]) => {
-        const id = crypto.randomUUID()
-        await channel.receive(JSON.stringify({ type: 'call', version: 1, id, call: { serviceId: 'lamplit.chat.v1', member, args } }))
-        await vi.waitFor(() => expect(frames.some(frame => frame.id === id)).toBe(true))
-        return frames.find(frame => frame.id === id)!.result
-      }
-      const view = await call('history', [branch.entries.at(-1)!.id])
-      const projected = view.messages.filter(m => m.source)
-      expect(projected).toHaveLength(4)
-      expect(projected.every(m => m.role === 'agent' && m.source?.kind === 'reminder' && m.text.includes('Immutable reminder input'))).toBe(true)
-      expect(projected.map(m => m.id)).toEqual(branch.entries.filter(e => e.wakeSource).map(e => e.id))
-      expect(projected.map(m => m.source?.kind === 'reminder' ? m.source.reminderId : undefined)).toEqual(accepted.map(a => a.wakeId))
-      channel.close()
-      host.close()
-    })
-  })
   it('calculates real timezone and DST dates in workerd without a timer', () => {
     expect(nextWake({ type: 'daily', time: '09:00', timeZone: 'Asia/Shanghai' }, Date.parse('2026-01-01T00:00:00Z'))).toBe('2026-01-01T01:00:00.000Z')
     expect(nextWake({ type: 'daily', time: '02:30', timeZone: 'America/New_York' }, Date.parse('2026-03-08T05:00:00Z'))).toBe('2026-03-08T07:30:00.000Z')
     expect(nextWake({ type: 'daily', time: '01:30', timeZone: 'America/New_York' }, Date.parse('2026-11-01T05:30:00Z'))).toBe('2026-11-02T06:30:00.000Z')
     expect(nextWake({ type: 'weekly', weekday: 0, time: '09:00', timeZone: 'Europe/Berlin' }, Date.parse('2026-03-28T12:00:00Z'))).toBe('2026-03-29T07:00:00.000Z')
+  })
+  it('accepts on an actual SDK alarm without a browser, preserves source and deduplicates native execution', async () => {
+    const stub = await fresh()
+    let snapshot!: WakeSource
+    const fake = vi.mocked(globalThis.fetch)
+    await runInDurableObject(stub, async instance => { snapshot = source(await instance.saveTimedWake({ title: 'tea', reminder: 'fixture wake text', plan: { type: 'once', at: new Date(Date.now() + 1000).toISOString() } })) })
+    await new Promise(resolve => setTimeout(resolve, 2100))
+    await runDurableObjectAlarm(stub)
+    await runInDurableObject(stub, async instance => {
+      const native = instance as unknown as NativeFixture
+      await native.native.wait(`wake:${occurrenceKey(snapshot)}`)
+      await instance.acceptTimedWake(snapshot)
+      const branch = await instance.getBranch()
+      expect(branch.entries.filter(entry => entry.wakeSource)).toMatchObject([{ wakeSource: snapshot }])
+      expect(branch.entries.filter(entry => entry.message?.role === 'assistant')).toHaveLength(1)
+      expect(await instance.listTimedWakes()).toEqual([])
+    })
+    expect(fake).toHaveBeenCalledTimes(1)
+  })
+  it.each([59000, 60000, 60001])('uses the native request identity at lateness %i and advances future schedules before model work', async lateness => {
+    const stub = await fresh()
+    await runInDurableObject(stub, async instance => {
+      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
+      const time = Date.now()
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(time)
+      try {
+        const wake = await instance.saveTimedWake({ title: 'repeat', reminder: 'boundary fixture', plan: { type: 'interval', anchor: new Date(time + 120000).toISOString(), seconds: 60 } })
+        const due = { ...wake, nextAt: new Date(time - lateness).toISOString() }
+        storage.setSetting('timedWakes', [due])
+        const snapshot = source(due)
+        await instance.acceptTimedWake(snapshot)
+        expect(Date.parse((await instance.listTimedWakes())[0]!.nextAt)).toBeGreaterThan(time)
+        if (lateness <= 60000) {
+          const operationId = storage.wakeReceipt(snapshot)!
+          expect(operationId).toBeTruthy()
+          await (instance as unknown as NativeFixture).native.wait(operationId)
+          await instance.acceptTimedWake(snapshot)
+          expect((await instance.getBranch()).entries.filter(entry => entry.wakeSource)).toHaveLength(1)
+        } else {
+          expect(storage.wakeReceipt(snapshot)).toBeUndefined()
+          expect(storage.entriesInOrder()).toEqual([])
+        }
+      } finally { clock.mockRestore() }
+    })
+  })
+  it('reconciles a persisted domain wake association against the same native submission after host restart', async () => {
+    const stub = await fresh()
+    await runInDurableObject(stub, async instance => {
+      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
+      const time = Date.now(), wake = await instance.saveTimedWake({ title: 'once', reminder: 'restart fixture', plan: { type: 'once', at: new Date(time + 120000).toISOString() } })
+      const due = { ...wake, nextAt: new Date(time - 1000).toISOString() }, snapshot = source(due)
+      storage.setSetting('timedWakes', [due])
+      await instance.acceptTimedWake(snapshot)
+      const operationId = storage.wakeReceipt(snapshot)!
+      await (instance as unknown as NativeFixture).native.wait(operationId)
+      // Recreate the window where domain acknowledgement was lost after native admission.
+      storage.setSetting('pendingWakes', [snapshot])
+      await instance.onStart()
+      await vi.waitFor(() => expect(storage.getSetting('pendingWakes')).toEqual([]), { timeout: 10000 })
+      expect((await instance.getBranch()).entries.filter(entry => entry.wakeSource)).toHaveLength(1)
+    })
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1)
   })
 })

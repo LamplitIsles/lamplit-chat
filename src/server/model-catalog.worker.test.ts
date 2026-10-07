@@ -1,10 +1,11 @@
+import { runNative, selectedNativeModel, appendNative, type NativeFixture } from './fixtures/native-session'
 import { env } from 'cloudflare:workers'
 import { runInDurableObject } from 'cloudflare:test'
 import { expect, it, vi } from 'vitest'
 import { openChat } from '@lamplit/contracts/client'
 import type { ChatView } from '@lamplit/contracts'
-import { BACKGROUND_CONTEXT as context } from '@earendil-works/pi-agent-core/harness/context'
-import type { AgentLane } from '@earendil-works/pi-agent-core'
+import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
+import type { Conversation } from '@earendil-works/pi-durable'
 import { accountModels, modelCatalog, nativeProviders, resolveModelSelection, selectedModel, type ModelSelection } from './model-catalog'
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all'
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai'
@@ -25,15 +26,15 @@ const selections = [
 ]
 const selection = (value = selections[0], apiKey = 'sk-test-owned-fixture-owner-key'): ModelSelection => resolveModelSelection({ ...value, apiKey, thinkingLevel: null, maxOutputTokens: null })
 
-type Native = { getLane(): Promise<AgentLane>; extractNextMemoryBatch(): Promise<void>; scheduleMemoryExtraction(): void; schedulePendingDrain(): Promise<void>; active: boolean }
+type Native = { getLane(): Promise<Conversation>; extractNextMemoryBatch(): Promise<void>; scheduleMemoryExtraction(): void; schedulePendingDrain(): Promise<void>; active: boolean }
 
-async function owner(id: string, read: () => unknown) {
+async function owner(id: string, read: () => unknown, searchEnabled = () => false) {
   const localEnv = { ...env, HOSTED_MODE: 'true', CHAT_INTERNAL_SECRET: secret, PLATFORM: { fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init)
     expect(request.headers.get('x-lamplit-internal-secret')).toBe(secret)
     if (request.url.includes('/internal/chat-model/')) { expect(request.url.endsWith(id)).toBe(true); return Response.json(read()) }
     if (request.url.includes('/internal/chat-session/')) return Response.json({ active: true })
-    if (request.url.includes('/internal/chat-search/')) return Response.json({ enabled: false })
+    if (request.url.includes('/internal/chat-search/')) return Response.json(searchEnabled() ? { enabled: true, provider: 'brave', apiKey: 'test-owned-search-key' } : { enabled: false })
     throw new Error('Unexpected test-owned Platform request')
   } } } as Env
   const registry = env.PiRegistry.getByName(id) as DurableObjectStub<PiRegistry>
@@ -91,8 +92,8 @@ it.each(selections)('native $provider completes a real DO tool turn with its key
     const account = await owner(crypto.randomUUID(), () => config)
     await account.native(async n => {
       const lane = await n.getLane()
-      expect(await lane.getModel(context)).toEqual(selectedModel(config))
-      expect((await lane.prompt('Use the read tool then reply', undefined, context)).ok).toBe(true)
+      expect(await selectedNativeModel(lane, context)).toEqual(selectedModel(config))
+      expect((await runNative(n, 'Use the read tool then reply')).status).toBe('done')
     })
     const branch = await runInDurableObject(account.stub, n => n.getBranch())
     expect(branch.entries, JSON.stringify(branch.entries)).toEqual(expect.arrayContaining([expect.objectContaining({ message: expect.objectContaining({ role: 'toolResult' }) })]))
@@ -113,7 +114,7 @@ it.each(selections)('native $provider completes a real DO tool turn with its key
     else if (config.provider === 'google') expect(defaultBody).toMatchObject({ generationConfig: { maxOutputTokens: nativeLimit } })
     else expect(defaultBody[config.provider === 'deepseek' ? 'max_tokens' : 'max_completion_tokens']).toBe(nativeLimit)
     config = { ...config, thinkingLevel: selectedModel(config).reasoning ? 'low' : 'off', maxOutputTokens: 2500 }
-    await account.native(async n => { expect((await (await n.getLane()).prompt('Advanced fixture reply', undefined, context)).ok).toBe(true) })
+    await account.native(async n => { expect((await runNative(n, 'Advanced fixture reply')).status).toBe('done') })
     const advanced = requests[2].body
     if (config.provider === 'openai') expect(advanced).toMatchObject({ max_output_tokens: 2500, reasoning: { effort: 'low' } })
     else if (config.provider === 'anthropic') expect(advanced).toMatchObject({ max_tokens: 4548, thinking: { type: 'enabled', budget_tokens: 2048 } })
@@ -138,7 +139,7 @@ it('rejects malformed selections before any upstream request', async () => {
   try {
     for (const invalid of [null, { ...valid, provider: 'custom' }, { ...valid, model: 'not-a-model' }, { ...valid, apiKey: '' }, { ...valid, thinkingLevel: 'invented' }, { ...valid, maxOutputTokens: 0 }, { ...valid, maxOutputTokens: 1.5 }, { ...valid, maxOutputTokens: selectedModel(valid).maxTokens + 1 }]) {
       const account = await owner(crypto.randomUUID(), () => invalid)
-      await expect(runInDurableObject(account.stub, instance => instance.prompt({ send: () => true, end: () => true }, { operationId: crypto.randomUUID(), prompt: 'Invalid fixture' }))).rejects.toThrow()
+      await expect(runInDurableObject(account.stub, instance => runNative(instance, 'Invalid fixture'))).rejects.toThrow()
     }
     expect(upstream).not.toHaveBeenCalled()
   } finally { vi.restoreAllMocks() }
@@ -181,8 +182,8 @@ it('switches A/B/A with native options, keeps the in-flight harness and isolates
     await vi.waitFor(() => expect(requests).toHaveLength(1))
     current = b
     await first.native(async n => {
-      expect(n.active).toBe(true)
-      expect(await (await n.getLane()).getModel(context)).toEqual(selectedModel(a))
+      expect((await (n as unknown as NativeFixture).native.pending()).length).toBeGreaterThan(0)
+      expect(await selectedNativeModel((await n.getLane()), context)).toEqual(selectedModel(a))
     })
     await first.native(() => release!())
     await vi.waitFor(() => expect(chat.view()?.activeTurnId).toBeNull(), { timeout: 10000 })
@@ -191,7 +192,7 @@ it('switches A/B/A with native options, keeps the in-flight harness and isolates
       await client.submit({ operationId, text })
       await vi.waitFor(async () => {
         expect(await account.native(n => n.active)).toBe(false)
-        expect((await client.lookup(operationId)).state).toBe('consumed')
+        expect((await client.lookup(operationId))?.state).toBe('submitted')
         const entries = (await runInDurableObject(account.stub, n => n.getBranch())).entries
         expect(entries.at(-1)?.message).toMatchObject({ role: 'assistant', stopReason: 'stop' })
       })
@@ -201,7 +202,7 @@ it('switches A/B/A with native options, keeps the in-flight harness and isolates
     current = a
     await submit(chat.client, first, 'Provider A again')
     // Direct native execution uses the same account resolver, without browser auth mocking.
-    await second.native(async n => { expect((await (await n.getLane()).prompt('Independent owner', undefined, context)).ok).toBe(true) })
+    await second.native(async n => { expect((await runNative(n, 'Independent owner')).status).toBe('done') })
     expect(requests.map(r => r.authorization)).toEqual(['Bearer owner-a-deepseek', 'Bearer owner-a-openrouter', 'Bearer owner-a-deepseek', 'Bearer owner-b-deepseek'])
     expect(requests[0].body).toMatchObject({ model: a.model, max_tokens: 2345, thinking: { type: 'enabled' } })
     expect(requests[1].body).toMatchObject({ model: b.model, max_completion_tokens: 1234 })
@@ -223,16 +224,16 @@ it('uses SDK image-history projection when moving to text-only and rejects new i
     const account = await owner(crypto.randomUUID(), () => config)
     await account.native(async n => {
       const lane = await n.getLane()
-      await lane.appendMessage({ role: 'user', content: [{ type: 'text', text: 'Historic photo' }, { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' }], timestamp: Date.now() }, context)
+      await appendNative(lane, { role: 'user', content: [{ type: 'text', text: 'Historic photo' }, { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' }], timestamp: Date.now() }, context)
     })
     const before = (await runInDurableObject(account.stub, n => n.getBranch())).entries
     config = selection({ provider: 'openrouter', model: 'amazon/nova-micro-v1' })
-    await account.native(async n => { expect((await (await n.getLane()).prompt('Continue after switch', undefined, context)).ok).toBe(true) })
+    await account.native(async n => { expect((await runNative(n, 'Continue after switch')).status).toBe('done') })
     expect(JSON.stringify(requests[0])).toContain('(image omitted: model does not support images)')
     expect(JSON.stringify(requests[0])).not.toContain('iVBORw0KGgo=')
     const after = (await runInDurableObject(account.stub, n => n.getBranch())).entries
     expect(after.slice(0, before.length)).toEqual(before)
-    await expect(runInDurableObject(account.stub, n => n.prompt({ send: () => true, end: () => true }, { operationId: crypto.randomUUID(), prompt: 'New photo', photoIds: [crypto.randomUUID()] }))).rejects.toThrow('does not support images')
+    expect(await runInDurableObject(account.stub, n => n.submitChat({ operationId: crypto.randomUUID(), text: 'New photo', images: [{attachmentId:crypto.randomUUID(),name:'fixture.png',mediaType:'image/png',availability:'available'}] }))).toMatchObject({state:'failed',error:'Selected model does not support images.'})
     expect(requests).toHaveLength(1)
   } finally { vi.restoreAllMocks() }
 })
@@ -249,50 +250,26 @@ it('memory extraction and companion compaction use the same native selected prov
     const account = await owner(crypto.randomUUID(), () => config)
     await account.native(async n => {
       const lane = await n.getLane()
-      for (let index = 0; index < 4; index++) await lane.appendMessage({ role: 'user', content: `Synthetic maintenance history ${index} ` + 'a'.repeat(12000), timestamp: Date.now() }, context)
+      for (let index = 0; index < 4; index++) await appendNative(lane, { role: 'user', content: `Synthetic maintenance history ${index} ` + 'a'.repeat(12000), timestamp: Date.now() }, context)
+      await (n as unknown as { syncNativeEntries():Promise<void> }).syncNativeEntries()
       await n.extractNextMemoryBatch()
     })
     expect(requests[0].key).toBe('Bearer maintenance-deepseek-key')
     expect(requests[0].body).toMatchObject({ model: config.model, max_tokens: 2500 })
     config = { ...selection(selections[4], 'maintenance-openrouter-key'), maxOutputTokens: 1800 }
-    await account.native(async n => { const result = await (await n.getLane()).compact(undefined, context); expect(result.ok).toBe(true); if (result.ok) expect(result.value.compaction.status).toBe('completed') })
+    await runInDurableObject(account.stub, instance => instance.updateCompactionSettings({enabled:true,reserveTokens:1000,keepRecentTokens:100}))
+    await account.native(async n => { const task = await (await n.getLane()).compact(undefined, context); const result=await (await (n as unknown as NativeFixture).getHarness()).waitForTask(task,context); expect(result.state.outcome.status).toBe('completed') })
     expect(requests.at(-1)?.key).toBe('Bearer maintenance-openrouter-key')
     expect(requests.at(-1)?.body).toMatchObject({ model: config.model, max_completion_tokens: 1800 })
     expect(JSON.stringify(requests.at(-1)?.body)).toContain('continuity checkpoint')
   } finally { vi.restoreAllMocks() }
 })
 
-it('summarized navigation refreshes an idle saved selection and rejects invalid settings before upstream', async () => {
-  let config: unknown = selection(selections[0], 'navigation-a-key')
-  const requests: Array<{ key: string | null; body: Record<string, unknown> }> = []
-  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-    const request = new Request(input, init)
-    requests.push({ key: request.headers.get('authorization'), body: await request.json() })
-    return nativeReply(request.url.includes('deepseek') ? 'deepseek' : 'openai', 'Native navigation summary')
-  })
-  try {
-    const account = await owner(crypto.randomUUID(), () => config)
-    const target = await account.native(async n => {
-      const lane = await n.getLane()
-      const id = await lane.appendMessage({ role: 'user', content: 'Navigation anchor', timestamp: Date.now() }, context)
-      await lane.appendMessage({ role: 'user', content: 'Synthetic abandoned branch history', timestamp: Date.now() }, context)
-      return id
-    })
-    config = { ...selection(selections[1], 'sk-navigation-b-key'), thinkingLevel: 'low', maxOutputTokens: 2345 }
-    await runInDurableObject(account.stub, n => n.navigateTree(target, { summarize: true }))
-    expect(requests).toHaveLength(1)
-    expect(requests[0]).toMatchObject({ key: 'Bearer sk-navigation-b-key', body: { model: 'gpt-5-mini', max_output_tokens: 2345 } })
-    expect(await account.native(async n => (await n.getLane()).getThinkingLevel(context))).toBe('low')
-    config = { ...config as ModelSelection, model: 'invalid-navigation-model' }
-    await expect(runInDurableObject(account.stub, n => n.navigateTree(target, { summarize: true }))).rejects.toThrow('Unsupported provider or model')
-    expect(requests).toHaveLength(1)
-    expect(await account.native(n => n.active)).toBe(false)
-  } finally { vi.restoreAllMocks() }
-})
+
 
 // Inventory from the installed public registry; no remote catalog or auth login.
 it('every builtin is enabled or has a concrete key-only/chat exclusion', async () => {
-  const excluded = ['azure-openai-responses', 'cloudflare-ai-gateway', 'cloudflare-workers-ai', 'openai-codex', 'typesafe']
+  const excluded = ['azure', 'cloudflare-ai-gateway', 'cloudflare-workers-ai', 'openai-codex', 'typesafe']
   const enabled = nativeProviders()
   const all = builtinProviders()
   expect(all).toHaveLength(42)
@@ -303,7 +280,7 @@ it('every builtin is enabled or has a concrete key-only/chat exclusion', async (
     if (provider.id.startsWith('cloudflare-') || provider.id === 'openai-codex') expect(auth).toBeUndefined()
     else expect(auth?.auth.apiKey).toBe(key)
     if (provider.id === 'typesafe') expect(provider.getModels()).toEqual([])
-    else if (provider.id === 'azure-openai-responses') expect(provider.getModels().every(m => !m.baseUrl)).toBe(true)
+    else if (provider.id === 'azure') expect(provider.getModels().every(m => !m.baseUrl)).toBe(true)
     else if (!excluded.includes(provider.id)) {
       const registered = enabled.find(p => p.id === provider.id)!
       expect(registered.getModels()).toEqual(provider.getModels())
@@ -336,8 +313,9 @@ it.each(['google-vertex', 'mistral', 'radius', 'amazon-bedrock'])('new native %s
     const account = await owner(crypto.randomUUID(), () => config)
     await account.native(async n => {
       const lane = await n.getLane()
-      expect(await lane.getModel(context)).toEqual(model)
-      expect((await lane.prompt('Use read then reply', undefined, context)).ok).toBe(true)
+      expect(await selectedNativeModel(lane, context)).toEqual(model)
+      expect((await runNative(n, 'Use read then reply')).status).toBe('done')
+      await (n as unknown as { syncNativeEntries():Promise<void> }).syncNativeEntries()
       await n.extractNextMemoryBatch()
     })
     const branch = await runInDurableObject(account.stub, n => n.getBranch())
@@ -352,4 +330,52 @@ it.each(['google-vertex', 'mistral', 'radius', 'amazon-bedrock'])('new native %s
       else expect(request.body).toMatchObject({ inferenceConfig: { maxTokens: 2500 } })
     }
   } finally { vi.restoreAllMocks() }
+})
+
+
+it('preserves held native manual compaction during settings and tool refresh, then uses the new configuration', async () => {
+  const a = { ...selection(selections[0], 'held-compaction-key-a'), maxOutputTokens: 2500, thinkingLevel: 'low' as const }
+  const b = { ...selection(selections[4], 'held-compaction-key-b'), maxOutputTokens: 1800 }
+  let current: ModelSelection = a, searchEnabled = false, release: (() => void) | undefined
+  const requests: Array<{ key: string | null; body: Record<string, unknown> }> = []
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const request = new Request(input, init)
+    requests.push({ key: request.headers.get('authorization'), body: await request.json() })
+    if (requests.length === 1) await new Promise<void>(resolve => { release = resolve })
+    return nativeReply(request.url.includes('deepseek') ? 'deepseek' : 'openrouter', 'Continuity checkpoint')
+  })
+  let socket: WebSocket | undefined, client: Awaited<ReturnType<typeof openChat>> | undefined
+  let dispose: (() => Promise<void>) | undefined
+  try {
+    const account = await owner(crypto.randomUUID(), () => current, () => searchEnabled)
+    dispose = () => account.native(n => (n as unknown as NativeFixture).native.dispose())
+    await runInDurableObject(account.stub, instance => instance.updateCompactionSettings({ enabled: true, reserveTokens: 1000, keepRecentTokens: 100 }))
+    const original = await account.native(async n => {
+      const lane = await n.getLane()
+      for (let index = 0; index < 4; index++) await appendNative(lane, { role: 'user', content: 'Held compaction history ' + 'a'.repeat(12000), timestamp: Date.now() }, context)
+      return (n as unknown as NativeFixture).getHarness()
+    })
+    const response = await worker.fetch(new Request('https://chat.fixture/api/chat/socket', { headers: { ...headers, 'x-lamplit-instance': (await account.native(n => Reflect.get(n, 'name') as string)).split(':')[0], 'x-lamplit-session-hash': 'a'.repeat(64), upgrade: 'websocket' } }), account.localEnv)
+    socket = response.webSocket!; socket.accept()
+    let view: ChatView | undefined
+    client = await openChat(socket, value => { view = value }, () => {})
+    expect((await client.compact({ sessionId: account.sessionId })).accepted).toBe(true)
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    const reads = await account.native(n => vi.spyOn(n, 'getLane'))
+    current = b; searchEnabled = true
+    const before = reads.mock.calls.length
+    await vi.waitFor(() => expect(reads.mock.calls.length).toBeGreaterThan(before + 2), { timeout: 10000 })
+    await account.native(async n => {
+      expect(await (n as unknown as NativeFixture).getHarness()).toBe(original)
+      expect((await (n as unknown as NativeFixture).native.pending())).toHaveLength(0)
+      const lane = await n.getLane()
+      expect(await selectedNativeModel(lane, context)).toEqual(selectedModel(a))
+      expect((await lane.agent(context)).tools.some(tool => tool.name === 'web_search')).toBe(false)
+      release!()
+    })
+    await vi.waitFor(() => expect(view?.compaction?.status).toBe('complete'), { timeout: 10000 })
+    await account.native(async n => { expect((await runNative(n, 'After held compaction')).status).toBe('done'); expect((await (await n.getLane()).agent(context)).tools.some(tool => tool.name === 'web_search')).toBe(true) })
+    expect(requests[0]).toMatchObject({ key: 'Bearer held-compaction-key-a', body: { model: a.model, max_tokens: 2500, thinking: { type: 'enabled' } } })
+    expect(requests.at(-1)).toMatchObject({ key: 'Bearer held-compaction-key-b', body: { model: b.model, max_completion_tokens: 1800 } })
+  } finally { release?.(); client?.close(); socket?.close(); await dispose?.(); vi.restoreAllMocks() }
 })

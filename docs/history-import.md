@@ -1,6 +1,6 @@
 # History import backend contract (Specs #2903 / #3084)
 
-This backend accepts normalized **conversation data**, not source JSON, ZIPs or SQLite files. It stores read-only archives and existing FTS entries atomically in the same PiRegistry SQLite. No PiSession is created, no provider or historical tool is invoked, and the current main session and context stay unchanged. Pi version: **0.99.1**. Source format conversion belongs to platform; these fictional fixtures do not claim compatibility with every source-app version.
+This backend accepts normalized **conversation data**, not source JSON, ZIPs or SQLite files. It stores read-only archives and existing FTS entries atomically in the same PiRegistry SQLite. No PiSession is created, no provider or historical tool is invoked, and the current main session and context stay unchanged. Runtime: public Pi Durable **1.0.4**. Source format conversion belongs to platform; these fictional fixtures do not claim compatibility with every source-app version.
 
 ## Authentication and routing
 

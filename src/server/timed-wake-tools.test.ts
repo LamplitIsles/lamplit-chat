@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createWakeTools } from './timed-wake-tools'
 import type { WakeInput } from '../shared/timed-wake'
 
@@ -8,7 +8,7 @@ it('provides provider-compatible structured CRUD and reports absent browser time
   const [tool] = createWakeTools(session, async () => undefined)
   // Root object is a real provider tool-schema contract, not a prompt/source check.
   expect(tool.parameters).toMatchObject({ type: 'object' })
-  const execute = (input: unknown) => tool.execute('fixture-call', input, () => {}, undefined, {} as never, BACKGROUND_CONTEXT)
+  const execute = (input: unknown) => tool.execute(input, { callId: 'fixture-call' } as never, BACKGROUND_CONTEXT)
   const listed = await execute({ action: 'list' })
   expect(listed.content).toEqual([expect.objectContaining({ text: expect.stringContaining('"timeZone":null') })])
   await expect(execute({ action: 'replace', title: 'Must not create' })).rejects.toThrow('ID')

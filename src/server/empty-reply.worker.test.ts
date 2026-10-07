@@ -42,7 +42,7 @@ it.each([
       expect(view?.activeTurnId).toBeNull()
       expect(view?.messages.some(message => message.role === 'user' && message.text === input.text)).toBe(true)
     }, { timeout: 10000 })
-    expect((await client.lookup(input.operationId)).state).toBe('consumed')
+    expect((await client.lookup(input.operationId))?.state).toBe('submitted')
     expect(view?.messages.some(message => message.role === 'user' && message.text === input.text)).toBe(true)
     expect(view?.messages.some(message => message.role === 'notice' && message.text === '回复失败')).toBe(failed)
     if (!failed) expect(view?.messages.some(message => message.role === 'agent' && message.text === content)).toBe(true)

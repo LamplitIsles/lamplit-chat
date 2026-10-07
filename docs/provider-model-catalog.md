@@ -1,12 +1,12 @@
 # Native provider/model selection
 
 Chat is the model catalog authority for Platform and personal deployments. The
-catalog and runtime use installed `@earendil-works/pi-ai` 0.99.1 factories. There
+catalog and runtime use installed `@earendil-works/pi-ai` 1.0.4 factories. There
 is no remote catalog refresh or custom endpoint editor.
 
 ## Supported scope
 
-All 42 public built-in factories in installed Pi 0.99.1 were audited. These
+The public built-in factories in installed Pi 1.0.4 are audited. These
 37 providers (32 added by #3255) expose native chat models, accept one stored
 key/token without extra fields, and completed isolated workerd fixture replies
 through the actual hosted Wrangler bundle. Each listed protocol is exercised;
@@ -14,45 +14,45 @@ these fixtures establish runtime/protocol compatibility, not paid-service access
 or the validity/entitlements of a real key. Native regional/token-plan IDs and
 credential namespaces stay distinct even when auth environment names coincide.
 
-| Enabled provider ID | Native chat models | Key-only authentication and native protocol |
-| --- | ---: | --- |
-| `amazon-bedrock` | 176 | Bearer token; Bedrock ConverseStream |
-| `ant-ling` | 3 | Stored API key; OpenAI completions |
-| `anthropic` | 16 | Stored API key; Anthropic Messages |
-| `baseten` | 21 | Stored API key; OpenAI completions |
-| `cerebras` | 2 | Stored API key; OpenAI completions |
-| `deepseek` | 2 | Stored API key; OpenAI completions |
-| `fireworks` | 22 | Stored API key; Anthropic Messages, OpenAI completions |
-| `github-copilot` | 33 | Stored token; Anthropic Messages, OpenAI completions, OpenAI Responses |
-| `google` | 22 | Stored API key; Google Generative AI |
-| `google-vertex` | 14 | Stored API key; Vertex express |
-| `groq` | 7 | Stored API key; OpenAI completions |
-| `huggingface` | 76 | Stored token; OpenAI completions |
-| `kimi-coding` | 4 | Stored API key; Anthropic Messages |
-| `meta` | 5 | Stored API key; OpenAI Responses |
-| `minimax` | 3 | Stored API key; Anthropic Messages |
-| `minimax-cn` | 3 | Stored API key; Anthropic Messages |
-| `mistral` | 32 | Stored API key; Mistral native chat |
-| `moonshotai` | 4 | Stored API key; OpenAI completions |
-| `moonshotai-cn` | 4 | Stored API key; OpenAI completions |
-| `nvidia` | 19 | Stored API key; OpenAI completions |
-| `openai` | 44 | Stored API key; OpenAI Responses |
-| `opencode` | 77 | Stored API key; Anthropic Messages, Google Generative AI, OpenAI completions, OpenAI Responses |
-| `opencode-go` | 29 | Stored API key; Anthropic Messages, OpenAI completions, OpenAI Responses |
-| `openrouter` | 398 | Stored API key; Anthropic Messages, OpenAI completions |
-| `qwen-token-plan` | 20 | Stored API key; OpenAI completions |
-| `qwen-token-plan-cn` | 20 | Stored API key; OpenAI completions |
-| `qwen-token-plan-individual` | 9 | Stored API key; OpenAI completions |
-| `radius` | 28 | Stored API key; Pi Messages |
-| `together` | 20 | Stored API key; OpenAI completions |
-| `vercel-ai-gateway` | 252 | Stored API key; Anthropic Messages |
-| `xai` | 4 | Stored API key; OpenAI Responses |
-| `xiaomi` | 6 | Stored API key; OpenAI completions |
-| `xiaomi-token-plan-ams` | 4 | Stored API key; OpenAI completions |
-| `xiaomi-token-plan-cn` | 4 | Stored API key; OpenAI completions |
-| `xiaomi-token-plan-sgp` | 4 | Stored API key; OpenAI completions |
-| `zai` | 7 | Stored API key; OpenAI completions |
-| `zai-coding-cn` | 4 | Stored API key; OpenAI completions |
+| Enabled provider ID | Key-only authentication and native protocol |
+| --- | --- |
+| `amazon-bedrock` | Bearer token; Bedrock ConverseStream |
+| `ant-ling` | Stored API key; OpenAI completions |
+| `anthropic` | Stored API key; Anthropic Messages |
+| `baseten` | Stored API key; OpenAI completions |
+| `cerebras` | Stored API key; OpenAI completions |
+| `deepseek` | Stored API key; OpenAI completions |
+| `fireworks` | Stored API key; Anthropic Messages, OpenAI completions |
+| `github-copilot` | Stored token; Anthropic Messages, OpenAI completions, OpenAI Responses |
+| `google` | Stored API key; Google Generative AI |
+| `google-vertex` | Stored API key; Vertex express |
+| `groq` | Stored API key; OpenAI completions |
+| `huggingface` | Stored token; OpenAI completions |
+| `kimi-coding` | Stored API key; Anthropic Messages |
+| `meta` | Stored API key; OpenAI Responses |
+| `minimax` | Stored API key; Anthropic Messages |
+| `minimax-cn` | Stored API key; Anthropic Messages |
+| `mistral` | Stored API key; Mistral native chat |
+| `moonshotai` | Stored API key; OpenAI completions |
+| `moonshotai-cn` | Stored API key; OpenAI completions |
+| `nvidia` | Stored API key; OpenAI completions |
+| `openai` | Stored API key; OpenAI Responses |
+| `opencode` | Stored API key; Anthropic Messages, Google Generative AI, OpenAI completions, OpenAI Responses |
+| `opencode-go` | Stored API key; Anthropic Messages, OpenAI completions, OpenAI Responses |
+| `openrouter` | Stored API key; Anthropic Messages, OpenAI completions |
+| `qwen-token-plan` | Stored API key; OpenAI completions |
+| `qwen-token-plan-cn` | Stored API key; OpenAI completions |
+| `qwen-token-plan-individual` | Stored API key; OpenAI completions |
+| `radius` | Stored API key; Pi Messages |
+| `together` | Stored API key; OpenAI completions |
+| `vercel-ai-gateway` | Stored API key; Anthropic Messages |
+| `xai` | Stored API key; OpenAI Responses |
+| `xiaomi` | Stored API key; OpenAI completions |
+| `xiaomi-token-plan-ams` | Stored API key; OpenAI completions |
+| `xiaomi-token-plan-cn` | Stored API key; OpenAI completions |
+| `xiaomi-token-plan-sgp` | Stored API key; OpenAI completions |
+| `zai` | Stored API key; OpenAI completions |
+| `zai-coding-cn` | Stored API key; OpenAI completions |
 
 Bedrock uses Pi's public `bedrockProviderModule` and
 `setBedrockProviderModule` static-registration exports: its default Node-only
@@ -70,7 +70,7 @@ The complete excluded inventory is:
 
 | Excluded provider ID | Installed native evidence / reason |
 | --- | --- |
-| `azure-openai-responses` | Native chat models have empty baseUrl; adapter requires resource name or deployment endpoint. |
+| `azure` | Native chat models have empty baseUrl; adapter requires resource name or deployment endpoint. |
 | `cloudflare-ai-gateway` | Native auth requires account ID and gateway ID in addition to key. |
 | `cloudflare-workers-ai` | Native auth requires account ID in addition to key. |
 | `openai-codex` | Legacy ChatGPT path exposes only OAuth; no API-key auth method. |
@@ -108,9 +108,9 @@ defaults nor these options promise that a model will produce a nonempty reply.
 Existing empty-reply failure notices remain in place and private thinking stays
 out of shared chat.
 
-Pi harness 0.99.1 does not forward `maxTokens` in its harness stream options. Chat
-uses the public native Provider `streamSimple` seam to inject that option, then
-calls the original factory implementation. No protocol payload is handwritten.
+Chat uses the public native Provider `streamSimple` seam to apply the account's
+output cap, then calls the original factory implementation. No provider protocol
+payload is handwritten. Native model counts come from the current compiled catalog.
 Each harness/maintenance request owns a fresh `InMemoryCredentialStore`, with
 only its active provider's API key. Its injected `AuthContext` returns no ambient
 environment values and no files. Hosted model keys never fall back to Worker

@@ -28,7 +28,14 @@ Memory has `{id,kind,content,createdAt,updatedAt,sourceSessionId?,sourceEntryId?
 
 COMPACTION.md is the single original override. Both root-file editing and `/compaction` save require non-whitespace content within 128,000 UTF-8 bytes. If absent, effective-read returns `{mode:"default",content:<full builtin>,version:"default",bytes:<UTF8 size>}`. No default file is created or listed. A custom file returns mode custom and the same content hash as the ordinary file endpoint. Save from default uses expectedVersion `default`. Reset checks the version first and deletes only the override; reset of an already-default matching version succeeds. Previously persisted summaries are not rewritten.
 
-The next actual manual, threshold, or overflow compaction reads the full effective prompt at the start of the official Pi 0.99.1 `before_compaction` hook. That prompt replaces the coding summary policy completely. Historical messages, the previous summary, split-turn prefix, and optional maintenance focus are supplied as data. The hook reuses the current lane model/provider, public `convertToLlm`/`serializeConversation` (including tool-result truncation), abort signal and real usage. It returns Pi's exact prepared retainedTail, tokensBefore, and sorted fileOps details/tags; Pi persists the native compaction entry and usage. Existing reserve/keepRecent/cut-point behavior remains. No new summary database, runtime fork, agent loop, or model selection UI is added. A failed, empty, cancelled, or unconfigured summary declines compaction and leaves the original context intact; this explicitly avoids Pi's default-policy fallback after thrown hook errors. Manual compaction reports non-completion. Automatic requests retain the history and normal model errors still surface through chat.
+The next actual manual or automatic compaction reads the effective prompt in the
+public Pi Durable 1.0.4 CompactionTask hook. Native Pi selects/persists the range;
+Chat supplies history, previous summary, split-turn prefix, optional focus and
+sorted read/modified file hints through the selected native provider. Keet private
+attribution is projected before generation. Failed, empty, aborted or unconfigured
+summarization declines without replacing context or invoking a coding default.
+No separate summary engine or model selector is added. See
+[native compaction](quiet-compaction.md).
 
 Only AGENTS.md is automatically injected. Other root Markdown is read through existing workspace tools when AGENTS or the conversation directs it. For example, a fictional AGENTS.md could say: “Read SOUL.md for companion identity and USER.md for relevant preferences when needed; resolve changes against the current conversation.” Saving materials does not load a model or invoke inference. Model-backed normal extraction and actual compaction retain their existing model usage. An organizing assistant is paid Phase 2 and has no scaffolding or paywall in this feature.
 

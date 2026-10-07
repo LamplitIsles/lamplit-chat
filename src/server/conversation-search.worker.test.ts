@@ -1,8 +1,7 @@
 import { env } from 'cloudflare:workers'
 import { runInDurableObject } from 'cloudflare:test'
 import { expect, it } from 'vitest'
-import { BACKGROUND_CONTEXT as context } from '@earendil-works/pi-agent-core/harness/context'
-import { insertEntry, setValue, branchTip } from '@earendil-works/pi-agent-core/harness/session'
+import { archiveFixture } from './fixtures/archive-entry'
 import type { HistoryConversation, HistoryNode } from '../shared/history-import'
 import type { PiRegistry } from './pi-registry'
 import type { PiSession } from './pi-session'
@@ -16,9 +15,9 @@ async function append(stub: DurableObjectStub<PiSession>, text: string, summary 
   return runInDurableObject(stub, async instance => {
     const n = instance as unknown as Native
     const id = crypto.randomUUID()
-    await n.sessionStorage.commit([insertEntry(summary
-      ? { id, parentId: n.sessionStorage.getLeafId(), type: 'compaction', summary: text, retainedTail: [], tokensBefore: 100, fromHook: false }
-      : { id, parentId: n.sessionStorage.getLeafId(), type: 'message', message: { role: 'user', content: text, timestamp: Date.now() } }), setValue(branchTip('main'), id)], context)
+    archiveFixture(n.sessionStorage, summary
+      ? { id, parentId: n.sessionStorage.getLeafId(), type: 'compaction', summary: text, firstKeptEntryId:id, tokensBefore:100 }
+      : { id, parentId: n.sessionStorage.getLeafId(), type:'message', message:{role:'user',content:text,timestamp:Date.now()} })
     return n.sessionStorage.getEntrySync(id)!
   })
 }
@@ -57,19 +56,19 @@ it('reads original native identities along parents, excludes thoughts/tools and 
   const target = await append(stub, 'repeated native text')
   await runInDurableObject(stub, async instance => {
     const n = instance as unknown as Native
-    await n.sessionStorage.commit([
-      insertEntry({ id: 'thought', parentId: target.id, type: 'message', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'secret reasoning' }], api: 'openai-completions', provider: 'fixture', model: 'fixture', stopReason: 'stop', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() } }),
-      insertEntry({ id: 'summary', parentId: 'thought', type: 'compaction', summary: 'nearby summary ' + '🕯'.repeat(13000), retainedTail: [], tokensBefore: 100, fromHook: false }),
-      insertEntry({ id: 'fork-a', parentId: 'summary', type: 'message', message: { role: 'user', content: 'fork a hidden', timestamp: Date.now() } }),
-      insertEntry({ id: 'fork-b', parentId: 'summary', type: 'message', message: { role: 'user', content: 'fork b hidden', timestamp: Date.now() } }),
-      insertEntry({ id: 'other', parentId: null, type: 'message', message: { role: 'user', content: 'unrelated insertion', timestamp: Date.now() } }),
-    ], context)
+    for (const source of [
+      ({ id: 'thought', parentId: target.id, type: 'message', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'secret reasoning' }], api: 'openai-completions', provider: 'fixture', model: 'fixture', stopReason: 'stop', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() } }),
+      ({ id: 'summary', parentId: 'thought', type: 'compaction', summary: 'nearby summary ' + '🕯'.repeat(13000), retainedTail: [], tokensBefore: 100, fromHook: false }),
+      ({ id: 'fork-a', parentId: 'summary', type: 'message', message: { role: 'user', content: 'fork a hidden', timestamp: Date.now() } }),
+      ({ id: 'fork-b', parentId: 'summary', type: 'message', message: { role: 'user', content: 'fork b hidden', timestamp: Date.now() } }),
+      ({ id: 'other', parentId: null, type: 'message', message: { role: 'user', content: 'unrelated insertion', timestamp: Date.now() } }),
+    ]) archiveFixture(n.sessionStorage, source)
   })
   await flush(stub, created.id)
   const hit = (await registry().search({ query: 'repeated native text' })).hits[0]
   const result = await registry().searchRead({ id: hit.id })
   expect(result.record.content).toBe('repeated native text')
-  expect(result.context.items.map(i => i.sourceRecordIndex)).toEqual([root.seq, target.seq, target.seq + 3])
+  expect(result.context.items.map(i => i.sourceRecordIndex)).toEqual([root.seq, target.seq, target.seq + 2])
   expect(result.context.items.map(i => i.kind)).toEqual(['message', 'message', 'compaction'])
   expect(result.context.items[2].content).toContain('nearby summary')
   expect(result.context.items.reduce((count, i) => count + Array.from(i.content).length, 0)).toBe(12000)
@@ -117,7 +116,7 @@ it('ties native BM25 by record recency across sessions rather than regrouping by
     const stub = env.PiSession.getByName(session.id) as DurableObjectStub<PiSession>
     await runInDurableObject(stub, async instance => {
       const n = instance as unknown as Native
-      await n.sessionStorage.replace(n.sessionStorage.getMetadataSync(), times.map((time, i) => ({ id: `dated-${i}`, parentId: i ? `dated-${i - 1}` : null, seq: i + 1, timestamp: Date.parse(time), type: 'message', message: { role: 'user', content: 'rankneedle same length', timestamp: Date.parse(time) } })))
+      times.map((time, i) => ({ id: `dated-${i}`, parentId: i ? `dated-${i - 1}` : null, seq: i + 1, timestamp: Date.parse(time), type: 'message' as const, message: { role: 'user' as const, content: 'rankneedle same length', timestamp: Date.parse(time) } })).forEach(entry => n.sessionStorage.archive(entry))
     })
     await flush(stub, session.id)
   }

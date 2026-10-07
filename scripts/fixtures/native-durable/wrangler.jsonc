@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "native-durable-gate",
+  "main": "index.ts",
+  "compatibility_date": "2026-10-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": { "RESUME": "false" },
+  "durable_objects": { "bindings": [{ "name": "NativeGate", "class_name": "NativeGate" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["NativeGate"] }]
+}
