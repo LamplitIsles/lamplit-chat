@@ -51,7 +51,7 @@ import type {
   WorkspaceFileContent,
 } from '../shared/pi-contract'
 import { createPiHarness, type ModelEnvironment } from './create-pi-harness'
-import { createInjectedMcpTools } from './injected-remote-mcp'
+import { createInjectedMcpTools, type InjectedMcpDiscovery } from './injected-remote-mcp'
 import { extractMemoryOperations, type MemorySourceEntry } from './memory-extractor'
 import { createMemoryTool } from './memory-tools'
 import { createRelationshipTools } from './relationship-tools'
@@ -174,6 +174,8 @@ export class PiSession extends HostedAgent {
   private nativeContext?: Parameters<Harness['close']>[0]
   private runtimeTools: import('@earendil-works/pi-durable').ToolRegistration[] = []
   private runtimeConfig?: string
+  private mcpDiscovery?: InjectedMcpDiscovery
+  private pendingMcpRetry?: InjectedMcpDiscovery['retry']
   private modelSupportsImages = false
   private memoryExtraction?: Promise<void>
   private readonly sessionStorage = new PiSessionStorage(this.ctx.storage)
@@ -190,7 +192,10 @@ export class PiSession extends HostedAgent {
       ...createWakeTools(this, () => registry.getReportedTimeZone()), ...createWebTools(this.env, this.instanceId()),
       ...createPlatformFeedbackTools(this.env, this.instanceId(), this.sessionStorage.isInitialized() ? this.sessionStorage.getMetadataSync().id : this.name.split(':').at(-1)!),
     ]
-    this.runtimeTools = [...tools, ...await createInjectedMcpTools(this.env.MCP_CONFIG, this.instanceId(), tools)]
+    const retry = this.pendingMcpRetry
+    this.pendingMcpRetry = undefined
+    this.mcpDiscovery = retry ? await retry() : await createInjectedMcpTools(this.env.MCP_CONFIG, this.instanceId(), tools)
+    this.runtimeTools = [...tools, ...this.mcpDiscovery.tools]
     const harness = await createPiHarness({
       storage, context, env: modelEnv, tools: this.runtimeTools, memory: registry, compaction: this.compactionSettings(),
       loadCompactionPrompt: async () => (await new CompanionFiles(this.workspace).effective()).content,
@@ -490,9 +495,10 @@ export class PiSession extends HostedAgent {
     const task = this.submissionMutation.then(async () => {
       const previous = this.sessionStorage.chatRecords().get(input.operationId)
       if (previous && submissionIdentity(previous) !== submissionIdentity(input)) throw new Error('Submission identity conflict')
+      const discovery = this.mcpDiscovery
       const existing = await this.lookupChat(input.operationId)
       if (existing) return existing
-      await this.getLane()
+      await this.getLane(discovery)
       const turnId = await this.activeTurn() ?? input.operationId
       this.sessionStorage.recordChat(input.operationId, { ...input, turnId, createdAt: Date.now() })
       // Validation refusal is definite nonreception. Native errors remain ambiguous until lookup proves admission.
@@ -755,16 +761,21 @@ export class PiSession extends HostedAgent {
 
   private getHarness(): Promise<Harness> { return this.native.pi() }
   private laneMutation: Promise<unknown> = Promise.resolve()
-  private getLane() {
-    const task = this.laneMutation.then(() => this.resolveLane())
+  private getLane(retryMcp?: InjectedMcpDiscovery) {
+    const task = this.laneMutation.then(() => this.resolveLane(retryMcp))
     this.laneMutation = task.catch(() => undefined)
     return task
   }
-  private async resolveLane() {
+  private async resolveLane(retryMcp?: InjectedMcpDiscovery) {
     let harness = await this.getHarness()
     if (!await this.nativeBusy(harness)) {
       const config = JSON.stringify(await this.modelEnvironment().catch(() => undefined))
       if (config !== this.runtimeConfig) { await this.native.dispose(); harness = await this.getHarness() }
+      else if (retryMcp === this.mcpDiscovery && retryMcp?.retry) {
+        // Retry a prior preparation's failures once per idle submission, never immediately or while busy.
+        this.pendingMcpRetry = retryMcp.retry
+        await this.native.dispose(); harness = await this.getHarness()
+      }
     }
     const root = await harness.root(this.nativeContext!)
     if (!await this.nativeBusy(harness)) {

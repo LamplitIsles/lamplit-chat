@@ -37,8 +37,8 @@ const api = {} as ToolExecutionApi // These tools do not use invocation APIs; ca
 
 it('isolates discovery/auth by trusted instance, preserves native schemas/results/errors and closes every session', async () => {
   const fake = fakeMcp()
-  const a = await createInjectedMcpTools(config, A, [], fake.fetch)
-  const b = await createInjectedMcpTools(config, B, [], fake.fetch)
+  const a = (await createInjectedMcpTools(config, A, [], fake.fetch)).tools
+  const b = (await createInjectedMcpTools(config, B, [], fake.fetch)).tools
   expect(a).toHaveLength(1); expect(b).toHaveLength(1)
   expect(a[0].parameters).toMatchObject(remoteSchema)
   expect(a[0].replay).toBe('unsafe') // Even the remote readOnly hint does not promise recovery safety.
@@ -68,7 +68,7 @@ it('offers discovered tools to a real Pi model turn, validates inputs, feeds res
     return nativeReply('openrouter', 'After remote result', turn % 2 === 1 ? { name, arguments: { text: 'model request' } } : false)
   })
   for (let round = 0; round < 2; round++) {
-    const tools = await createInjectedMcpTools(config, A, options.tools, fake.fetch)
+    const tools = (await createInjectedMcpTools(config, A, options.tools, fake.fetch)).tools
     const harness = await createPiHarness({ ...options, tools: [...options.tools, ...tools] })
     try {
       const root = await harness.root(context, { agent: { model: { provider: 'openrouter', modelId: 'openai/gpt-4o' } } })
@@ -89,11 +89,11 @@ it('offers discovered tools to a real Pi model turn, validates inputs, feeds res
 
 it('keeps normal native chat available without config or after bounded discovery failure', async () => {
   const fake = fakeMcp(), log = vi.spyOn(console, 'error').mockImplementation(() => {})
-  expect(await createInjectedMcpTools(undefined, A, [], fake.fetch)).toEqual([])
-  expect(await createInjectedMcpTools(config, 'cccccccc-cccc-cccc-cccc-cccccccccccc', [], fake.fetch)).toEqual([])
+  expect((await createInjectedMcpTools(undefined, A, [], fake.fetch)).tools).toEqual([])
+  expect((await createInjectedMcpTools(config, 'cccccccc-cccc-cccc-cccc-cccccccccccc', [], fake.fetch)).tools).toEqual([])
   expect(fake.requests).toHaveLength(0)
   fake.fail()
-  expect(await createInjectedMcpTools(config, A, [], fake.fetch)).toEqual([])
+  expect((await createInjectedMcpTools(config, A, [], fake.fetch)).tools).toEqual([])
   expect(log).toHaveBeenCalledWith(expect.stringContaining('MCP discovery failed'))
   const options = nativeOptions()
   const provider = vi.spyOn(globalThis, 'fetch').mockResolvedValue(nativeReply('openrouter', 'Normal chat'))
@@ -108,7 +108,7 @@ it('keeps normal native chat available without config or after bounded discovery
 
 it('aborts stalled call I/O on caller cancellation without replaying external operations', async () => {
   const fake = fakeMcp(), controller = new AbortController()
-  const [tool] = await createInjectedMcpTools(config, A, [], fake.fetch)
+  const [tool] = (await createInjectedMcpTools(config, A, [], fake.fetch)).tools
   // Hold only the call so cancellation exercises callTool and its request signal.
   const heldFetch = fake.fetch
   const spy = vi.fn(heldFetch)
@@ -122,7 +122,7 @@ it('aborts stalled call I/O on caller cancellation without replaying external op
     }
     return spy(...args)
   }
-  const [cancelTool] = await createInjectedMcpTools(config, A, [], holding)
+  const [cancelTool] = (await createInjectedMcpTools(config, A, [], holding)).tools
   const result = await cancelTool.execute({ text: 'cancel' }, api, withAbortSignal(controller.signal, context))
   expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining('cancelled') }] })
   expect(fake.aborted()).toBeGreaterThan(0)
@@ -134,7 +134,7 @@ it('aborts stalled call I/O on caller cancellation without replaying external op
 
 it('bounds initialization and calls with deadlines and never retries uncertain operations', async () => {
   const fake = fakeMcp(), log = vi.spyOn(console, 'error').mockImplementation(() => {})
-  const [tool] = await createInjectedMcpTools(config, A, [], fake.fetch)
+  const [tool] = (await createInjectedMcpTools(config, A, [], fake.fetch)).tools
   vi.useFakeTimers()
   try {
     fake.holdCall()
@@ -144,7 +144,7 @@ it('bounds initialization and calls with deadlines and never retries uncertain o
     fake.hold()
     const discovery = createInjectedMcpTools(config, A, [], fake.fetch)
     await vi.advanceTimersByTimeAsync(5001)
-    expect(await discovery).toEqual([])
+    expect((await discovery).tools).toEqual([])
     expect(fake.aborted()).toBeGreaterThanOrEqual(2)
     expect(fake.requests.filter(r => r.method === 'tools/call')).toHaveLength(1)
   } finally { vi.useRealTimers(); log.mockRestore() }
@@ -210,7 +210,7 @@ it('wires trusted hosted identities through actual PiSession DOs and reopens wit
 
 it('rejects invalid model arguments using the discovered schema before sending a remote operation', async () => {
   const fake = fakeMcp(), options = nativeOptions(), name = await remoteToolName('notes', 'echo')
-  const tools = await createInjectedMcpTools(config, A, [], fake.fetch)
+  const tools = (await createInjectedMcpTools(config, A, [], fake.fetch)).tools
   let turn = 0
   const provider = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => nativeReply('openrouter', 'Schema error handled', ++turn === 1 ? { name, arguments: { unexpected: 'missing required text' } } : false))
   const harness = await createPiHarness({ ...options, tools })

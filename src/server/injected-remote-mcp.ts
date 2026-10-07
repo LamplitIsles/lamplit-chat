@@ -69,39 +69,51 @@ async function withClient<T>(server: Server, timeoutMs: number, signal: AbortSig
   }
 }
 
-export async function createInjectedMcpTools(config: string | undefined, instanceId: string | null, existing: readonly ToolRegistration[], fetcher: McpFetch = globalThis.fetch): Promise<ToolRegistration[]> {
+export type InjectedMcpDiscovery = { tools: ToolRegistration[]; retry?: () => Promise<InjectedMcpDiscovery> }
+
+export async function createInjectedMcpTools(config: string | undefined, instanceId: string | null, existing: readonly ToolRegistration[], fetcher: McpFetch = globalThis.fetch): Promise<InjectedMcpDiscovery> {
   let servers: Server[]
   try { servers = injectedServers(config, instanceId) }
-  catch { console.error('Invalid MCP_CONFIG: remote tools disabled; check the deployment secret shape and HTTPS URLs'); return [] }
-  const used = new Set(existing.map(tool => tool.name))
-  const tools: ToolRegistration[] = []
-  await Promise.all(servers.map(async (server, index) => {
-    try {
-      const remote = await withClient(server, DISCOVERY_TIMEOUT_MS, undefined, (client, signal) => client.listTools({ signal }), fetcher)
-      const discovered: ToolRegistration[] = []
-      for (const tool of remote) {
-        if (!tool.name || tool.inputSchema.type !== 'object') throw new Error('Invalid tool metadata')
-        const name = await remoteToolName(server.name, tool.name)
-        if (used.has(name)) throw new Error('Tool name collision')
-        used.add(name)
-        discovered.push({ name, description: tool.description ?? `Remote ${server.name} tool: ${tool.name}`,
-          parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema), replay: 'unsafe',
-          execute: async (args, _api, context) => {
-            try {
-              if (!object(args)) throw new Error('Invalid MCP arguments')
-              const result = await withClient(server, CALL_TIMEOUT_MS, context.abortSignal, (client, signal) => client.callTool(tool.name, args, { signal }), fetcher)
-              const content = toLlmContent(result)
-              if (result.content.length && result.structuredContent !== undefined) content.push({ type: 'text', text: JSON.stringify(result.structuredContent) })
-              return { content, isError: result.isError ?? false }
-            } catch {
-              // HTTP/RPC error bodies may echo credentials; expose neither those bodies nor the URL.
-              return { content: [{ type: 'text', text: context.abortSignal?.aborted ? 'Remote MCP call cancelled; delivery may have occurred.' : 'Remote MCP call failed or timed out; delivery may have occurred. Do not automatically retry.' }], isError: true }
-            }
-          },
-        })
+  catch { console.error('Invalid MCP_CONFIG: remote tools disabled; check the deployment secret shape and HTTPS URLs'); return { tools: [] } }
+  return discover(servers.map((server, index) => ({ server, index })), [])
+
+  // A retry retains successful schemas and contacts only peers whose discovery failed.
+  async function discover(pending: { server: Server; index: number }[], known: ToolRegistration[]): Promise<InjectedMcpDiscovery> {
+    const used = new Set([...existing, ...known].map(tool => tool.name))
+    const tools = [...known]
+    const failed: typeof pending = []
+    await Promise.all(pending.map(async ({ server, index }) => {
+      try {
+        const remote = await withClient(server, DISCOVERY_TIMEOUT_MS, undefined, (client, signal) => client.listTools({ signal }), fetcher)
+        const discovered: ToolRegistration[] = []
+        for (const tool of remote) {
+          if (!tool.name || tool.inputSchema.type !== 'object') throw new Error('Invalid tool metadata')
+          const name = await remoteToolName(server.name, tool.name)
+          if (used.has(name)) throw new Error('Tool name collision')
+          used.add(name)
+          discovered.push({ name, description: tool.description ?? `Remote ${server.name} tool: ${tool.name}`,
+            parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema), replay: 'unsafe',
+            execute: async (args, _api, context) => {
+              try {
+                if (!object(args)) throw new Error('Invalid MCP arguments')
+                const result = await withClient(server, CALL_TIMEOUT_MS, context.abortSignal, (client, signal) => client.callTool(tool.name, args, { signal }), fetcher)
+                const content = toLlmContent(result)
+                if (result.content.length && result.structuredContent !== undefined) content.push({ type: 'text', text: JSON.stringify(result.structuredContent) })
+                return { content, isError: result.isError ?? false }
+              } catch {
+                // HTTP/RPC error bodies may echo credentials; expose neither those bodies nor the URL.
+                return { content: [{ type: 'text', text: context.abortSignal?.aborted ? 'Remote MCP call cancelled; delivery may have occurred.' : 'Remote MCP call failed or timed out; delivery may have occurred. Do not automatically retry.' }], isError: true }
+              }
+            },
+          })
+        }
+        tools.push(...discovered)
+      } catch {
+        failed.push({ server, index })
+        console.error(`MCP discovery failed for server ${index + 1}; remote tools unavailable until the next idle submission`)
       }
-      tools.push(...discovered)
-    } catch { console.error(`MCP discovery failed for server ${index + 1}; remote tools unavailable until the next harness preparation`) }
-  }))
-  return tools.sort((a, b) => a.name.localeCompare(b.name))
+    }))
+    tools.sort((a, b) => a.name.localeCompare(b.name))
+    return { tools, ...(failed.length ? { retry: () => discover(failed, tools) } : {}) }
+  }
 }

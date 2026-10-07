@@ -27,7 +27,10 @@ use Pi's content conversion, with structured results and `isError` preserved.
 
 Discovery runs during existing harness preparation (five seconds per server,
 in parallel). Failed discovery logs a credential-free error and leaves existing
-tools available; it is retried on the next harness preparation. Invalid config
+tools available. A later idle chat submission retries only failed servers before
+preparing its native request; successful discoveries stay available without being
+queried again. Busy submissions and reads do not retry, and each submission makes
+at most one discovery attempt per failed server. Invalid config
 also logs an error and disables remote tools. Each operation closes its own
 client. Calls have a 30-second deadline and follow native cancellation. External
 operations use unsafe replay and are never automatically retried by this adapter;
@@ -37,5 +40,6 @@ When the real URL and instance mapping are confirmed, prepare the JSON privately
 and run `npx wrangler secret put MCP_CONFIG --config wrangler.hosted.jsonc` through
 the separately authorized deployment workflow. Secret/deployment updates take
 effect through the existing harness lifecycle. Do not commit the JSON/token,
-put it in AGENTS.md, or send it to the model. This implementation has only local
-fake-service evidence; the target's real config and deployment remain pending.
+put it in AGENTS.md, or send it to the model. Local workerd regressions verify
+discovery recovery and native model-request schemas. Authorized real initialize/list evidence is separate from these
+fixtures; it does not establish a production session's current tool selection.
