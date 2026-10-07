@@ -51,6 +51,7 @@ import type {
   WorkspaceFileContent,
 } from '../shared/pi-contract'
 import { createPiHarness, type ModelEnvironment } from './create-pi-harness'
+import { createInjectedMcpTools } from './injected-remote-mcp'
 import { extractMemoryOperations, type MemorySourceEntry } from './memory-extractor'
 import { createMemoryTool } from './memory-tools'
 import { createRelationshipTools } from './relationship-tools'
@@ -182,14 +183,16 @@ export class PiSession extends HostedAgent {
     const registry = this.registry()
     const modelEnv = await this.modelEnvironment().catch(() => undefined)
     this.runtimeConfig = JSON.stringify(modelEnv)
+    const tools = [
+      ...createWorkspaceTools(this.workspace), createSessionSearchTool(registry),
+      createMemoryTool(registry, this.sessionStorage.isInitialized() ? this.sessionStorage.getMetadataSync().id : this.name.split(':').at(-1)!), ...createRelationshipTools(registry),
+      ...(this.env.HOSTED_MODE !== 'true' && this.env.KEET_MCP_TOKEN && this.env.KEET_MCP_URL ? createKeetTools(this.env) : []),
+      ...createWakeTools(this, () => registry.getReportedTimeZone()), ...createWebTools(this.env, this.instanceId()),
+      ...createPlatformFeedbackTools(this.env, this.instanceId(), this.sessionStorage.isInitialized() ? this.sessionStorage.getMetadataSync().id : this.name.split(':').at(-1)!),
+    ]
+    this.runtimeTools = [...tools, ...await createInjectedMcpTools(this.env.MCP_CONFIG, this.instanceId(), tools)]
     const harness = await createPiHarness({
-      storage, context, env: modelEnv, tools: this.runtimeTools = [
-        ...createWorkspaceTools(this.workspace), createSessionSearchTool(registry),
-        createMemoryTool(registry, this.sessionStorage.isInitialized() ? this.sessionStorage.getMetadataSync().id : this.name.split(':').at(-1)!), ...createRelationshipTools(registry),
-        ...(this.env.HOSTED_MODE !== 'true' && this.env.KEET_MCP_TOKEN && this.env.KEET_MCP_URL ? createKeetTools(this.env) : []),
-        ...createWakeTools(this, () => registry.getReportedTimeZone()), ...createWebTools(this.env, this.instanceId()),
-        ...createPlatformFeedbackTools(this.env, this.instanceId(), this.sessionStorage.isInitialized() ? this.sessionStorage.getMetadataSync().id : this.name.split(':').at(-1)!),
-      ], memory: registry, compaction: this.compactionSettings(),
+      storage, context, env: modelEnv, tools: this.runtimeTools, memory: registry, compaction: this.compactionSettings(),
       loadCompactionPrompt: async () => (await new CompanionFiles(this.workspace).effective()).content,
       loadInstructions: () => this.workspace.readFile(`${WORKSPACE_ROOT}/AGENTS.md`), getUserTimeZone: () => registry.getUserTimeZone(),
       awaitWakeSchedules: () => this.awaitWakeSchedules(), projectKeet: messages => this.projectKeetMessages(messages),

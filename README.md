@@ -297,3 +297,6 @@ Unconfigured ordinary chat remains available. Pi reports Keet images unavailable
 existing web photos are unchanged. Hosted Keet onboarding/webhooks/tools are not
 provisioned and fail closed under existing tenant/internal-secret guards.
 See [operator/auth, source privacy, native tools and frozen verification](docs/keet-source-restoration.md).
+
+Deployment-owned remote MCP tools can be enabled per instance with an optional
+backend secret; see [injected remote MCP](docs/injected-remote-mcp.md).
