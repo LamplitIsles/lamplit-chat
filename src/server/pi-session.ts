@@ -1,3 +1,5 @@
+import { parseKeetFrame, type KeetFrame } from './keet-feed'
+import { createKeetTools } from './keet-tools'
 import { accountModels, selectedModel, resolveModelSelection, selfHostModelEnvironment } from './model-catalog'
 import { nativeSearchNode, readSearchNodes } from './conversation-search'
 import { createPiPanelBackend, PanelCursors } from './companion-panels'
@@ -23,6 +25,8 @@ import {
   DEFAULT_COMPACTION_SETTINGS,
   StorageBackedSession,
   type Entry,
+  type AgentLane,
+  type AgentMessage,
 } from '@earendil-works/pi-agent-core'
 import { BACKGROUND_CONTEXT } from '@earendil-works/pi-agent-core/harness/context'
 import { hostedCallable, HostedAgent } from './hosted-agent'
@@ -233,10 +237,14 @@ export class PiSession extends HostedAgent {
       const lane = await this.getLane()
       const recovery = await prepareOpenOperationResume(
         lane, BACKGROUND_CONTEXT,
-        (id) => this.sessionStorage.getPromptSubmission(id),
+        (id) => this.sessionStorage.getPromptSubmission(id) ?? this.keetSubmission(id),
         async (id) => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
         (id) => this.sessionStorage.getEntrySync(id),
-        (id, entryId) => this.sessionStorage.acceptPromptSubmission(id, entryId),
+        (id, entryId) => {
+          const row = this.sessionStorage.nextKeet()
+          if (row?.operationId === id) { this.sessionStorage.acceptKeet(row.sequence, entryId); return this.keetSubmission(id)! }
+          return this.sessionStorage.acceptPromptSubmission(id, entryId)
+        },
       )
       if (recovery) {
         if (recovery.browserPrompt) this.promptOperationId = recovery.operationId
@@ -245,6 +253,8 @@ export class PiSession extends HostedAgent {
             await this.wakeMutation
             const resumed = await lane.resume(BACKGROUND_CONTEXT)
             if (!resumed.ok) throw resumed.error
+            const row = this.sessionStorage.nextKeet()
+            if (row?.operationId === recovery.operationId && await lane.getResult(row.operationId, BACKGROUND_CONTEXT)) this.sessionStorage.settleKeet(row.sequence)
             await this.flushOutboxToRegistry()
           } finally {
             this.active = false
@@ -323,7 +333,11 @@ export class PiSession extends HostedAgent {
     return {
       leafId: selectedLeaf,
       revision: rows.at(-1)?.seq ?? 0,
-      entries: entries.map((entry) => ({ ...storedEntry(seqById.get(entry.id) ?? 0, entry), photos: this.sessionStorage.photosForEntry(entry.id) })),
+      entries: entries.map(entry => {
+        const source = this.sessionStorage.keetSource(entry.id)
+        return { ...storedEntry(seqById.get(entry.id) ?? 0, entry), photos: this.sessionStorage.photosForEntry(entry.id),
+          ...(source ? { keet: { kind: source.kind, sender: source.sender, destination: source.destination, text: source.text } } : {}) }
+      }),
     }
   }
 
@@ -576,12 +590,74 @@ export class PiSession extends HostedAgent {
     await this.serializeWake(() => this.ensureWakeSchedules())
   }
 
-  async drainPendingWork(): Promise<void> {
+  async ingestKeet(input: KeetFrame): Promise<{ sequence: number; queued: boolean } | { error: string; retryable?: boolean }> {
+    await this.waitUntilInitialized()
+    let result: { sequence: number; queued: boolean }
+    try {
+      result = await this.sessionStorage.admitKeet(parseKeetFrame(input))
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Keet ingestion failed.' }
+    }
+    try { await this.schedulePendingDrain() }
+    catch (error) { return { error: `Keet queue scheduling failed: ${error instanceof Error ? error.message : String(error)}`, retryable: true } }
+    return result
+  }
+
+  async drainKeetQueue(): Promise<void> {
     if (this.active || !this.sessionStorage.isInitialized()) return
-    const lane = await this.getLane()
-    if (this.active) return
+    const next = this.sessionStorage.nextKeet()
+    if (!next) return
     this.active = true
     try {
+      await this.driveKeetQueue(next)
+    } finally {
+      this.active = false
+      this.scheduleMemoryExtraction()
+      await this.schedulePendingDrain()
+    }
+  }
+
+  private async driveKeetQueue(next: NonNullable<ReturnType<PiSessionStorage['nextKeet']>>, existingLane?: AgentLane): Promise<void> {
+    const lane = existingLane ?? await this.getLane()
+    const current = (await lane.inspectExecution(BACKGROUND_CONTEXT)).current
+    if (current && current.id !== next.operationId) {
+      await this.schedulePendingDrain()
+      return
+    }
+    let entryId = next.entryId
+    if (!entryId && (await this.session.getValue(operationMeta(next.operationId), BACKGROUND_CONTEXT))?.value) {
+      entryId = await exactPromptEntryId(next.operationId,
+        async (id) => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
+        (id) => this.sessionStorage.getEntrySync(id))
+    }
+    if (entryId) this.sessionStorage.acceptKeet(next.sequence, entryId)
+    if (await lane.getResult(next.operationId, BACKGROUND_CONTEXT)) {
+      if (!entryId) throw new Error('Terminal Keet run is missing source correlation.')
+    } else {
+      if (!entryId) {
+        const admitted = await lane.accept({ kind: 'prompt', operationId: next.operationId, prompt: next.source.text }, BACKGROUND_CONTEXT)
+        if (!admitted.ok) throw admitted.error
+        entryId = await exactPromptEntryId(next.operationId,
+          async (id) => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
+          (id) => this.sessionStorage.getEntrySync(id))
+        this.sessionStorage.acceptKeet(next.sequence, entryId)
+      }
+      const driven = await lane.drive({ operationId: next.operationId, waitForRetry: true }, BACKGROUND_CONTEXT)
+      if (!driven.ok) throw driven.error
+      if (driven.value.kind === 'waiting') {
+        await this.schedulePendingDrain()
+        return
+      }
+    }
+    this.sessionStorage.settleKeet(next.sequence)
+    await this.flushOutboxToRegistry()
+  }
+
+  async drainPendingWork(): Promise<void> {
+    if (this.active || !this.sessionStorage.isInitialized()) return
+    this.active = true
+    try {
+      const lane = await this.getLane()
       await this.awaitWakeSchedules()
       if (!(await lane.inspectExecution(BACKGROUND_CONTEXT)).current) {
         const state = (await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value
@@ -594,6 +670,8 @@ export class PiSession extends HostedAgent {
           await this.flushOutboxToRegistry()
         }
       }
+      const next = this.sessionStorage.nextKeet()
+      if (next) await this.driveKeetQueue(next, lane)
     } finally {
       this.active = false
       this.scheduleMemoryExtraction()
@@ -601,9 +679,16 @@ export class PiSession extends HostedAgent {
     }
   }
 
+  private keetSubmission(operationId: string) {
+    const row = this.sessionStorage.nextKeet()
+    if (row?.operationId !== operationId) return undefined
+    return { operationId, fingerprint: '', state: row.entryId ? 'accepted' as const : 'submitting' as const,
+      ...(row.entryId ? { entryId: row.entryId } : {}), createdAt: '' }
+  }
+
   private async schedulePendingDrain(): Promise<void> {
     const state = (await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value
-    if (state?.inbox.some((item) => item.kind === 'steer' || item.kind === 'followUp')) {
+    if (this.sessionStorage.nextKeet() || state?.inbox.some((item) => item.kind === 'steer' || item.kind === 'followUp')) {
       await this.schedule(1, 'drainPendingWork', undefined, { idempotent: true })
     }
   }
@@ -1029,6 +1114,7 @@ export class PiSession extends HostedAgent {
         createSessionSearchTool(registry),
         createMemoryTool(registry, this.sessionStorage.getMetadataSync().id),
         ...createRelationshipTools(registry),
+        ...(this.env.HOSTED_MODE !== 'true' && this.env.KEET_MCP_TOKEN && this.env.KEET_MCP_URL ? createKeetTools(this.env) : []),
         ...createWakeTools(this, () => registry.getReportedTimeZone()),
         ...createWebTools(this.env, this.instanceId()),
         ...createPlatformFeedbackTools(this.env, this.instanceId(), this.sessionStorage.getMetadataSync().id),
@@ -1039,6 +1125,7 @@ export class PiSession extends HostedAgent {
       loadInstructions: () => this.workspace.readFile(`${WORKSPACE_ROOT}/AGENTS.md`),
       getUserTimeZone: () => registry.getUserTimeZone(),
       awaitWakeSchedules: () => this.awaitWakeSchedules(),
+      projectKeet: messages => this.projectKeetMessages(messages),
       }).then(harness => {
         harness.events.on('compaction_start', event => {
           if (event.lane === 'main') this.sessionStorage.setSetting('chatCompaction', { id: event.runId, status: 'running' })
@@ -1065,6 +1152,19 @@ export class PiSession extends HostedAgent {
 
   private async getLane() {
     return (await this.getHarness()).lane('main', BACKGROUND_CONTEXT)
+  }
+
+  private projectKeetMessages(messages: AgentMessage[]): AgentMessage[] {
+    return messages.map(message => {
+      if (message.role !== 'user') return message
+      // Maintenance preparation is deserialized; compare native timestamp/content,
+      // not array identity. Display entries remain untouched.
+      const entry = this.sessionStorage.entriesInOrder().find(entry => entry.type === 'message' &&
+        entry.message.role === 'user' && entry.message.timestamp === message.timestamp &&
+        JSON.stringify(entry.message.content) === JSON.stringify(message.content) && this.sessionStorage.keetSource(entry.id))
+      const prompt = entry && this.sessionStorage.keetModelPrompt(entry.id)
+      return prompt ? { ...message, content: prompt } : message
+    })
   }
 
   private compactionSettings(): CompactionSettings {
@@ -1165,7 +1265,7 @@ export class PiSession extends HostedAgent {
     let characters = 0
     let throughRevision = cursor
     for (const { seq, entry } of pending) {
-      const source = memorySourceEntry(entry)
+      const source = memorySourceEntry(entry, this.sessionStorage.keetModelPrompt(entry.id))
       const size = source?.text.length ?? 0
       if (entries.length > 0 && characters + size > MEMORY_EXTRACTION_BATCH_CHARS) break
       throughRevision = seq
@@ -1299,9 +1399,9 @@ function messageText(message: unknown): string {
     .join('\n')
 }
 
-function memorySourceEntry(entry: Entry): MemorySourceEntry | undefined {
+function memorySourceEntry(entry: Entry, keetPrompt?: string): MemorySourceEntry | undefined {
   if (entry.type !== 'message' || (entry.message.role !== 'user' && entry.message.role !== 'assistant')) return
-  let text = messageText(entry.message).trim()
+  let text = (keetPrompt ?? messageText(entry.message)).trim()
   if (!text) return
   if (text.length > MEMORY_SOURCE_ENTRY_CHARS) {
     const half = MEMORY_SOURCE_ENTRY_CHARS / 2

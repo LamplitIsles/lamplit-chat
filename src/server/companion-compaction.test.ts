@@ -32,8 +32,8 @@ function offlineProvider() {
   })
   return { requests, fetch, fail: () => { failure = true }, cancel: (controller: AbortController) => { cancel = controller }, overflow: () => { overflow = true } }
 }
-async function attach(session: Parameters<typeof createPiHarness>[0]['session'], loadPrompt: () => Promise<string>, settings = { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 1000, keepRecentTokens: 100 }, modelEnv = env) {
-  const harness = await createPiHarness({ env: modelEnv, session, tools: [], memory: { getMemoryContext: async () => '', getRelationshipContext: async () => '' }, compaction: settings,
+async function attach(session: Parameters<typeof createPiHarness>[0]['session'], loadPrompt: () => Promise<string>, settings = { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 1000, keepRecentTokens: 100 }, modelEnv = env, projectKeet?: Parameters<typeof createPiHarness>[0]['projectKeet']) {
+  const harness = await createPiHarness({ projectKeet, env: modelEnv, session, tools: [], memory: { getMemoryContext: async () => '', getRelationshipContext: async () => '' }, compaction: settings,
     loadInstructions: async () => 'Read other root Markdown when needed.', loadCompactionPrompt: loadPrompt, getUserTimeZone: async () => 'Asia/Shanghai' })
   const lane = await harness.lane('main', ctx)
   return { harness, lane }
@@ -83,12 +83,14 @@ it('uses default → custom → reset on actual manual requests, includes previo
   } finally { provider.fetch.mockRestore() }
 })
 
-it('preserves Pi split-turn and paired tool tail plus fileOps, using the public serialization truncation', async () => {
+it.each(['DM', 'Group'])('preserves Keet %s attribution in Pi split-turn prefix, paired tool tail and fileOps', async kind => {
   const provider = offlineProvider()
   try {
     const session = await new MemorySessionRepo().create({}, ctx)
     const settings = { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 1000, keepRecentTokens: 250 }
-    const { lane } = await attach(session, async () => defaultPrompt, settings)
+    const { lane } = await attach(session, async () => defaultPrompt, settings, env, messages => messages.map(message =>
+      message.role === 'user' && message.content === 'Long ongoing fictional turn'
+        ? { ...message, content: `[Keet ${kind}: Room; sender: Bob] Long ongoing fictional turn` } : message))
     await history(lane, 'old-evidence', 2)
     await lane.appendMessage({ role: 'user', content: 'Long ongoing fictional turn', timestamp: Date.now() }, ctx)
     for (let i = 0; i < 6; i++) {
@@ -104,7 +106,7 @@ it('preserves Pi split-turn and paired tool tail plus fileOps, using the public 
     if (!prep.ok || !prep.value || entry?.type !== 'compaction') throw new Error('Expected native compaction')
     expect(entry.retainedTail).toEqual(prep.value.retainedTail)
     expect(JSON.stringify(provider.requests[0].messages[1].content)).toContain('<split-turn-prefix>')
-    expect(JSON.stringify(provider.requests[0].messages[1].content)).toContain('Long ongoing fictional turn')
+    expect(JSON.stringify(provider.requests[0].messages[1].content)).toContain(`<split-turn-prefix>\\n[User]: [Keet ${kind}: Room; sender: Bob] Long ongoing fictional turn`)
     expect(entry.details).toMatchObject({ modifiedFiles: ['/workspace/fictional-0.md'] })
     expect(entry.summary).toContain('<modified-files>')
     expect(JSON.stringify(provider.requests[0].messages[1].content).length).toBeLessThan(75_000)

@@ -395,7 +395,7 @@ describe('timed wakes in local workerd', () => {
       expect(projected).toHaveLength(4)
       expect(projected.every(m => m.role === 'agent' && m.source?.kind === 'reminder' && m.text.includes('Immutable reminder input'))).toBe(true)
       expect(projected.map(m => m.id)).toEqual(branch.entries.filter(e => e.wakeSource).map(e => e.id))
-      expect(projected.map(m => m.source?.reminderId)).toEqual(accepted.map(a => a.wakeId))
+      expect(projected.map(m => m.source?.kind === 'reminder' ? m.source.reminderId : undefined)).toEqual(accepted.map(a => a.wakeId))
       channel.close()
       host.close()
     })

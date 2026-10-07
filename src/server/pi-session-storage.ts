@@ -1,3 +1,4 @@
+import { keetIdentity, keetPrompt, keetSource, keetDisplayText, type KeetFrame, type KeetSource } from './keet-feed'
 import { nativeSearchNode } from './conversation-search'
 import { WAKE_CUSTOM_TYPE, occurrenceKey, type TimedWake, type WakeSource } from '../shared/timed-wake'
 import { nextWake } from './timed-wake'
@@ -39,6 +40,13 @@ export class PiSessionStorage extends PiV4Storage {
   constructor(private readonly durable: DurableObjectStorage) {
     super(durable)
     durable.sql.exec(`
+      CREATE TABLE IF NOT EXISTS keet_feed (sequence INTEGER PRIMARY KEY, identity TEXT NOT NULL UNIQUE, frame TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS keet_queue (
+        sequence INTEGER PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE, prompt TEXT NOT NULL, source TEXT NOT NULL,
+        entry_id TEXT, state TEXT NOT NULL DEFAULT 'pending'
+      );
+      CREATE TABLE IF NOT EXISTS keet_context (destination TEXT PRIMARY KEY, messages TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS keet_sources (entry_id TEXT PRIMARY KEY, source TEXT NOT NULL, prompt TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS chat_inputs (operation_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS chat_replaced (operation_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS chat_dropped (entry_id TEXT PRIMARY KEY);
@@ -116,6 +124,88 @@ export class PiSessionStorage extends PiV4Storage {
       if (source === id || !this.eligible(source)) throw new Error('Recovery source is no longer eligible')
     }
     for (const source of record.replacementSourceIds) this.durable.sql.exec('INSERT INTO chat_replaced(operation_id) VALUES (?)', source)
+  }
+
+  keetCheckpoint(): number {
+    return this.durable.sql.exec<{ sequence: number }>('SELECT sequence FROM keet_feed ORDER BY sequence DESC LIMIT 1').toArray()[0]?.sequence ?? 0
+  }
+
+  async admitKeet(frame: KeetFrame): Promise<{ sequence: number; queued: boolean }> {
+    const result = this.durable.transactionSync((): { sequence: number; queued: boolean } | { error: string } => {
+      const current = this.keetCheckpoint()
+      const identity = keetIdentity(frame)
+      const encoded = JSON.stringify({
+        type: frame.type, eventId: frame.eventId, sequence: frame.sequence,
+        messageId: { deviceId: frame.messageId.deviceId, seq: frame.messageId.seq },
+        timestamp: frame.timestamp,
+        destination: { groupName: frame.destination.groupName, kind: frame.destination.kind },
+        senderLabel: frame.senderLabel, text: frame.text,
+        trigger: frame.trigger ?? null,
+        replyTo: frame.replyTo ? { deviceId: frame.replyTo.deviceId, seq: frame.replyTo.seq } : null,
+        images: frame.images ?? null,
+        reactionContext: frame.reactionContext ?? null,
+      })
+      if (frame.sequence <= current) {
+        const existing = this.durable.sql.exec<{ identity: string; frame: string }>('SELECT identity, frame FROM keet_feed WHERE sequence = ?', frame.sequence).toArray()[0]
+        if (!existing || existing.identity !== identity || existing.frame !== encoded) return { error: 'Keet sequence replay conflicts with stored event.' }
+        return { sequence: current, queued: false }
+      }
+      if (frame.sequence !== current + 1) return { error: `Keet feed gap: expected ${current + 1}, received ${frame.sequence}. Reconcile before continuing.` }
+      if (this.durable.sql.exec('SELECT sequence FROM keet_feed WHERE identity = ?', identity).toArray().length) return { error: 'Keet message identity was already admitted at another sequence.' }
+      this.durable.sql.exec('INSERT INTO keet_feed(sequence, identity, frame) VALUES (?, ?, ?)', frame.sequence, identity, encoded)
+      let queued = false
+      if (frame.destination.kind === 'group' && (frame.text.trim() || frame.images?.length)) {
+        const destination = frame.destination.groupName
+        const row = this.durable.sql.exec<{ messages: string }>('SELECT messages FROM keet_context WHERE destination = ?', destination).toArray()[0]
+        const context = row ? JSON.parse(row.messages) as KeetSource['context'] : []
+        if (frame.trigger) {
+          this.enqueueKeet(frame, context)
+          queued = true
+          this.durable.sql.exec('DELETE FROM keet_context WHERE destination = ?', destination)
+        } else {
+          const next = [...context, { sender: frame.senderLabel, text: frame.text.slice(0, 500) }].slice(-8)
+          this.durable.sql.exec('INSERT INTO keet_context(destination, messages) VALUES (?, ?) ON CONFLICT(destination) DO UPDATE SET messages = excluded.messages', destination, JSON.stringify(next))
+        }
+      } else if (frame.destination.kind === 'dm' && (frame.text.trim() || frame.images?.length)) {
+        this.enqueueKeet(frame, [])
+        queued = true
+      }
+      return { sequence: frame.sequence, queued }
+    })
+    if ('error' in result) throw new Error(result.error)
+    return result
+  }
+
+  private enqueueKeet(frame: KeetFrame, context: KeetSource['context']): void {
+    this.durable.sql.exec('INSERT INTO keet_queue(sequence, operation_id, prompt, source) VALUES (?, ?, ?, ?)',
+      frame.sequence, crypto.randomUUID(), keetPrompt(frame, context), JSON.stringify({ ...keetSource(frame, context), text: keetDisplayText(frame) }))
+  }
+
+  nextKeet(): { sequence: number; operationId: string; prompt: string; source: KeetSource; entryId: string | null; state: string } | undefined {
+    const row = this.durable.sql.exec<{ sequence: number; operation_id: string; prompt: string; source: string; entry_id: string | null; state: string }>("SELECT * FROM keet_queue WHERE state != 'settled' ORDER BY sequence LIMIT 1").toArray()[0]
+    return row && { sequence: row.sequence, operationId: row.operation_id, prompt: row.prompt, source: JSON.parse(row.source) as KeetSource, entryId: row.entry_id, state: row.state }
+  }
+
+  acceptKeet(sequence: number, entryId: string): void {
+    const row = this.nextKeet()
+    if (!row || row.sequence !== sequence || (row.entryId && row.entryId !== entryId)) throw new Error('Keet entry correlation conflict.')
+    this.durable.transactionSync(() => {
+      this.durable.sql.exec("UPDATE keet_queue SET state = 'accepted', entry_id = ? WHERE sequence = ?", entryId, sequence)
+      this.durable.sql.exec('INSERT INTO keet_sources(entry_id, source, prompt) VALUES (?, ?, ?) ON CONFLICT(entry_id) DO NOTHING', entryId, JSON.stringify(row.source), row.prompt)
+    })
+  }
+
+  settleKeet(sequence: number): void {
+    this.durable.sql.exec("UPDATE keet_queue SET state = 'settled' WHERE sequence = ? AND entry_id IS NOT NULL", sequence)
+  }
+
+  keetSource(entryId: string): KeetSource | undefined {
+    const row = this.durable.sql.exec<{ source: string }>('SELECT source FROM keet_sources WHERE entry_id = ?', entryId).toArray()[0]
+    return row ? JSON.parse(row.source) as KeetSource : undefined
+  }
+
+  keetModelPrompt(entryId: string): string | undefined {
+    return this.durable.sql.exec<{ prompt: string }>('SELECT prompt FROM keet_sources WHERE entry_id = ?', entryId).toArray()[0]?.prompt
   }
 
   timedWakes(): TimedWake[] { return this.getSetting<TimedWake[]>('timedWakes') ?? [] }
@@ -207,6 +297,7 @@ export class PiSessionStorage extends PiV4Storage {
 
   async replace(metadata: PiSessionMetadata, entries: Entry[]): Promise<void> {
     this.reset()
+    for (const table of ['keet_feed', 'keet_queue', 'keet_context', 'keet_sources']) this.durable.sql.exec(`DELETE FROM ${table}`)
     this.durable.sql.exec('DELETE FROM pi_prompt_submissions')
     for (const table of ['chat_inputs', 'chat_replaced', 'chat_dropped', 'chat_submissions']) this.durable.sql.exec(`DELETE FROM ${table}`)
     this.durable.sql.exec('DELETE FROM pi_steer_submissions')

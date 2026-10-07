@@ -292,3 +292,15 @@ eight eligible records per side and 12,000 Unicode code points. Ordinary read
 failures support retry. See [protocol, ownership, summary indexing and exact
 frozen native acceptance](docs/conversation-search.md). Both native hosts and joint
 user approval gate merge; this feature does not deploy.
+
+## Optional Keet text integration
+
+Self-hosted companions can receive authenticated Keet DM and triggered Group text
+through `/api/keet/events`, with durable sequence deduplication, queued native
+execution, restart recovery and shared incoming provenance. Initialize a companion
+session, set `COMPANION_SESSION_ID`, and configure independent `KEET_INGEST_TOKEN`;
+the four native text tools additionally use `KEET_MCP_URL` and `KEET_MCP_TOKEN`.
+Unconfigured ordinary chat remains available. Pi reports Keet images unavailable;
+existing web photos are unchanged. Hosted Keet onboarding/webhooks/tools are not
+provisioned and fail closed under existing tenant/internal-secret guards.
+See [operator/auth, source privacy, native tools and frozen verification](docs/keet-source-restoration.md).

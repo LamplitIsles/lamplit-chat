@@ -1,11 +1,24 @@
 import type { ModelSelection } from './model-catalog'
-import { convertToLlm, serializeConversation, CompactionError, type AgentHarness, type AgentLane, type Hooks } from '@earendil-works/pi-agent-core'
+import { convertToLlm, serializeConversation, CompactionError, collectEntriesForBranchSummary, generateBranchSummary, type AgentMessage, type Session, type AgentHarness, type AgentLane, type Hooks } from '@earendil-works/pi-agent-core'
 import type { Models } from '@earendil-works/pi-ai'
 import { DEFAULT_COMPANION_COMPACTION_PROMPT } from './companion-compaction-prompt'
 
 // Pi prepares the cut and persists the result. This hook owns only the summary request.
-export function installCompanionCompaction(harness: AgentHarness<undefined>, lane: AgentLane, models: Models, loadPrompt: () => Promise<string>, selection: ModelSelection) {
+export function installCompanionCompaction(harness: AgentHarness<undefined>, lane: AgentLane, models: Models, loadPrompt: () => Promise<string>, selection: ModelSelection, session: Session, projectMessages: (messages: AgentMessage[]) => AgentMessage[] = messages => messages) {
   const hooks: Hooks = harness.hooks
+  hooks.on('before_navigation', async ({ targetId, preparation, customInstructions }, context) => {
+    // Leave ordinary navigation on Pi's default path; reuse its public generator
+    // only when this branch contains persisted external-source attribution.
+    if (!projectMessages(preparation.messages).some((message, index) => message !== preparation.messages[index])) return
+    try {
+      const model = await lane.getModel(context)
+      if (!model) return { decline: true }
+      const { entries } = await collectEntriesForBranchSummary(lane, session, await lane.getTipId(context), targetId, context)
+      const projected = entries.map(entry => entry.type === 'message' ? { ...entry, message: projectMessages([entry.message])[0] } : entry)
+      const result = await generateBranchSummary(projected, { models, model, customInstructions, reserveTokens: model.contextWindow || 128_000 }, context)
+      return result.ok ? { summary: result.value } : { decline: true }
+    } catch { return { decline: true } }
+  })
   return hooks.on('before_compaction', async ({ preparation: p, customInstructions }, context) => {
     try {
       context.abortSignal?.throwIfAborted()
@@ -13,9 +26,9 @@ export function installCompanionCompaction(harness: AgentHarness<undefined>, lan
       const model = await lane.getModel(context)
       if (!model) throw new CompactionError('summarization_failed', 'Model is not configured.')
       const sections = [
-        `<conversation>\n${serializeConversation(convertToLlm(p.messagesToSummarize))}\n</conversation>`,
+        `<conversation>\n${serializeConversation(convertToLlm(projectMessages(p.messagesToSummarize)))}\n</conversation>`,
         p.previousSummary ? `<previous-summary>\n${p.previousSummary}\n</previous-summary>` : '',
-        p.isSplitTurn ? `<split-turn-prefix>\n${serializeConversation(convertToLlm(p.turnPrefixMessages))}\n</split-turn-prefix>` : '',
+        p.isSplitTurn ? `<split-turn-prefix>\n${serializeConversation(convertToLlm(projectMessages(p.turnPrefixMessages)))}\n</split-turn-prefix>` : '',
         customInstructions ? `<maintenance-focus>\n${customInstructions}\n</maintenance-focus>` : '',
       ].filter(Boolean).join('\n\n')
       const response = await models.completeSimple(model, {

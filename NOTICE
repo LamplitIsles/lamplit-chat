@@ -50,3 +50,16 @@ The package retains its LICENSE. The repository-maintained export-only patch to
 @earendil-works/pi-agent-core 0.99.1 (MIT) exposes its existing native projection;
 it does not modify its implementation or claim upstream published API support.
 Native context/admission adapters and isolated test controls are authored here.
+
+Keet frame validation, bearer ingress, text MCP tools, queue/context/source logic
+and representative tests are adapted from LamplitIsles/lamplit-cloudflare at
+e556636f8298bf575fb73408bd6bb9b304413f8b (MIT). The retained original MIT notice
+is LICENSES/pi-on-cf-MIT.txt. Modified for current Pi 0.99.1 public seams, native
+execution serialization, fail-closed hosted support, model-only attribution and
+original visible text. The source repository is read-only prior art; no deployed
+configuration, credentials or legacy state is imported.
+The Keet source integration consumes unchanged LamplitIsles/lamplit-app browser
+and contracts at 09bf71009ff931cfdc75c675d9b16037bbb1d881 (Apache-2.0, App #3408;
+Chat #3410). The package retains its LICENSE. The original runner stays archived;
+the separately reviewed runner-only correction at
+7061b0972266ef1a525ff9430278cde2384ea1e1 owns the native text-only profile.
