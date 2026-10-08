@@ -48,7 +48,7 @@ export async function channelConfig(env: Env, instanceId: string | null): Promis
       headers: { 'x-lamplit-internal-secret': env.CHAT_INTERNAL_SECRET }, redirect: 'manual', signal: AbortSignal.timeout(5000),
     })
     if (!response.ok) { await response.body?.cancel(); throw new ChannelError(503) }
-    return parseChannels(JSON.parse(await boundedBody(response, 60000)))
+    return parseChannels(JSON.parse(await boundedBody(response, 128 * 1024)))
   } catch { throw new ChannelError(503) }
 }
 export async function boundedBody(request: Request | Response, limit = 112 * 1024): Promise<string> {

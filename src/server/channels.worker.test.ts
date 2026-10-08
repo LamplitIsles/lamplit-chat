@@ -6,6 +6,7 @@ import { PiSession } from './pi-session'
 import { ChannelStorage } from './channel-storage'
 import { PiSessionStorage } from './pi-session-storage'
 import { parseChannelEvent } from './channel-events'
+import { channelConfig } from './channel-config'
 import { branchItems, projectPromptBranch, beginOptimisticPrompt } from '../../frontend/src/lib/companion/pi-projection'
 
 const config = { mcpUrl: 'https://mcp.example.invalid/mcp', mcpToken: 'synthetic-mcp', webhookToken: 'synthetic-webhook-token', aliases: ['Companion'] }
@@ -27,6 +28,21 @@ async function fixture() {
 }
 
 describe('channel Worker admission into real durable sessions', () => {
+  it('loads both Hosted channels with maximum legal JSON-escaped MCP tokens', async () => {
+    const channels = {
+      keet: { ...config, mcpToken: '\\'.repeat(16384) },
+      matrix: { ...config, mcpToken: '\\'.repeat(16384), webhookToken: 'synthetic-matrix-receiver' },
+    }
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init)
+      expect(request.url).toBe('https://platform.test/internal/chat-integrations/synthetic-instance')
+      expect(request.headers.get('x-lamplit-internal-secret')).toBe('synthetic-internal')
+      return Response.json(channels)
+    })
+    const selected = await channelConfig({ ...env, PLATFORM_ORIGIN: 'https://platform.test', CHAT_INTERNAL_SECRET: 'synthetic-internal', PLATFORM: { fetch } } as unknown as Env, 'synthetic-instance')
+    expect(selected).toEqual(channels)
+    expect(fetch).toHaveBeenCalledOnce()
+  })
   it('rejects transport-unsafe tokens with sanitized503 before body or DO access', async () => {
     for (const [field, value] of [['webhookToken', 'synthetic-trailing '], ['mcpToken', 'token\ncontrol'], ['mcpToken', '秘密token']] as const) {
       const request = new Request('https://chat.test/api/keet/events', { method: 'POST', headers: { authorization: 'Bearer synthetic-webhook-token' }, body: 'not parsed' })
