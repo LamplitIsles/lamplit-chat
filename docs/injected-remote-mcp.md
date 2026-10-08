@@ -46,3 +46,10 @@ effect through the existing harness lifecycle. Do not commit the JSON/token,
 put it in AGENTS.md, or send it to the model. Local workerd regressions verify
 discovery recovery and native model-request schemas. Authorized real initialize/list evidence is separate from these
 fixtures; it does not establish a production session's current tool selection.
+
+Inbound events are configured separately in [CHAT_INTEGRATIONS](inbound-integrations.md).
+Free MCP_CONFIG uses `singleton`; Hosted MCP_CONFIG uses the trusted instance UUID.
+MCP-only setup exposes discovered upstream names/schemas without a webhook. Inbound-only
+setup admits events without tools, malformed MCP config or reachable peers. There is
+no dedicated Keet/Matrix tool wrapper or receiver identity probe; upstream tool names
+and capabilities come from discovery. External send outcomes can remain uncertain.

@@ -94,6 +94,10 @@ export class PiRegistry extends HostedAgent {
     await Promise.all(sessions.map(({ id }) => this.session(id).revokePersonalSession(tokenHash)))
   }
 
+  async existingDefaultSessionId(): Promise<string | undefined> {
+    return this.ctx.storage.sql.exec<{ id: string }>("SELECT id FROM pi_registry_sessions WHERE status = 'ready' AND name = 'Companion' ORDER BY created_at LIMIT 1").toArray()[0]?.id
+  }
+
   async ensureDefaultSession(): Promise<SessionSummary> {
     this.defaultSessionPromise ??= (async () => {
       const existing = this.ctx.storage.sql.exec<SessionRow>("SELECT * FROM pi_registry_sessions WHERE status = 'ready' AND name = 'Companion' ORDER BY created_at LIMIT 1").toArray()[0]

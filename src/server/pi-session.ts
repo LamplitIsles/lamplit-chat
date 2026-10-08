@@ -1,5 +1,5 @@
-import { parseKeetFrame, type KeetFrame } from './keet-feed'
-import { createKeetTools } from './keet-tools'
+import { type ChannelEvent } from './channel-events'
+import { ChannelError, type Channel } from './channel-config'
 import { accountModels, nativeProviders, selectedModel, resolveModelSelection, selfHostModelEnvironment } from './model-catalog'
 import { nativeSearchNode, readSearchNodes } from './conversation-search'
 import { createPiPanelBackend, PanelCursors } from './companion-panels'
@@ -188,7 +188,6 @@ export class PiSession extends HostedAgent {
     const tools = [
       ...createWorkspaceTools(this.workspace), createSessionSearchTool(registry),
       createMemoryTool(registry, this.sessionStorage.isInitialized() ? this.sessionStorage.getMetadataSync().id : this.name.split(':').at(-1)!), ...createRelationshipTools(registry),
-      ...(this.env.HOSTED_MODE !== 'true' && this.env.KEET_MCP_TOKEN && this.env.KEET_MCP_URL ? createKeetTools(this.env) : []),
       ...createWakeTools(this, () => registry.getReportedTimeZone()), ...createWebTools(this.env, this.instanceId()),
       ...createPlatformFeedbackTools(this.env, this.instanceId(), this.sessionStorage.isInitialized() ? this.sessionStorage.getMetadataSync().id : this.name.split(':').at(-1)!),
     ]
@@ -253,7 +252,7 @@ export class PiSession extends HostedAgent {
     const rows = this.sessionStorage.getEntriesWithSeq().filter(row => this.timelineIds.includes(row.entry.id))
     return { leafId: this.sessionStorage.getLeafId(), revision: rows.at(-1)?.seq ?? 0, entries: rows.map(({ seq, entry }) => {
       const source = this.sessionStorage.keetSource(entry.id)
-      return { ...storedEntry(seq, entry), photos: this.sessionStorage.photosForEntry(entry.id), ...(source ? { keet: { kind: source.kind, sender: source.sender, destination: source.destination, text: source.text } } : {}) }
+      return { ...storedEntry(seq, entry), ...(source ? { authoredAt: source.timestamp } : {}), photos: this.sessionStorage.photosForEntry(entry.id), ...(source && source.kind !== 'matrix' ? { keet: { kind: source.kind, sender: source.sender, destination: source.destination, text: source.text } } : {}) }
     }) }
   }
   @hostedCallable()
@@ -405,17 +404,13 @@ export class PiSession extends HostedAgent {
     await this.serializeWake(() => this.ensureWakeSchedules())
   }
 
-  async ingestKeet(input: KeetFrame): Promise<{ sequence: number; queued: boolean } | { error: string; retryable?: boolean }> {
-    await this.waitUntilInitialized()
-    let result: { sequence: number; queued: boolean }
+  async ingestInbound(channel: Channel, event: ChannelEvent, original: string): Promise<{ sequence: number; queued: boolean } | { error: string; status: number }> {
     try {
-      result = await this.sessionStorage.admitKeet(parseKeetFrame(input))
-    } catch (error) {
-      return { error: error instanceof Error ? error.message : 'Keet ingestion failed.' }
-    }
-    try { await this.schedulePendingDrain() }
-    catch (error) { return { error: `Keet queue scheduling failed: ${error instanceof Error ? error.message : String(error)}`, retryable: true } }
-    return result
+      await this.waitUntilInitialized()
+      const result = this.sessionStorage.admitInbound(channel, event, original)
+      await this.schedulePendingDrain()
+      return result
+    } catch (error) { return { error: 'Inbound admission failed', status: error instanceof ChannelError ? error.status : 503 } }
   }
 
   async drainPendingWork(): Promise<void> {

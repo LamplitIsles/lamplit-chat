@@ -72,12 +72,12 @@ async function incoming(input, env) {
     event = { type: 'message', eventId: crypto.randomUUID(), sequence: ++sequence,
       messageId: { deviceId: 'fictional-native-peer', seq: sequence }, timestamp: Date.now(),
       destination: { kind: input.channel, groupName: input.destination }, senderLabel: input.senderLabel, text: input.text,
-      trigger: input.channel === 'dm' ? 'dm' : 'mention',
+      addressing: { mentionsIdentity: input.channel !== 'dm' },
       reactionContext: [{ targetMessageId: { deviceId: 'fictional-native-peer', seq: 0 }, targetText: 'native-only context sentinel', emoji: '❤️', externalCount: 1 }],
       ...(input.hasImage ? { images: [{ status: 'unavailable', mediaType: 'image/png', name: 'keet-original.png' }] } : {}) }
     events.set(input.id, event)
   }
-  const response = await worker.fetch(new Request('http://127.0.0.1/api/keet/events', { method: 'POST', headers: { authorization: 'Bearer fixture-ingest' }, body: JSON.stringify(event) }), { ...env, COMPANION_SESSION_ID: sessionId })
+  const response = await worker.fetch(new Request('http://127.0.0.1/api/keet/events', { method: 'POST', headers: { authorization: 'Bearer fixture-ingest-token' }, body: JSON.stringify(event) }), { ...env, COMPANION_SESSION_ID: sessionId })
   if (!response.ok) throw new Error(`Native ingress failed: ${response.status} ${await response.text()}`)
   await stub.drainPendingWork(); await stub.settleView()
   if (input.id.startsWith('older-')) await stub.finishWeb()

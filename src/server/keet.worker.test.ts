@@ -13,12 +13,12 @@ import { nativeReply } from './fixtures/native-provider'
 import worker from '../server'
 
 const registry = () => env.PiRegistry.getByName('singleton') as DurableObjectStub<PiRegistry>
-const frame = (sequence: number, kind: KeetFrame['destination']['kind'], text: string, trigger?: KeetFrame['trigger']): KeetFrame => ({
+const frame = (sequence: number, kind: KeetFrame['destination']['kind'], text: string, trigger?: 'dm' | 'mention' | 'label' | 'reply'): KeetFrame => ({
   type: 'message', eventId: `00000000-0000-4000-8000-${sequence.toString(16).padStart(12, '0')}`, sequence,
   messageId: { deviceId: 'fictional-peer', seq: sequence }, timestamp: sequence, destination: { kind, groupName: kind === 'group' ? 'Room' : 'Peer' }, senderLabel: 'Alice', text,
-  ...(trigger ? { trigger } : {}),
+  addressing: { mentionsIdentity: trigger === 'mention', ...(trigger === 'reply' ? { replyToIdentity: true } : {}) },
 })
-const request = (event: unknown, token = 'fixture-ingest') => new Request('https://chat.fixture/api/keet/events', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(event) })
+const request = (event: unknown, token = 'fixture-ingest-token') => new Request('https://chat.fixture/api/keet/events', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(event) })
 type Internals = NativeFixture & { active: boolean; schedulePendingDrain(): Promise<void>; scheduleMemoryExtraction(): void; env: Env }
 afterEach(() => vi.restoreAllMocks())
 async function create() {
@@ -29,13 +29,13 @@ async function create() {
     vi.spyOn(internal, 'scheduleMemoryExtraction').mockImplementation(() => {})
     vi.spyOn(internal, 'schedulePendingDrain').mockResolvedValue()
   })
-  return { stub, configured: { ...env, COMPANION_SESSION_ID: created.id, KEET_INGEST_TOKEN: 'fixture-ingest' } as Env, id: created.id }
+  return { stub, configured: { ...env, COMPANION_SESSION_ID: created.id, CHAT_INTEGRATIONS: JSON.stringify({ keet: { webhookToken: 'fixture-ingest-token' } }) } as Env, id: created.id }
 }
 
 describe('native Keet ingress, queue and shared source', () => {
   it('fails closed before session mutation, preserving independent bearer and hosted boundaries', async () => {
     const { configured } = await create()
-    expect((await worker.fetch(request(frame(1, 'dm', 'hello', 'dm')), { ...configured, KEET_INGEST_TOKEN: '' })).status).toBe(401)
+    expect((await worker.fetch(request(frame(1, 'dm', 'hello', 'dm')), { ...configured, CHAT_INTEGRATIONS: '{}' })).status).toBe(404)
     expect((await worker.fetch(request(frame(1, 'dm', 'hello', 'dm'), 'wrong'), configured)).status).toBe(401)
     expect((await worker.fetch(request(frame(1, 'dm', 'hello', 'dm')), { ...configured, COMPANION_SESSION_ID: '' })).status).toBe(503)
     expect((await worker.fetch(request(frame(1, 'dm', 'hello', 'dm')), { ...configured, COMPANION_SESSION_ID: crypto.randomUUID() as Env['COMPANION_SESSION_ID'] })).status).toBe(503)
@@ -43,10 +43,10 @@ describe('native Keet ingress, queue and shared source', () => {
     const trusted = new Request(request(frame(1, 'dm', 'hello', 'dm')))
     trusted.headers.set('x-lamplit-instance', crypto.randomUUID()); trusted.headers.set('x-lamplit-internal-secret', 'fictional-internal')
     expect((await worker.fetch(trusted, { ...configured, HOSTED_MODE: 'true', CHAT_INTERNAL_SECRET: 'fictional-internal' })).status).toBe(503)
-    expect((await worker.fetch(new Request('https://chat.fixture/api/keet/events', { method: 'GET', headers: { authorization: 'Bearer fixture-ingest' } }), configured)).status).toBe(405)
+    expect((await worker.fetch(new Request('https://chat.fixture/api/keet/events', { method: 'GET', headers: { authorization: 'Bearer fixture-ingest-token' } }), configured)).status).toBe(405)
     expect((await worker.fetch(request({ ...frame(1, 'dm', 'hello', 'dm'), text: 'x'.repeat(16001) }), configured)).status).toBe(400)
     expect((await worker.fetch(request({ ...frame(1, 'dm', 'hello', 'dm'), senderLabel: 'bad\nlabel' }), configured)).status).toBe(400)
-    const huge = new Request('https://chat.fixture/api/keet/events', { method: 'POST', headers: { authorization: 'Bearer fixture-ingest' }, body: ' '.repeat(112 * 1024 + 1) })
+    const huge = new Request('https://chat.fixture/api/keet/events', { method: 'POST', headers: { authorization: 'Bearer fixture-ingest-token' }, body: ' '.repeat(112 * 1024 + 1) })
     expect((await worker.fetch(huge, configured)).status).toBe(413)
   })
 
@@ -55,11 +55,11 @@ describe('native Keet ingress, queue and shared source', () => {
     expect((await worker.fetch(request(frame(1, 'group', 'ordinary')), configured)).status).toBe(200)
     expect((await worker.fetch(request(frame(1, 'group', 'ordinary')), configured)).status).toBe(200)
     expect((await worker.fetch(request(frame(1, 'group', 'changed')), configured)).status).toBe(409)
-    expect((await worker.fetch(request(frame(3, 'dm', 'gap', 'dm')), configured)).status).toBe(409)
+    expect((await worker.fetch(request(frame(30, 'broadcast', 'gap')), configured)).status).toBe(200)
     expect((await worker.fetch(request({ ...frame(2, 'group', 'duplicate'), eventId: frame(1, 'group', '').eventId }), configured)).status).toBe(409)
     await runInDurableObject(stub, async (_instance, state) => {
       const storage = new PiSessionStorage(state.storage)
-      expect(storage.keetCheckpoint()).toBe(1)
+      expect(storage.keetCheckpoint()).toBe(30)
       expect(storage.nextKeet()).toBeUndefined()
       for (let n = 2; n <= 10; n++) await storage.admitKeet(frame(n, 'group', `context ${n} ` + 'x'.repeat(600)))
       await storage.admitKeet({ ...frame(11, 'group', 'original', 'mention'), reactionContext: [{ targetMessageId: { deviceId: 'peer', seq: 1 }, targetText: 'native-only context sentinel', emoji: '❤️', externalCount: 2 }] })
@@ -68,8 +68,8 @@ describe('native Keet ingress, queue and shared source', () => {
       expect(storage.nextKeet()?.prompt).toContain('❤️ ×2')
       expect(storage.nextKeet()?.source.text).toBe('original')
       await storage.admitKeet(frame(12, 'broadcast', 'news'))
-      expect(storage.keetCheckpoint()).toBe(12)
-      expect(storage.nextKeet()?.sequence).toBe(11)
+      expect(storage.keetCheckpoint()).toBe(30)
+      expect(storage.nextKeet()?.sequence).toBe(1)
     })
     expect(() => parseKeetFrame({ ...frame(1, 'dm', 'hi', 'dm'), source: { kind: 'keet' } })).toThrow('Invalid')
   })

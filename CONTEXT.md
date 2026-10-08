@@ -4,6 +4,18 @@ This glossary names the product and distinguishes a conversation, its working fi
 
 ## Language
 
+**Companion MCP connection（聊天机 MCP 连接）**:
+An external tool service authorized for a particular companion. Its availability is independent of incoming message integrations.
+_Avoid_: Keet tool bundle, Matrix tool bundle, webhook credential
+
+**Inbound integration（入站集成）**:
+An authorized source of external events for a particular companion, with its own message provenance and response policy. Receiving an event does not grant access to external tools.
+_Avoid_: MCP connection, combined messaging connector
+
+**Response policy（响应策略）**:
+The companion's rules for deciding whether an admitted external message starts a turn or contributes conversation context. The source reports message facts rather than deciding the companion's response.
+_Avoid_: Producer trigger, external tool permission
+
 **Lamplit**:
 The product's public name. It refers to the user-facing personal AI experience; `pi-on-cf` is only the repository's historical name.
 _Avoid_: Pi on Cloudflare as the product name
@@ -85,7 +97,7 @@ An external Keet message admitted into the main session with its sender and dest
 _Avoid_: Human message, anonymous user bubble
 
 **Keet feed checkpoint（Keet 事件检查点）**:
-The highest KFA webhook sequence durably stored by the main session. KFA keeps each event in its own journal until the Worker returns a 2xx receipt; a sequence gap remains an operator error.
+The highest KFA webhook sequence durably stored by the main session. KFA keeps each event in its own journal until the Worker returns a 2xx receipt; sequence gaps are diagnostic and do not block admission.
 _Avoid_: Connector-local cursor, read receipt
 
 **Session workspace（会话工作区）**:

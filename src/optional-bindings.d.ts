@@ -1,4 +1,4 @@
 // This binding is intentionally absent from the default Free deployment.
 // Add it to Wrangler only when the operator enables R2 photos.
-interface Env { MCP_CONFIG?: string; KEET_INGEST_TOKEN?: string; KEET_MCP_TOKEN?: string; KEET_MCP_URL?: string; COMPUTER_R2?: R2Bucket; HOSTED_MODE?: string; CHAT_INTERNAL_SECRET?: string; PLATFORM?: Fetcher; PLATFORM_ORIGIN?: string; VOICE_API_KEY?: string; WEB_SEARCH_PROVIDER?: string; WEB_SEARCH_API_KEY?: string }
-declare namespace Cloudflare { interface Env { MCP_CONFIG?: string; KEET_INGEST_TOKEN?: string; KEET_MCP_TOKEN?: string; KEET_MCP_URL?: string; COMPUTER_R2?: R2Bucket } }
+interface Env { MCP_CONFIG?: string; CHAT_INTEGRATIONS?: string; COMPUTER_R2?: R2Bucket; HOSTED_MODE?: string; CHAT_INTERNAL_SECRET?: string; PLATFORM?: Fetcher; PLATFORM_ORIGIN?: string; VOICE_API_KEY?: string; WEB_SEARCH_PROVIDER?: string; WEB_SEARCH_API_KEY?: string }
+declare namespace Cloudflare { interface Env { MCP_CONFIG?: string; CHAT_INTEGRATIONS?: string; COMPUTER_R2?: R2Bucket } }

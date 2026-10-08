@@ -54,6 +54,7 @@ export type StoredSessionEntry = {
   targetId?: string | null
   label?: string
   name?: string
+  authoredAt?: number
   keet?: { kind: 'dm' | 'group'; destination: string; sender: string; text: string }
   wakeSource?: import('./timed-wake').WakeSource
   photos?: ConversationPhoto[]

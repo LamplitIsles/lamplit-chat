@@ -1,4 +1,8 @@
-import { keetIdentity, keetPrompt, keetSource, keetDisplayText, type KeetFrame, type KeetSource } from './keet-feed'
+import { keetDisplayText, type KeetFrame, type KeetSource } from './keet-feed'
+import { parseChannelEvent, type ChannelEvent, type Reaction } from './channel-events'
+import { ChannelError, eventIdentity, type Channel } from './channel-config'
+
+export type InboundSource = KeetSource | { kind: 'matrix'; destination: string; sender: string; text: string; timestamp: number; context: KeetSource['context']; event: ChannelEvent['source']; original: string }
 import { nativeSearchNode } from './conversation-search'
 import { occurrenceKey, type TimedWake, type WakeSource } from '../shared/timed-wake'
 import { nextWake } from './timed-wake'
@@ -23,6 +27,8 @@ export class PiSessionStorage extends ConversationArchive {
   constructor(durable: DurableObjectStorage) {
     super(durable)
     durable.sql.exec(`
+      CREATE TABLE IF NOT EXISTS inbound_receipts (identity TEXT PRIMARY KEY, payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS inbound_reactions (identity TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS keet_feed (sequence INTEGER PRIMARY KEY, identity TEXT NOT NULL UNIQUE, frame TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS keet_queue (
         sequence INTEGER PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE, prompt TEXT NOT NULL, source TEXT NOT NULL,
@@ -101,63 +107,58 @@ export class PiSessionStorage extends ConversationArchive {
   markReplaced(id: string): void { this.durable.sql.exec('INSERT OR IGNORE INTO chat_replaced(operation_id) VALUES (?)', id) }
   withdrawInput(id: string): void { this.setSetting(`withdrawn:${id}`, true) }
   keetCheckpoint(): number {
-    return this.durable.sql.exec<{ sequence: number }>('SELECT sequence FROM keet_feed ORDER BY sequence DESC LIMIT 1').toArray()[0]?.sequence ?? 0
+    return Math.max(this.getSetting<number>('inboundKeetCheckpoint') ?? 0, this.durable.sql.exec<{ sequence: number }>('SELECT sequence FROM keet_feed ORDER BY sequence DESC LIMIT 1').toArray()[0]?.sequence ?? 0)
   }
 
   async admitKeet(frame: KeetFrame): Promise<{ sequence: number; queued: boolean }> {
-    const result = this.durable.transactionSync((): { sequence: number; queued: boolean } | { error: string } => {
-      const current = this.keetCheckpoint()
-      const identity = keetIdentity(frame)
-      const encoded = JSON.stringify({
-        type: frame.type, eventId: frame.eventId, sequence: frame.sequence,
-        messageId: { deviceId: frame.messageId.deviceId, seq: frame.messageId.seq },
-        timestamp: frame.timestamp,
-        destination: { groupName: frame.destination.groupName, kind: frame.destination.kind },
-        senderLabel: frame.senderLabel, text: frame.text,
-        trigger: frame.trigger ?? null,
-        replyTo: frame.replyTo ? { deviceId: frame.replyTo.deviceId, seq: frame.replyTo.seq } : null,
-        images: frame.images ?? null,
-        reactionContext: frame.reactionContext ?? null,
-      })
-      if (frame.sequence <= current) {
-        const existing = this.durable.sql.exec<{ identity: string; frame: string }>('SELECT identity, frame FROM keet_feed WHERE sequence = ?', frame.sequence).toArray()[0]
-        if (!existing || existing.identity !== identity || existing.frame !== encoded) return { error: 'Keet sequence replay conflicts with stored event.' }
-        return { sequence: current, queued: false }
+    return this.admitInbound('keet', parseChannelEvent('keet', frame, { webhookToken: '', aliases: [] }), eventIdentity(frame))
+  }
+
+  admitInbound(channel: Channel, event: ChannelEvent, original: string): { sequence: number; queued: boolean } {
+    return this.durable.transactionSync(() => {
+      const identity = `${channel}:${event.key}`
+      const existing = this.durable.sql.exec<{ payload: string }>('SELECT payload FROM inbound_receipts WHERE identity = ?', identity).toArray()[0]
+      if (existing) {
+        if (existing.payload !== original) throw new ChannelError(409)
+        return { sequence: this.keetCheckpoint(), queued: false }
       }
-      if (frame.sequence !== current + 1) return { error: `Keet feed gap: expected ${current + 1}, received ${frame.sequence}. Reconcile before continuing.` }
-      if (this.durable.sql.exec('SELECT sequence FROM keet_feed WHERE identity = ?', identity).toArray().length) return { error: 'Keet message identity was already admitted at another sequence.' }
-      this.durable.sql.exec('INSERT INTO keet_feed(sequence, identity, frame) VALUES (?, ?, ?)', frame.sequence, identity, encoded)
-      let queued = false
-      if (frame.destination.kind === 'group' && (frame.text.trim() || frame.images?.length)) {
-        const destination = frame.destination.groupName
-        const row = this.durable.sql.exec<{ messages: string }>('SELECT messages FROM keet_context WHERE destination = ?', destination).toArray()[0]
-        const context = row ? JSON.parse(row.messages) as KeetSource['context'] : []
-        if (frame.trigger) {
-          this.enqueueKeet(frame, context)
-          queued = true
-          this.durable.sql.exec('DELETE FROM keet_context WHERE destination = ?', destination)
-        } else {
-          const next = [...context, { sender: frame.senderLabel, text: frame.text.slice(0, 500) }].slice(-8)
-          this.durable.sql.exec('INSERT INTO keet_context(destination, messages) VALUES (?, ?) ON CONFLICT(destination) DO UPDATE SET messages = excluded.messages', destination, JSON.stringify(next))
-        }
-      } else if (frame.destination.kind === 'dm' && (frame.text.trim() || frame.images?.length)) {
-        this.enqueueKeet(frame, [])
-        queued = true
+      if (event.trigger && this.durable.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM keet_queue WHERE state != 'settled'").one().count >= 64) throw new ChannelError(503)
+      const room = `${channel}:${event.room}`
+      const row = this.durable.sql.exec<{ messages: string }>('SELECT messages FROM keet_context WHERE destination = ?', room).toArray()[0]
+      const context: KeetSource['context'] = row ? JSON.parse(row.messages) : []
+      const reactionKey = `inboundReactions:${room}`
+      const snapshots = new Map<string, Reaction>()
+      for (const reaction of [...(this.getSetting<Reaction[]>(reactionKey) ?? []), ...event.reactions]) snapshots.set(JSON.stringify([reaction.targetMessageId, reaction.emoji]), reaction)
+      if (event.trigger) {
+        const source: InboundSource = channel === 'matrix'
+          ? { kind: 'matrix', destination: event.source.destination, sender: event.source.sender, text: `[Matrix: ${event.source.destination}; sender: ${event.source.sender} (${event.source.senderId})]\n${event.source.text}`, timestamp: event.source.timestamp, context, event: event.source, original }
+          : { kind: event.source.destinationKind as 'dm' | 'group', destination: event.source.destination, sender: event.source.sender, text: keetDisplayText(JSON.parse(original)), timestamp: event.source.timestamp, messageId: event.source.messageId!, context, original, event: event.source }
+        const header = channel === 'keet' ? `[Keet ${source.kind === 'dm' ? 'DM' : 'Group'}: ${source.destination}; sender: ${source.sender}; message: ${event.source.messageId!.deviceId}:${event.source.messageId!.seq}]` : `[Matrix: ${source.destination}; sender: ${source.sender} (${event.source.senderId}); event: ${event.source.eventId}]`
+        const reactions = [...snapshots.values()].slice(-16).filter(reaction => {
+          const key = JSON.stringify([room, reaction])
+          if (this.durable.sql.exec('SELECT 1 FROM inbound_reactions WHERE identity = ?', key).toArray().length) return false
+          this.durable.sql.exec('INSERT INTO inbound_reactions VALUES (?)', key)
+          return true
+        })
+        const prompt = `${header}\n${channel === 'keet' ? source.text : event.source.text}${context.length ? '\nRecent room context:\n' + context.map(item => `${item.sender}: ${item.text}`).join('\n') : ''}${reactions.length ? '\nRecent reactions to your messages:\n' + reactions.map(item => `- ${item.emoji} ×${item.externalCount} on "${item.targetText}" (message: ${item.targetMessageId.deviceId}:${item.targetMessageId.seq})`).join('\n') : ''}`
+        const arrival = this.durable.sql.exec<{ next: number }>('SELECT COALESCE(MAX(sequence),0)+1 AS next FROM keet_queue').one().next
+        this.durable.sql.exec('INSERT INTO keet_queue(sequence, operation_id, prompt, source) VALUES (?, ?, ?, ?)', arrival, `${channel}:${event.key}`, prompt, JSON.stringify(source))
+        this.durable.sql.exec('DELETE FROM keet_context WHERE destination = ?', room)
+        this.setSetting(reactionKey, [])
+      } else if (event.buffer) {
+        const next = [...context, { sender: event.source.sender, text: event.source.text.slice(0,500) }].slice(-8)
+        this.durable.sql.exec('INSERT INTO keet_context VALUES (?,?) ON CONFLICT(destination) DO UPDATE SET messages = excluded.messages', room, JSON.stringify(next))
       }
-      return { sequence: frame.sequence, queued }
+      if (!event.trigger && snapshots.size) this.setSetting(reactionKey, [...snapshots.values()].slice(-16))
+      this.durable.sql.exec('INSERT INTO inbound_receipts VALUES (?,?)', identity, original)
+      if (channel === 'keet') this.setSetting('inboundKeetCheckpoint', Math.max(this.keetCheckpoint(), event.source.sequence!))
+      return { sequence: event.source.sequence ?? 0, queued: event.trigger }
     })
-    if ('error' in result) throw new Error(result.error)
-    return result
   }
 
-  private enqueueKeet(frame: KeetFrame, context: KeetSource['context']): void {
-    this.durable.sql.exec('INSERT INTO keet_queue(sequence, operation_id, prompt, source) VALUES (?, ?, ?, ?)',
-      frame.sequence, crypto.randomUUID(), keetPrompt(frame, context), JSON.stringify({ ...keetSource(frame, context), text: keetDisplayText(frame) }))
-  }
-
-  nextKeet(): { sequence: number; operationId: string; prompt: string; source: KeetSource; entryId: string | null; state: string } | undefined {
+  nextKeet(): { sequence: number; operationId: string; prompt: string; source: InboundSource; entryId: string | null; state: string } | undefined {
     const row = this.durable.sql.exec<{ sequence: number; operation_id: string; prompt: string; source: string; entry_id: string | null; state: string }>("SELECT * FROM keet_queue WHERE state != 'settled' ORDER BY sequence LIMIT 1").toArray()[0]
-    return row && { sequence: row.sequence, operationId: row.operation_id, prompt: row.prompt, source: JSON.parse(row.source) as KeetSource, entryId: row.entry_id, state: row.state }
+    return row && { sequence: row.sequence, operationId: row.operation_id, prompt: row.prompt, source: JSON.parse(row.source) as InboundSource, entryId: row.entry_id, state: row.state }
   }
 
   acceptKeet(sequence: number, entryId: string): void {
@@ -177,9 +178,9 @@ export class PiSessionStorage extends ConversationArchive {
     return this.durable.sql.exec<{ sequence: number; operation_id: string; entry_id: string | null }>("SELECT sequence, operation_id, entry_id FROM keet_queue WHERE state = 'accepted' ORDER BY sequence").toArray()
   }
 
-  keetSource(entryId: string): KeetSource | undefined {
+  keetSource(entryId: string): InboundSource | undefined {
     const row = this.durable.sql.exec<{ source: string }>('SELECT source FROM keet_sources WHERE entry_id = ?', entryId).toArray()[0]
-    return row ? JSON.parse(row.source) as KeetSource : undefined
+    return row ? JSON.parse(row.source) as InboundSource : undefined
   }
 
   keetModelPrompt(entryId: string): string | undefined {

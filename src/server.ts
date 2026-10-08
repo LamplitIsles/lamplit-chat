@@ -1,4 +1,4 @@
-import { handleKeetIngest } from './server/keet-ingest'
+import { handleInboundIngest } from './server/keet-ingest'
 import { modelCatalog } from './server/model-catalog'
 import { APPEARANCE_PATH } from '@lamplit/contracts'
 import { readChatAppearance } from './server/chat-appearance'
@@ -26,8 +26,8 @@ export default {
     if (hosted && !/^\/api\/companion-materials(?:\/|$)/.test(new URL(request.url).pathname) && request.headers.get('origin') && request.headers.get('origin') !== new URL(request.url).origin) {
       return new Response('Forbidden', { status: 403, headers: { 'cache-control': 'no-store' } })
     }
-    const keet = await handleKeetIngest(request, env)
-    if (keet) return keet
+    const inbound = await handleInboundIngest(request, env, instanceId)
+    if (inbound) return inbound
     const auth = hosted ? { authorized: true } : await authorize(request, env.AUTH_PASSWORD)
     if (!auth.authorized) return unauthorized()
     const respond = (response: Response) => {

@@ -286,17 +286,17 @@ failures support retry. See [protocol, ownership, summary indexing and exact
 frozen native acceptance](docs/conversation-search.md). Both native hosts and joint
 user approval gate merge; this feature does not deploy.
 
-## Optional Keet text integration
+## Optional inbound integrations
 
-Self-hosted companions can receive authenticated Keet DM and triggered Group text
-through `/api/keet/events`, with durable sequence deduplication, queued native
-execution, restart recovery and shared incoming provenance. Initialize a companion
-session, set `COMPANION_SESSION_ID`, and configure independent `KEET_INGEST_TOKEN`;
-the four native text tools additionally use `KEET_MCP_URL` and `KEET_MCP_TOKEN`.
-Unconfigured ordinary chat remains available. Pi reports Keet images unavailable;
-existing web photos are unchanged. Hosted Keet onboarding/webhooks/tools are not
-provisioned and fail closed under existing tenant/internal-secret guards.
-See [operator/auth, source privacy, native tools and frozen verification](docs/keet-source-restoration.md).
+Free and Hosted companions can receive current Keet and Matrix events independently
+of MCP tools. Intake uses immutable event receipts, receiver-owned trigger/buffer
+policy, queued native execution and restart recovery. Initialize a Free companion
+session, set `COMPANION_SESSION_ID`, and configure optional inbound-only
+`CHAT_INTEGRATIONS`. Hosted intake uses trusted Platform forwarding to the owner's
+existing Companion. Keet and Matrix receiving settings are independent of generic
+`MCP_CONFIG`; Matrix supplies `selfUserId` directly. See
+[independent inbound setup, policy, receipts and recovery](docs/inbound-integrations.md)
+and [native Keet source restoration](docs/keet-source-restoration.md).
 
 Deployment-owned remote MCP tools can be enabled per instance with an optional
 backend secret; see [injected remote MCP](docs/injected-remote-mcp.md).

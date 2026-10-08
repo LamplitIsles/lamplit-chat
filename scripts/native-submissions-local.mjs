@@ -14,7 +14,7 @@ const suite = process.argv[2] ?? 'submissions'
 if (!['submissions', 'images', 'voice', 'compact', 'search', 'keet'].includes(suite)) throw new Error('Unknown native suite')
 config.main = join(repo, `scripts/fixtures/${{submissions:'native-submissions',images:'image-send-recovery',voice:'text-voice',compact:'quiet-compaction',search:'conversation-search',keet:'keet-source-restoration'}[suite]}.ts`)
 config.assets = { directory: join(scratch, 'app-browser'), binding: 'ASSETS', not_found_handling: 'none', html_handling: 'none', run_worker_first: true }
-config.vars = { ...config.vars, MODEL_API_KEY: 'fixture-key', AUTH_PASSWORD: 'fixture-password-long-enough', VOICE_API_KEY: 'fixture-voice-key', KEET_INGEST_TOKEN: 'fixture-ingest' }
+config.vars = { ...config.vars, MODEL_API_KEY: 'fixture-key', AUTH_PASSWORD: 'fixture-password-long-enough', VOICE_API_KEY: 'fixture-voice-key', CHAT_INTEGRATIONS: JSON.stringify({keet:{webhookToken:'fixture-ingest-token'}}) }
 const path = join(root, 'wrangler.jsonc')
 writeFileSync(path, JSON.stringify(config, null, 2)); writeFileSync(join(root, '.dev.vars'), '')
 console.log(JSON.stringify({ root, port: process.env.NATIVE_FIXTURE_PORT ?? '8991' }))
