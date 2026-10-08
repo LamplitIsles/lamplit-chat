@@ -35,7 +35,7 @@ it('offers MCP tools through native Worker fetch on a hosted persisted root', as
       await native.native.dispose()
       environment.MCP_CONFIG = JSON.stringify({ [id]: [{ name: 'fixture', url: 'https://native-mcp.fixture.invalid/mcp', bearerToken: 'fictional-native-token' }] })
       await runNative(instance, 'Fresh idle hosted native submission')
-      const name = await remoteToolName('fixture', 'echo')
+      const name = remoteToolName('fixture', 'echo')
       expect(bodies.at(-1)!.tools.some(tool => tool.function.name === name)).toBe(true)
       await native.native.dispose()
     })
@@ -46,7 +46,7 @@ it.each(['initialize', 'notifications/initialized', 'tools/list', 'DELETE'])('ne
   const error = vi.spyOn(console, 'error').mockImplementation(() => {})
   try {
     const config = JSON.stringify({ singleton: [{ name: 'fixture', url: `https://native-mcp.fixture.invalid/mcp?case=${encodeURIComponent(stage)}`, bearerToken: 'fictional-native-token' }] })
-    const discovery = await createInjectedMcpTools(config, null, [])
+    const discovery = await createInjectedMcpTools(config, null)
     expect(discovery.tools).toHaveLength(stage === 'DELETE' ? 1 : 0)
     const response = await fetch(`https://native-mcp.fixture.invalid/inspect?case=${encodeURIComponent(stage)}`)
     const { calls, forbiddenFollows } = await response.json() as { calls: { method: string; authenticated: boolean }[]; forbiddenFollows: number }

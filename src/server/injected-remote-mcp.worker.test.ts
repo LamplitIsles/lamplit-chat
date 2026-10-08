@@ -37,12 +37,12 @@ const api = {} as ToolExecutionApi // These tools do not use invocation APIs; ca
 
 it('isolates discovery/auth by trusted instance, preserves native schemas/results/errors and closes every session', async () => {
   const fake = fakeMcp()
-  const a = (await createInjectedMcpTools(config, A, [], fake.fetch)).tools
-  const b = (await createInjectedMcpTools(config, B, [], fake.fetch)).tools
+  const a = (await createInjectedMcpTools(config, A, fake.fetch)).tools
+  const b = (await createInjectedMcpTools(config, B, fake.fetch)).tools
   expect(a).toHaveLength(1); expect(b).toHaveLength(1)
   expect(a[0].parameters).toMatchObject(remoteSchema)
   expect(a[0].replay).toBe('unsafe') // Even the remote readOnly hint does not promise recovery safety.
-  expect(a[0].name).not.toBe(b[0].name)
+  expect(a[0].name).toBe('mcp__notes_echo'); expect(b[0].name).toBe('mcp__other_echo')
   const result = await a[0].execute({ text: 'fixture' }, api, context)
   expect(result).toMatchObject({ isError: false, content: [{ type: 'text', text: 'Remote answer' }, { type: 'image', mimeType: 'image/png' }, { type: 'text', text: '{"fixture":true}' }] })
   fake.result({ content: [], structuredContent: { only: 'structured' }, isError: true })
@@ -61,14 +61,14 @@ it('offers discovered tools to a real Pi model turn, validates inputs, feeds res
   const keepOpen = vi.spyOn(options.storage, 'close').mockResolvedValue()
   const requests: Record<string, unknown>[] = []
   let turn = 0
-  const name = await remoteToolName('notes', 'echo')
+  const name = 'mcp__notes_echo'
   const provider = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
     requests.push(JSON.parse(init!.body as string))
     turn++
     return nativeReply('openrouter', 'After remote result', turn % 2 === 1 ? { name, arguments: { text: 'model request' } } : false)
   })
   for (let round = 0; round < 2; round++) {
-    const tools = (await createInjectedMcpTools(config, A, options.tools, fake.fetch)).tools
+    const tools = (await createInjectedMcpTools(config, A, fake.fetch)).tools
     const harness = await createPiHarness({ ...options, tools: [...options.tools, ...tools] })
     try {
       const root = await harness.root(context, { agent: { model: { provider: 'openrouter', modelId: 'openai/gpt-4o' } } })
@@ -83,17 +83,17 @@ it('offers discovered tools to a real Pi model turn, validates inputs, feeds res
       expect(requests[0].tools).toMatchObject([{ function: { name: 'read' } }, { function: { name, parameters: remoteSchema } }])
     } finally { await harness.close(context) }
   }
-  expect(fake.requests.filter(r => r.method === 'tools/call')).toHaveLength(2)
+  expect(fake.requests.filter(r => r.method === 'tools/call').map(r => r.params)).toEqual([{ name: 'echo', arguments: { text: 'model request' } }, { name: 'echo', arguments: { text: 'model request' } }])
   keepOpen.mockRestore(); await options.storage.close(context); provider.mockRestore()
 })
 
 it('keeps normal native chat available without config or after bounded discovery failure', async () => {
   const fake = fakeMcp(), log = vi.spyOn(console, 'error').mockImplementation(() => {})
-  expect((await createInjectedMcpTools(undefined, A, [], fake.fetch)).tools).toEqual([])
-  expect((await createInjectedMcpTools(config, 'cccccccc-cccc-cccc-cccc-cccccccccccc', [], fake.fetch)).tools).toEqual([])
+  expect((await createInjectedMcpTools(undefined, A, fake.fetch)).tools).toEqual([])
+  expect((await createInjectedMcpTools(config, 'cccccccc-cccc-cccc-cccc-cccccccccccc', fake.fetch)).tools).toEqual([])
   expect(fake.requests).toHaveLength(0)
   fake.fail()
-  expect((await createInjectedMcpTools(config, A, [], fake.fetch)).tools).toEqual([])
+  expect((await createInjectedMcpTools(config, A, fake.fetch)).tools).toEqual([])
   expect(log).toHaveBeenCalledWith(expect.stringContaining('MCP discovery failed'))
   const options = nativeOptions()
   const provider = vi.spyOn(globalThis, 'fetch').mockResolvedValue(nativeReply('openrouter', 'Normal chat'))
@@ -108,7 +108,7 @@ it('keeps normal native chat available without config or after bounded discovery
 
 it('aborts stalled call I/O on caller cancellation without replaying external operations', async () => {
   const fake = fakeMcp(), controller = new AbortController()
-  const [tool] = (await createInjectedMcpTools(config, A, [], fake.fetch)).tools
+  const [tool] = (await createInjectedMcpTools(config, A, fake.fetch)).tools
   // Hold only the call so cancellation exercises callTool and its request signal.
   const heldFetch = fake.fetch
   const spy = vi.fn(heldFetch)
@@ -122,7 +122,7 @@ it('aborts stalled call I/O on caller cancellation without replaying external op
     }
     return spy(...args)
   }
-  const [cancelTool] = (await createInjectedMcpTools(config, A, [], holding)).tools
+  const [cancelTool] = (await createInjectedMcpTools(config, A, holding)).tools
   const result = await cancelTool.execute({ text: 'cancel' }, api, withAbortSignal(controller.signal, context))
   expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining('cancelled') }] })
   expect(fake.aborted()).toBeGreaterThan(0)
@@ -134,7 +134,7 @@ it('aborts stalled call I/O on caller cancellation without replaying external op
 
 it('bounds initialization and calls with deadlines and never retries uncertain operations', async () => {
   const fake = fakeMcp(), log = vi.spyOn(console, 'error').mockImplementation(() => {})
-  const [tool] = (await createInjectedMcpTools(config, A, [], fake.fetch)).tools
+  const [tool] = (await createInjectedMcpTools(config, A, fake.fetch)).tools
   vi.useFakeTimers()
   try {
     fake.holdCall()
@@ -142,7 +142,7 @@ it('bounds initialization and calls with deadlines and never retries uncertain o
     await vi.advanceTimersByTimeAsync(30001)
     expect(await call).toMatchObject({ isError: true, content: [{ text: expect.stringContaining('timed out') }] })
     fake.hold()
-    const discovery = createInjectedMcpTools(config, A, [], fake.fetch)
+    const discovery = createInjectedMcpTools(config, A, fake.fetch)
     await vi.advanceTimersByTimeAsync(15001)
     expect((await discovery).tools).toEqual([])
     expect(fake.aborted()).toBeGreaterThanOrEqual(2)
@@ -150,15 +150,11 @@ it('bounds initialization and calls with deadlines and never retries uncertain o
   } finally { vi.useRealTimers(); log.mockRestore() }
 })
 
-it('rejects malformed configuration without secrets and uses bounded collision-resistant names', async () => {
+it('rejects malformed configuration without secrets', async () => {
   for (const value of ['bad-json', '[]', JSON.stringify({ [A]: [{ name: 'x', url: 'http://fixture.invalid', bearerToken: 'secret-fixture-token' }] }), JSON.stringify({ [A]: [{ name: 'x', url: 'https://user:password@fixture.invalid' }] }), JSON.stringify({ [A]: [{ name: 'x', url: 'https://fixture.invalid', headers: {} }] })]) {
     expect(() => injectedServers(value, A)).toThrow('Invalid MCP_CONFIG')
     try { injectedServers(value, A) } catch (error) { expect(String(error)).not.toContain('secret-fixture-token') }
   }
-  const one = await remoteToolName('a'.repeat(100), 'x/y'.repeat(100))
-  expect(one).toMatch(/^[A-Za-z0-9_-]{1,64}$/)
-  expect(await remoteToolName('a/b', 'echo')).not.toBe(await remoteToolName('a_b', 'echo'))
-  expect(await remoteToolName('a/b', 'echo')).toBe(await remoteToolName('a/b', 'echo'))
 })
 
 import { env } from 'cloudflare:workers'
@@ -182,7 +178,7 @@ it('wires trusted hosted identities through actual PiSession DOs and reopens wit
       const registry = env.PiRegistry.getByName(id) as DurableObjectStub<PiRegistry>
       const created = await registry.ensureDefaultSession()
       const stub = env.PiSession.getByName(`${id}:${created.id}`) as DurableObjectStub<PiSession>
-      activeName = await remoteToolName(id === A ? 'notes' : 'other', 'echo')
+      activeName = remoteToolName(id === A ? 'notes' : 'other', 'echo')
       await runInDurableObject(stub, async instance => {
         Reflect.set(instance, 'name', `${id}:${created.id}`)
         Reflect.set(instance, 'env', { ...env, HOSTED_MODE: 'true', MCP_CONFIG: config })
@@ -196,7 +192,7 @@ it('wires trusted hosted identities through actual PiSession DOs and reopens wit
           await runNative(instance, 'Call test-owned remote echo')
           const body = JSON.stringify(bodies.at(-2))
           expect(body).toContain(activeName)
-          expect(body).not.toContain(await remoteToolName(id === A ? 'other' : 'notes', 'echo'))
+          expect(body).not.toContain(remoteToolName(id === A ? 'other' : 'notes', 'echo'))
           expect(JSON.stringify(bodies.at(-1))).toContain('Remote answer')
         }
         await native.native.dispose()
@@ -209,8 +205,8 @@ it('wires trusted hosted identities through actual PiSession DOs and reopens wit
 })
 
 it('rejects invalid model arguments using the discovered schema before sending a remote operation', async () => {
-  const fake = fakeMcp(), options = nativeOptions(), name = await remoteToolName('notes', 'echo')
-  const tools = (await createInjectedMcpTools(config, A, [], fake.fetch)).tools
+  const fake = fakeMcp(), options = nativeOptions(), name = remoteToolName('notes', 'echo')
+  const tools = (await createInjectedMcpTools(config, A, fake.fetch)).tools
   let turn = 0
   const provider = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => nativeReply('openrouter', 'Schema error handled', ++turn === 1 ? { name, arguments: { unexpected: 'missing required text' } } : false))
   const harness = await createPiHarness({ ...options, tools })
@@ -221,4 +217,13 @@ it('rejects invalid model arguments using the discovered schema before sending a
     expect((await root.context(context)).messages.some(message => message.role === 'toolResult' && message.isError)).toBe(true)
     expect(fake.requests.filter(r => r.method === 'tools/call')).toHaveLength(0)
   } finally { await harness.close(context); provider.mockRestore() }
+})
+
+it('retains configured server and original tool names without hashing or truncation', async () => {
+  const fake = fakeMcp('matrix_whoami')
+  const tools = (await createInjectedMcpTools(JSON.stringify({ singleton: [{ name: 'matrix', url: 'https://fixture.invalid/mcp' }] }), null, fake.fetch)).tools
+  expect(tools.map(tool => tool.name)).toEqual(['mcp__matrix_matrix_whoami'])
+  await tools[0].execute({ text: 'fixture' }, api, context)
+  expect(fake.requests.find(request => request.method === 'tools/call')?.params).toEqual({ name: 'matrix_whoami', arguments: { text: 'fixture' } })
+  expect(remoteToolName('server'.repeat(4), 'original'.repeat(4))).toBe(`mcp__${'server'.repeat(4)}_${'original'.repeat(4)}`)
 })

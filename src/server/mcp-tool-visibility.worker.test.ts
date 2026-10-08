@@ -55,7 +55,7 @@ it('retries only failed discovery on a later idle submission and offers recovere
         { name: 'good', url: 'https://good.visibility.fixture.invalid/mcp' },
         { name: 'recover', url: 'https://recover.visibility.fixture.invalid/mcp' },
       ] })
-      const good = await remoteToolName('good', 'echo'), recovery = await remoteToolName('recover', 'echo')
+      const good = remoteToolName('good', 'echo'), recovery = remoteToolName('recover', 'echo')
       const names = () => bodies.at(-1)!.tools.map(tool => tool.function.name)
       holdModel = true
       const running = runNative(instance, 'First turn while peer unavailable')

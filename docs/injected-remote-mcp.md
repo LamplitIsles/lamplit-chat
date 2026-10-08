@@ -20,12 +20,15 @@ and existing tools available. No config is read from workspace files or the UI.
 
 Only HTTPS StreamableHTTP with no auth or a fixed Bearer token is supported.
 URLs must have no embedded credentials or fragments. Redirects are refused.
-Names must be nonempty and unique within an instance. Tool names use a server
-prefix, sanitized names and a deterministic digest within the 64-character limit.
+Server names must be nonempty. Exposed tool names are `mcp__` plus the configured
+server name, `_`, and the original tool name: server `matrix` and tool
+`matrix_whoami` become `mcp__matrix_matrix_whoami`. Names are preserved without
+hashing or truncation; configure names that fit the native provider constraints
+and do not conflict. Calls still use the original remote tool name.
 Remote input schemas enter the native Pi registry; text/image/resource results
 use Pi's content conversion, with structured results and `isError` preserved.
 
-Discovery runs during existing harness preparation (five seconds per server,
+Discovery runs during existing harness preparation (15 seconds total per server,
 in parallel). Failed discovery logs a credential-free error and leaves existing
 tools available. A later idle chat submission retries only failed servers before
 preparing its native request; successful discoveries stay available without being

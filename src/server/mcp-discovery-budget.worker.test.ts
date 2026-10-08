@@ -10,7 +10,7 @@ it.each([false, true])('allows the captured handshake plus a bounded list reply 
   let aborted = 0, settled = false
   vi.useFakeTimers()
   try {
-    const pending = createInjectedMcpTools(config, null, [], async (url, init) => {
+    const pending = createInjectedMcpTools(config, null, async (url, init) => {
       if (init?.method === 'DELETE') return peer.fetch(url, init)
       const rpc = JSON.parse(init!.body as string)
       methods.push(rpc.method)

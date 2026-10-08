@@ -17,26 +17,21 @@ export function injectedServers(config: string | undefined, instanceId: string |
   if (!object(parsed)) throw invalid()
   for (const [instance, servers] of Object.entries(parsed)) {
     if ((instance !== 'singleton' && !/^[0-9a-f-]{36}$/.test(instance)) || !Array.isArray(servers)) throw invalid()
-    const names = new Set<string>()
     for (const server of servers) {
       if (!object(server) || Object.keys(server).some(key => !['name', 'url', 'bearerToken'].includes(key))
-        || typeof server.name !== 'string' || !server.name.trim() || names.has(server.name)
+        || typeof server.name !== 'string' || !server.name.trim()
         || typeof server.url !== 'string'
         || (server.bearerToken !== undefined && (typeof server.bearerToken !== 'string' || !server.bearerToken.trim() || /[\r\n]/.test(server.bearerToken)))) throw invalid()
       let url: URL
       try { url = new URL(server.url) } catch { throw invalid() }
       if (url.protocol !== 'https:' || url.username || url.password || url.hash) throw invalid()
-      names.add(server.name)
     }
   }
   return (parsed[instanceId ?? 'singleton'] ?? []) as Server[]
 }
 
-export async function remoteToolName(server: string, tool: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([server, tool]))))
-  const hash = Array.from(digest.slice(0, 6), byte => byte.toString(16).padStart(2, '0')).join('')
-  const slug = (value: string, length: number) => value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, length) || 'tool'
-  return `mcp_${slug(server, 16)}_${slug(tool, 24)}_${hash}`
+export function remoteToolName(server: string, tool: string): string {
+  return `mcp__${server}_${tool}`
 }
 
 // One operation owns its client, deadline and I/O; only JSON tool metadata survives discovery.
@@ -73,7 +68,7 @@ async function withClient<T>(server: Server, timeoutMs: number, signal: AbortSig
 
 export type InjectedMcpDiscovery = { tools: ToolRegistration[]; retry?: () => Promise<InjectedMcpDiscovery> }
 
-export async function createInjectedMcpTools(config: string | undefined, instanceId: string | null, existing: readonly ToolRegistration[], fetcher: McpFetch = globalThis.fetch): Promise<InjectedMcpDiscovery> {
+export async function createInjectedMcpTools(config: string | undefined, instanceId: string | null, fetcher: McpFetch = globalThis.fetch): Promise<InjectedMcpDiscovery> {
   let servers: Server[]
   try { servers = injectedServers(config, instanceId) }
   catch { console.error('Invalid MCP_CONFIG: remote tools disabled; check the deployment secret shape and HTTPS URLs'); return { tools: [] } }
@@ -81,7 +76,6 @@ export async function createInjectedMcpTools(config: string | undefined, instanc
 
   // A retry retains successful schemas and contacts only peers whose discovery failed.
   async function discover(pending: { server: Server; index: number }[], known: ToolRegistration[]): Promise<InjectedMcpDiscovery> {
-    const used = new Set([...existing, ...known].map(tool => tool.name))
     const tools = [...known]
     const failed: typeof pending = []
     await Promise.all(pending.map(async ({ server, index }) => {
@@ -90,9 +84,7 @@ export async function createInjectedMcpTools(config: string | undefined, instanc
         const discovered: ToolRegistration[] = []
         for (const tool of remote) {
           if (!tool.name || tool.inputSchema.type !== 'object') throw new Error('Invalid tool metadata')
-          const name = await remoteToolName(server.name, tool.name)
-          if (used.has(name)) throw new Error('Tool name collision')
-          used.add(name)
+          const name = remoteToolName(server.name, tool.name)
           discovered.push({ name, description: tool.description ?? `Remote ${server.name} tool: ${tool.name}`,
             parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema), replay: 'unsafe',
             execute: async (args, _api, context) => {

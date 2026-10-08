@@ -194,7 +194,7 @@ export class PiSession extends HostedAgent {
     ]
     const retry = this.pendingMcpRetry
     this.pendingMcpRetry = undefined
-    this.mcpDiscovery = retry ? await retry() : await createInjectedMcpTools(this.env.MCP_CONFIG, this.instanceId(), tools)
+    this.mcpDiscovery = retry ? await retry() : await createInjectedMcpTools(this.env.MCP_CONFIG, this.instanceId())
     this.runtimeTools = [...tools, ...this.mcpDiscovery.tools]
     const harness = await createPiHarness({
       storage, context, env: modelEnv, tools: this.runtimeTools, memory: registry, compaction: this.compactionSettings(),

@@ -1,7 +1,7 @@
 import type { CallToolResult, McpFetch } from '@earendil-works/pi-mcp'
 
 export const remoteSchema = { type: 'object', properties: { text: { type: 'string', minLength: 1 } }, required: ['text'], additionalProperties: false }
-export function fakeMcp() {
+export function fakeMcp(toolName = 'echo') {
   const requests: { url: string; method: string; auth: string | null; params?: Record<string, unknown>; redirect?: RequestRedirect }[] = []
   let session = 0
   let fail = false
@@ -21,7 +21,7 @@ export function fakeMcp() {
       else init?.signal?.addEventListener('abort', abort, { once: true })
     })
     const data = rpc.method === 'initialize' ? { protocolVersion: '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
-      : rpc.method === 'tools/list' ? { tools: [{ name: 'echo', description: 'Fixture remote echo', inputSchema: remoteSchema, annotations: { readOnlyHint: true } }] }
+      : rpc.method === 'tools/list' ? { tools: [{ name: toolName, description: 'Fixture remote echo', inputSchema: remoteSchema, annotations: { readOnlyHint: true } }] }
       : result
     return Response.json({ jsonrpc: '2.0', id: rpc.id, result: data }, { headers: { 'mcp-session-id': `fake-${rpc.method === 'initialize' ? ++session : session}` } })
   }
