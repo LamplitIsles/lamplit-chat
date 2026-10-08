@@ -3,7 +3,8 @@ import type { ToolRegistration } from '@earendil-works/pi-durable'
 import { Type } from 'typebox'
 
 type Server = { name: string; url: string; bearerToken?: string }
-const DISCOVERY_TIMEOUT_MS = 5000
+// One bounded budget covers initialize, its notification and tools/list over the remote host.
+const DISCOVERY_TIMEOUT_MS = 15000
 const CALL_TIMEOUT_MS = 30000
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value) }
 
@@ -49,7 +50,8 @@ async function withClient<T>(server: Server, timeoutMs: number, signal: AbortSig
   const transport = new StreamableHttpTransport({
     url: server.url, headers: server.bearerToken ? { Authorization: `Bearer ${server.bearerToken}` } : undefined,
     openGetStream: false, reconnect: { maxRetries: 0 },
-    fetch: (url, init) => fetcher(url, { ...init, redirect: 'error' }),
+    // workerd supports manual redirect mode; never forward credentials to a redirect target.
+    fetch: (url, init) => fetcher(url, { ...init, redirect: 'manual' }),
   })
   // Closing also aborts pending initialize/notification I/O, which has no public caller-signal option.
   let closePromise: Promise<void> | undefined
