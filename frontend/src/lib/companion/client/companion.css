@@ -279,3 +279,5 @@
 
 #dsh-companion .companion-header-offline{flex-wrap:wrap}
 #dsh-companion .companion-network-notice{flex-basis:100%;margin:0;color:var(--color-secondary);font-size:13px;line-height:1.5}
+
+.companion-channel-source { font-size: 0.75rem; opacity: 0.7; overflow-wrap: anywhere; margin-bottom: 0.25rem; }

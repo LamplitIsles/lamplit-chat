@@ -1,3 +1,4 @@
+import { channelIngress } from './server/channel-ingress'
 import { routeAgentRequest } from 'agents'
 import { PI_AGENT_PREFIX } from './shared/pi-contract'
 import { authorize, unauthorized } from './server/auth'
@@ -16,6 +17,8 @@ export default {
     if (hosted && request.headers.get('origin') && request.headers.get('origin') !== new URL(request.url).origin) {
       return new Response('Forbidden', { status: 403 })
     }
+    const channelResponse = await channelIngress(request, env, instanceId)
+    if (channelResponse) return channelResponse
     const auth = hosted ? { authorized: true } : await authorize(request, env.AUTH_PASSWORD)
     if (!auth.authorized) return unauthorized()
     const respond = (response: Response) => {

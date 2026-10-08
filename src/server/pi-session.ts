@@ -1,3 +1,7 @@
+import { channelConfig, ChannelError, type Channel } from './channel-config'
+import { parseChannelEvent } from './channel-events'
+import { ChannelStorage } from './channel-storage'
+import { createChannelTools, discoverMatrixSelf } from './channel-tools'
 import {
   type DurableObjectStorageLike,
   Workspace,
@@ -81,10 +85,13 @@ export class PiSession extends HostedAgent {
   revokePersonalSession(tokenHash: string): void {
     this.closeSessionConnections(tokenHash)
   }
+  private channelAdmission: Promise<void> = Promise.resolve()
+  private readonly channels = new ChannelStorage(this.ctx.storage)
   private active = false
   private promptOperationId?: string
   private harness?: Promise<PiHarness>
   private harnessModelConfig?: string
+  private harnessChannelConfig?: string
   private memoryExtraction?: Promise<void>
   private readonly sessionStorage = new PiSessionStorage(this.ctx.storage)
   private coreSession?: StorageBackedSession
@@ -114,6 +121,14 @@ export class PiSession extends HostedAgent {
         try {
           const resumed = await lane.resume(BACKGROUND_CONTEXT)
           if (!resumed.ok) throw resumed.error
+          const pending = this.channels.next()
+          if (pending?.operation_id === recovery.operationId) {
+            const entryId = await exactPromptEntryId(recovery.operationId,
+              async id => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
+              id => this.sessionStorage.getEntrySync(id))
+            this.channels.correlate(recovery.operationId, entryId)
+            if (await lane.getResult(recovery.operationId, BACKGROUND_CONTEXT)) this.channels.complete(recovery.operationId)
+          }
           await this.flushOutboxToRegistry()
         } finally {
           this.active = false
@@ -187,7 +202,7 @@ export class PiSession extends HostedAgent {
     return {
       leafId: selectedLeaf,
       revision: rows.at(-1)?.seq ?? 0,
-      entries: entries.map((entry) => ({ ...storedEntry(seqById.get(entry.id) ?? 0, entry), photos: this.sessionStorage.photosForEntry(entry.id) })),
+      entries: entries.map((entry) => ({ ...storedEntry(seqById.get(entry.id) ?? 0, entry), source: this.channels.source(entry.id), photos: this.sessionStorage.photosForEntry(entry.id) })),
     }
   }
 
@@ -302,12 +317,67 @@ export class PiSession extends HostedAgent {
     return { state: 'uncertain', submissionId }
   }
 
+  // RPC only: no browser callable declaration and no caller-supplied owner/config.
+  async receiveChannelEvent(channel: Channel, raw: string): Promise<number> {
+    // Assign the arrival slot before remote config/self discovery can yield.
+    const admission = this.channelAdmission.then(() => this.admitChannelEvent(channel, raw))
+    this.channelAdmission = admission.then(() => undefined, () => undefined)
+    return admission
+  }
+
+  private async admitChannelEvent(channel: Channel, raw: string): Promise<number> {
+    if (!this.sessionStorage.isInitialized()) return 503
+    try {
+      const configs = await channelConfig(this.env, this.instanceId())
+      const config = configs[channel]
+      if (!config) return 404
+      let value: unknown
+      try { value = JSON.parse(raw) } catch { return 400 }
+      let event = parseChannelEvent(channel, value, config, '@validation:invalid')
+      const fingerprint = await promptFingerprint(raw)
+      if (this.channels.replay(channel, event.key, fingerprint)) { await this.schedulePendingDrain(); return 202 }
+      if (channel === 'matrix') event = parseChannelEvent(channel, value, config, await discoverMatrixSelf(config))
+      this.channels.admit(event, fingerprint)
+      await this.schedulePendingDrain()
+      return 202
+    } catch (error) { return error instanceof ChannelError ? error.status : 503 }
+  }
+
   async drainPendingWork(): Promise<void> {
-    if (this.active || !this.sessionStorage.isInitialized()) return
+    if (!this.sessionStorage.isInitialized()) return
+    if (this.active) { await this.schedulePendingDrain(); return }
     this.active = true
     try {
       const lane = await this.getLane()
       if (!(await lane.inspectExecution(BACKGROUND_CONTEXT)).current) {
+        const pending = this.channels.next()
+        if (pending) {
+          // Refresh only at a safe native turn boundary; admitted source is immutable.
+          this.harness = undefined
+          const currentLane = await this.getLane()
+          const settled = await currentLane.getResult(pending.operation_id, BACKGROUND_CONTEXT)
+          if (settled) {
+            const entryId = await exactPromptEntryId(pending.operation_id,
+              async id => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
+              id => this.sessionStorage.getEntrySync(id))
+            this.channels.correlate(pending.operation_id, entryId)
+            this.channels.complete(pending.operation_id)
+            return
+          }
+          this.sessionStorage.admitPromptSubmission(pending.operation_id, pending.fingerprint, [])
+          const admission = await currentLane.accept({ kind: 'prompt', operationId: pending.operation_id, prompt: { role: 'user', content: [{ type: 'text', text: pending.prompt }], timestamp: (JSON.parse(pending.source) as import('../shared/pi-contract').ChannelSource).timestamp } }, BACKGROUND_CONTEXT)
+          if (!admission.ok) throw admission.error
+          const entryId = await exactPromptEntryId(pending.operation_id,
+            async id => (await this.session.getValue(operationMeta(id), BACKGROUND_CONTEXT))?.value,
+            id => this.sessionStorage.getEntrySync(id))
+          this.sessionStorage.acceptPromptSubmission(pending.operation_id, entryId)
+          this.channels.correlate(pending.operation_id, entryId)
+          const driven = await currentLane.drive({ operationId: pending.operation_id, waitForRetry: true }, BACKGROUND_CONTEXT)
+          if (!driven.ok) throw driven.error
+          if (await currentLane.getResult(pending.operation_id, BACKGROUND_CONTEXT)) this.channels.complete(pending.operation_id)
+          await this.flushOutboxToRegistry()
+          return
+        }
         const state = (await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value
         if (state?.inbox.some((item) => item.kind === 'steer')) {
           const operationId = crypto.randomUUID()
@@ -327,7 +397,7 @@ export class PiSession extends HostedAgent {
 
   private async schedulePendingDrain(): Promise<void> {
     const state = (await this.session.getValue(laneState('main'), BACKGROUND_CONTEXT))?.value
-    if (state?.inbox.some((item) => item.kind === 'steer')) {
+    if (this.channels.pendingCount() || state?.inbox.some((item) => item.kind === 'steer')) {
       await this.schedule(1, 'drainPendingWork', undefined, { idempotent: true })
     }
   }
@@ -389,6 +459,7 @@ export class PiSession extends HostedAgent {
     const modelEnv = await this.modelEnvironment()
     if (!modelEnv.MODEL_API_KEY || !modelEnv.MODEL_BASE_URL || !modelEnv.AI_MODEL) throw new Error('Model is not configured.')
     if (this.harnessModelConfig !== modelConfigKey(modelEnv)) this.harness = undefined
+    if (!this.active && this.harnessChannelConfig !== JSON.stringify(await channelConfig(this.env, this.instanceId()))) this.harness = undefined
     const prompt = validPhotoPrompt(input.prompt, input.photoIds)
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.operationId)) {
       throw new Error('A valid operation ID is required.')
@@ -609,12 +680,14 @@ export class PiSession extends HostedAgent {
 
   private getHarness(): Promise<PiHarness> {
     const registry = this.registry()
-    this.harness ??= this.modelEnvironment().then(modelEnv => {
+    this.harness ??= Promise.all([this.modelEnvironment(), channelConfig(this.env, this.instanceId())]).then(([modelEnv, configs]) => {
       this.harnessModelConfig = modelConfigKey(modelEnv)
+      this.harnessChannelConfig = JSON.stringify(configs)
       return createPiHarness({
       env: modelEnv,
       session: this.session,
       tools: [
+        ...createChannelTools(configs),
         ...createWorkspaceTools(this.workspace),
         createSessionSearchTool(registry),
         createMemoryTool(registry, this.sessionStorage.getMetadataSync().id),

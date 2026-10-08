@@ -3,6 +3,7 @@ import type { ContinuityRecord } from "./continuity.js";
 export type MessageSide = "incoming" | "outgoing";
 
 export interface TimelineText {
+  source?: import("../../../../src/shared/pi-contract").ChannelSource;
   id: string;
   projectionKey?: string;
   /** Stable source contribution key used to form one 消息单元. */

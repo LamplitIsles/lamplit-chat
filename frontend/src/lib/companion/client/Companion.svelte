@@ -1932,6 +1932,7 @@
                     <p>{noticeText(first, t)}</p>
                   </div>
                 {:else}
+                  {@const source = first.kind === "text" ? first.source : undefined}
                   {@const parts = messageContentParts(unit)}
                   {@const timePlacement = messageTimePlacement(
                     unit.time !== undefined,
@@ -1952,13 +1953,13 @@
                   >
                     <div
                       class="cmp-chat-image cmp-avatar cmp-avatar-placeholder message-avatar"
-                      role="img" aria-label={unit.side === "incoming" ? identity.companionName : identity.userName}
-                      title={unit.side === "incoming" ? identity.companionName : identity.userName}
+                      role="img" aria-label={source?.sender ?? (unit.side === "incoming" ? identity.companionName : identity.userName)}
+                      title={source?.sender ?? (unit.side === "incoming" ? identity.companionName : identity.userName)}
                     >
                       <div
                         class="companion-avatar-crop cmp-mask cmp-mask-circle"
                       >
-                        {#if unit.side === "incoming" && identity.companionAvatar}<img
+                        {#if source}<span>{source.channel === "keet" ? "K" : "M"}</span>{:else if unit.side === "incoming" && identity.companionAvatar}<img
                             src={identity.companionAvatar}
                             alt=""
                           />{:else if unit.side === "outgoing" && identity.userAvatar}<img
@@ -1970,6 +1971,7 @@
                       </div>
                     </div>
                     <div class="companion-message-stack">
+                      {#if source}<div class="companion-channel-source">{source.channel === "keet" ? "Keet" : "Matrix"} · {source.sender} · {source.destination}</div>{/if}
                       {#each parts as part}
                         {#if part.kind === "images"}
                           <div

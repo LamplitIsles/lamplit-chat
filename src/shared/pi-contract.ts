@@ -72,7 +72,23 @@ export type SessionTreeNode = {
   isOnActiveBranch: boolean
 }
 
+export type ChannelSource = {
+  channel: 'keet' | 'matrix'
+  destination: string
+  destinationKind?: 'dm' | 'group' | 'broadcast'
+  sender: string
+  senderId?: string
+  eventId: string
+  text: string
+  timestamp: number
+  messageId?: { deviceId: string; seq: number }
+  sequence?: number
+  replyTo?: string | { deviceId: string; seq: number }
+  truncated?: boolean
+}
+
 export type StoredSessionEntry = {
+  source?: ChannelSource
   seq: number
   id: string
   parentId: string | null

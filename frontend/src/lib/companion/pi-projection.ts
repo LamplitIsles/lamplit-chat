@@ -27,7 +27,7 @@ export function acceptOptimisticPrompt(prompt: OptimisticPrompt | undefined, eve
 
 export function projectPromptBranch(entries: readonly StoredSessionEntry[], prompt: OptimisticPrompt | undefined, beforeSeq: number, sessionId = ''): TimelineItem[] {
   return branchItems(prompt && !prompt.entryId && !prompt.steering
-    ? entries.filter((entry) => !(entry.seq > beforeSeq && entry.message?.role === 'user'))
+    ? entries.filter((entry) => !(entry.seq > beforeSeq && entry.message?.role === 'user' && !entry.source))
     : entries, sessionId);
 }
 
@@ -80,11 +80,11 @@ export function branchItems(entries: readonly StoredSessionEntry[], sessionId = 
     const message = entry.message;
     if (!message || (message.role !== 'user' && message.role !== 'assistant')) continue;
     if (message.role === 'assistant' && Array.isArray(message.content) && message.content.some((part) => part && typeof part === 'object' && part.type === 'toolCall')) continue;
-    const text = textContent(message);
+    const text = entry.source?.text ?? textContent(message);
     for (const photo of entry.photos ?? []) {
       items.push({ id: photo.id, messageKey: entry.id, kind: 'image', side: 'outgoing', state: 'ready', alt: photo.name, previewUrl: `/api/conversation-images/${encodeURIComponent(sessionId)}/${photo.id}/preview`, attachment: { attachmentId: photo.id, mediaType: photo.mediaType as 'image/jpeg', name: photo.name }, time: Date.parse(entry.timestamp) });
     }
-    if (text) items.push({ id: entry.id, messageKey: entry.id, kind: 'text', side: message.role === 'user' ? 'outgoing' : 'incoming', text, time: Date.parse(entry.timestamp) });
+    if (text) items.push({ id: entry.id, messageKey: entry.id, kind: 'text', side: entry.source || message.role !== 'user' ? 'incoming' : 'outgoing', source: entry.source, text, time: entry.source?.timestamp ?? Date.parse(entry.timestamp) });
   }
   return items;
 }

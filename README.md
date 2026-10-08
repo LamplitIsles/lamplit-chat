@@ -77,3 +77,130 @@ Hosted deployment uses the isolated `lamplit-chat-media` R2 bucket, the Platform
 The mist blue UI slice was verified with `npm run check:frontend`, `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build`, plus an isolated browser mounting the real Companion with fake send/stop/transcription actions. No live user state, email, model provider, microphone, phone, or production deployment was used. Hosted identity and the two PWA entries remain owned by Platform: host-only sessions, chat `/chat`, management `/settings`, distinct manifest identities/scopes/start URLs, and the shared root service worker's network-only private-page behavior. This UI change does not deploy either repository or force an app refresh.
 
 The chat page updates Android browser/PWA theme-color with its resolved light/dark/system theme so the system bar matches the header. The manifest uses the default mist-blue launch background. System time/battery/gesture bars remain browser-controlled; viewport-fit=cover and existing safe-area padding protect controls.
+
+## Optional Keet and Matrix text channels
+
+Channel intake uses the existing Companion and native Pi main lane. It accepts
+current KFA addressing facts and original MFA text envelopes. Gateways remain
+independent processes; no gateway account, media download, room administration,
+or settings UI is added here.
+
+For Free, manually configure optional `CHAT_INTEGRATIONS` as a Worker secret with
+this direct channel object (all values below are synthetic):
+
+```json
+{
+  "keet": {
+    "mcpUrl": "https://keet.example.invalid/mcp",
+    "mcpToken": "synthetic-keet-mcp-token",
+    "webhookToken": "synthetic-keet-webhook-token",
+    "aliases": ["Companion", "小灯"]
+  },
+  "matrix": {
+    "mcpUrl": "https://matrix.example.invalid/mcp",
+    "mcpToken": "synthetic-full-matrix-access-token",
+    "webhookToken": "synthetic-matrix-webhook-token",
+    "aliases": ["Companion"]
+  }
+}
+```
+
+Omit a channel to disable its endpoint and tools. Both token fields must contain
+only visible ASCII characters U+0021–U+007E: no spaces, controls or non-ASCII.
+Tokens are preserved exactly; invalid credentials are rejected, never trimmed
+or repaired. MCP tokens have a maximum of 16,384 UTF-16 units; webhook tokens
+have 16–512 units and must differ between channels. Aliases remain Unicode,
+case-sensitive literal matches, default to `[]`, and are bounded to 16 strings
+of 128 UTF-16 units. MCP URLs must be absolute HTTPS without credentials or a
+fragment, at most 2,048 UTF-16 units. Keep MCP and receiver credentials separate.
+For MFA, `mcpToken` is the **full Matrix access token**, independent of the webhook
+token. Both outbound gateways must be reachable over HTTPS; a local MFA may use
+a separately provisioned Tunnel. This repository does not provision one.
+
+Set `COMPANION_SESSION_ID` to the initialized, ready Companion UUIDv4. KFA posts
+original JSON to `/api/keet/events`; MFA posts to `/api/matrix/events`, each with
+`Authorization: Bearer <its webhookToken>`. These exact routes use channel bearer
+authentication before reading the body or accessing the DO. Browser Basic/cookie
+credentials do not authorize them; webhook credentials do not authorize browser
+routes. A body-supplied session cannot select another target. Intake never
+silently creates a Free Companion.
+
+For Hosted, install the same channel objects in Platform's `CHAT_INTEGRATIONS`
+secret under existing instance UUIDs:
+
+```json
+{
+  "00000000-0000-4000-8000-000000000001": {
+    "matrix": {
+      "mcpUrl": "https://matrix.example.invalid/mcp",
+      "mcpToken": "synthetic-full-matrix-access-token",
+      "webhookToken": "synthetic-instance-matrix-webhook",
+      "aliases": ["Companion"]
+    }
+  }
+}
+```
+
+The gateway URL is Platform's app origin plus
+`/api/integrations/<instanceId>/<keet|matrix>/events`. Platform validates the
+receiver token and existing instance, then forwards unchanged bounded bytes over
+`CHAT` with internal instance authentication. Chat's Hosted trust guard remains
+mandatory. Chat retrieves only that instance's configuration through `PLATFORM`
+at `/internal/chat-integrations/<instanceId>` and targets its Registry's default
+Companion, using `instanceId:sessionId` DO identity. Platform requires receiver
+tokens unique across instances/channels and different from `CHAT_INTERNAL_SECRET`.
+Hosted never falls back to Free credentials. Deploying this feature requires the
+paired Platform contract in [Platform PR23](https://192.168.6.186:8086/LamplitIsles/lamplit-platform/pulls/23)
+and this Chat change; merging a PR alone does not deploy either Worker.
+
+Keet nonblank DM text wakes the Companion. Group text wakes on native mention,
+literal identity label, verified own reply, or configured alias, in that order.
+Unknown/nonown replies alone do not wake it. Broadcast and image-only events do
+not wake it; captions count as text. Images are acknowledged as facts without
+fetching or representing image contents to the model. Bounded Group/DM reaction
+facts are included on accepted turns with receipt suppression; buffering does
+not consume reaction receipts.
+
+Matrix uses bounded original `whoami` to discover its own ID before accepting a
+new input. Nonblank native self-mention or configured alias wakes it; all rooms
+use this rule. Display labels, DMs and replies do not create additional triggers.
+Blank text and self echoes do not wake or buffer. Original reply pointers,
+truncation facts, sender/destination IDs and source timestamps are retained.
+Other nonblank Group/Matrix text buffers up to eight recent excerpts per room,
+each at most 500 UTF-16 units, carried once in the next turn for that room.
+
+The nine fixed native tools are `keet_list_destinations`, `keet_list_members`,
+`keet_read_recent_messages`, `keet_send_message`, `matrix_whoami`,
+`matrix_list_rooms`, `matrix_list_room_members`, `matrix_read_messages` and
+`matrix_send_message`. Upstream short names are unchanged. Connections/calls are
+bounded and cancelled/closed on completion; bearer redirects are refused and
+private failure details are sanitized. A lost/error send acknowledgment is
+reported as uncertain and may have sent the message; never automatically resend.
+
+Intake persists the immutable receipt and buffer/pending input atomically before
+`202`. KFA deduplicates by `eventId` (sequence is diagnostic); Matrix by
+`(room_id,event_id)`. Replaying the same original bytes returns success; changed
+bytes under the same key conflict. The two channels share a 64-pending-input cap;
+full admission fails without changing receipts/context. Arrival order governs
+execution, while original source time governs attribution. Pending work waits
+behind active native work and recovers after DO restart using the native
+submission identity. Remote side effects have no exactly-once guarantee.
+Incoming bubbles show Keet/Matrix, sender/destination and authored text; web
+optimistic submissions, drafts, photos and voice retain their existing behavior.
+
+| Status | Meaning |
+| --- | --- |
+| 202 | Durable admission or identical replay; model completion is asynchronous |
+| 400 | Invalid current producer JSON/schema, including obsolete KFA `trigger` |
+| 401 | Wrong Free receiver bearer |
+| 403 | Hosted request without trusted Platform instance/internal authentication |
+| 404 | Channel disabled |
+| 405 | Endpoint requires POST |
+| 409 | Existing event key with different original bytes |
+| 413 | Original raw body exceeds 112 KiB, including streamed bodies |
+| 503 | Invalid config, unready target, unavailable discovery/service, or full queue |
+
+Verification uses test-owned DO storage, synthetic MCP/model endpoints and fresh
+original KFA/MFA producer captures through both Workers. It does not establish
+live gateway/provider or official-client interoperability and performs no secret
+provisioning, deployment or external messages.
