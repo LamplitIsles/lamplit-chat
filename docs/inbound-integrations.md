@@ -76,11 +76,24 @@ Broadcast never wakes and cannot carry reaction snapshots. Image-only events are
 acknowledged without a model turn or media download; a nonblank caption counts.
 Captioned Keet display retains the existing text-only image explanation.
 
-Matrix rooms all behave as groups. Native mentions of configured selfUserId or
-aliases trigger; other nonblank authored text buffers. Self echoes and blank bodies
-do neither. Display names, reply pointers and room type never independently trigger.
+Matrix rooms all behave as groups. Native mentions of configured selfUserId,
+verified replies to that exact identity, or aliases trigger; other nonblank authored
+text buffers. Self echoes and blank bodies do neither. Display names, reply pointers
+alone and room type never independently trigger.
 Original UTF-16 bounds, blank display name/body, mentions, reply pointer, timestamp
 and truncated flag remain accepted as produced.
+
+MFA's optional `reply_to_sender_id` is the verified original reply-target author's
+full Matrix ID: `/^@[^\s:]+:[^\s]+$/u`, at most 255 UTF-16 units. It requires a
+nonblank `reply_to_event_id`; malformed or orphan author fields return 400 before
+admission. IDs are never trimmed or clipped. An absent author means unknown target,
+so mention/alias rules still apply; another author alone only buffers. The receiver
+uses configured `selfUserId` and the existing boolean classifier, with mention,
+reply, then alias evaluation. No history/MCP lookup, implicit DM wake or new trigger
+configuration is added. The author stays in private immutable original receipts
+and source snapshots; public Matrix source fields are unchanged. Changed author
+facts on the same room/event key conflict (409), and identical retries never wake
+again. See producer #3609 and consumers #3610/#3611 for the linked wire contract.
 
 Context is scoped by owner/channel/room: up to eight recent authored excerpts of
 500 UTF-16 units, carried into the next admitted room turn. Reaction snapshots are
@@ -99,6 +112,6 @@ Keet retains the approved Keet source presentation. Matrix public messages show 
 original display name (exact sender ID when empty), sender ID and exact room ID in
 a separate source header. Body and authored time come from the durable original
 event; the full webhook, provider/compaction/memory attribution and buffered context
-remain private. Receiving policy and the MFA wire are unchanged; no room-name or
+remain private. No room-name or
 sender lookup is added. Initial, reconnect and older reads retain the same source.
 See [Matrix source UI and native acceptance](matrix-source-ui.md).

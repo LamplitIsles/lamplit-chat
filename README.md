@@ -302,7 +302,10 @@ session, set `COMPANION_SESSION_ID`, and configure optional inbound-only
 existing Companion. Keet and Matrix receiving settings are independent of generic
 `MCP_CONFIG`; Matrix supplies `selfUserId` directly. See
 [independent inbound setup, policy, receipts and recovery](docs/inbound-integrations.md)
-and [native Keet source restoration](docs/keet-source-restoration.md).
+for verified Matrix reply wake as well: MFA's optional `reply_to_sender_id` wakes
+ordinary replies to that exact identity; other/unknown targets only buffer unless
+mention/alias rules match. Invalid/orphan author facts reject before admission.
+See also [native Keet source restoration](docs/keet-source-restoration.md).
 Matrix messages have a separate sender/room header, with sender ID fallback for
 empty names, while retaining the original body and authored time across history
 and reconnect. See [Matrix presentation and native acceptance](docs/matrix-source-ui.md).

@@ -14,6 +14,12 @@ const matrix = (n: number, body = 'Companion') => ({ type: 'message', room_id: '
 const config = { matrix: { webhookToken: 'fixture-matrix-token', aliases: ['Companion'], selfUserId: '@self:test' }, keet: { webhookToken: 'fixture-keet-token' } }
 const request = (body: unknown, token = config.matrix.webhookToken) => new Request('https://chat.fixture/api/matrix/events', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) })
 afterEach(() => vi.restoreAllMocks())
+// Unedited bytes captured by producer #3609 from real SDK sync -> local webhook.
+const producedReplies = [
+  '{"type":"message","room_id":"!room:test","sender_display_name":"","event_id":"$reply-nonown","sender_id":"@other:test","timestamp":1700000000000,"body":"ordinary reply","mentions":[],"reply_to_event_id":"$nonown","truncated":false,"reply_to_sender_id":"@third:test"}',
+  '{"type":"message","room_id":"!room:test","sender_display_name":"","event_id":"$reply-unknown","sender_id":"@other:test","timestamp":1700000000000,"body":"ordinary reply","mentions":[],"reply_to_event_id":"$missing","truncated":false}',
+  '{"type":"message","room_id":"!room:test","sender_display_name":"","event_id":"$reply-own","sender_id":"@other:test","timestamp":1700000000000,"body":"ordinary reply","mentions":[],"reply_to_event_id":"$own","truncated":false,"reply_to_sender_id":"@self:test"}',
+]
 async function setup(owner?: string) {
   const registry = env.PiRegistry.getByName(owner ?? 'singleton') as DurableObjectStub<PiRegistry>
   const session = owner ? await registry.ensureDefaultSession() : await registry.createSession({ name: 'Owned inbound fixture' })
@@ -25,6 +31,30 @@ async function setup(owner?: string) {
   })
   return { stub, session, settings: { ...env, COMPANION_SESSION_ID: session.id, CHAT_INTEGRATIONS: JSON.stringify(config) } as Env }
 }
+it.each(['Free', 'Hosted'])('accepts exact MFA-produced reply bytes through %s native ingress', async mode => {
+  const owner = mode === 'Hosted' ? crypto.randomUUID() : undefined
+  const { stub, settings: free } = await setup(owner)
+  const settings = owner ? { ...free, HOSTED_MODE: 'true', CHAT_INTERNAL_SECRET: 'fixture-internal', PLATFORM: { fetch: async (_input: RequestInfo | URL) => Response.json({ matrix: { ...config.matrix, aliases: [] } }) } as Fetcher } as Env : { ...free, CHAT_INTEGRATIONS: JSON.stringify({ matrix: { ...config.matrix, aliases: [] } }) }
+  const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => nativeReply('openrouter', 'Synthetic producer reply'))
+  for (const [index, body] of producedReplies.entries()) {
+    const headers: Record<string, string> = owner ? { 'x-lamplit-instance': owner, 'x-lamplit-internal-secret': 'fixture-internal' } : { authorization: `Bearer ${config.matrix.webhookToken}` }
+    const send = () => worker.fetch(new Request('https://chat.fixture/api/matrix/events', { method: 'POST', headers, body }), settings)
+    expect((await send()).status).toBe(200); expect((await send()).status).toBe(200)
+    await runInDurableObject(stub, async (instance, state) => {
+      const store = new PiSessionStorage(state.storage), next = store.nextKeet()
+      expect(!!next).toBe(index === 2)
+      if (next) {
+        expect(JSON.parse(next.source.original!)).toEqual(JSON.parse(body))
+        await instance.drainPendingWork(); await (instance as unknown as NativeFixture).native.wait(next.operationId)
+        await vi.waitFor(() => expect(store.nextKeet()).toBeUndefined())
+        const source = store.keetSource(store.entriesInOrder().find(entry => store.keetSource(entry.id))!.id)!
+        expect(source.timestamp).toBe(1700000000000); expect(source.event?.eventId).toBe('$reply-own')
+      }
+      expect(state.storage.sql.exec('SELECT * FROM inbound_receipts').toArray()).toHaveLength(index + 1)
+    })
+  }
+  expect(fetch).toHaveBeenCalledTimes(1)
+})
 it('admission never consults MCP, auth precedes body/DO and streamed overflow cancels', async () => {
   const { settings, stub } = await setup()
   const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('No network permitted'))
@@ -49,6 +79,58 @@ it('shares the 64 pending cap and rolls back receipts/context on overflow', asyn
     expect(state.storage.sql.exec('SELECT * FROM inbound_receipts').toArray()).toHaveLength(65)
     expect(state.storage.sql.exec('SELECT * FROM keet_queue').toArray()).toHaveLength(64)
     expect(JSON.stringify(state.storage.sql.exec('SELECT * FROM keet_context').toArray())).toContain('ordinary context')
+  })
+})
+it('admits one Free reply turn with immutable original facts and room-scoped context', async () => {
+  const { settings, stub } = await setup()
+  const calls: unknown[] = []
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => { calls.push(JSON.parse(init!.body as string)); return nativeReply('openrouter', 'Reply fixture') })
+  const own = { ...matrix(304, 'ordinary reply'), reply_to_event_id: '$target', reply_to_sender_id: config.matrix.selfUserId }
+  const frames = [
+    { ...matrix(300, 'other author context'), reply_to_event_id: '$other', reply_to_sender_id: '@else:test' },
+    { ...matrix(301, 'unknown author context'), reply_to_event_id: '$missing' },
+    { ...matrix(302, 'foreign room sentinel'), room_id: '!else:test' },
+    { ...own, event_id: '$self-echo', sender_id: config.matrix.selfUserId },
+    { ...own, event_id: '$blank', body: ' \n\t' },
+  ]
+  for (const frame of frames) expect((await worker.fetch(request(frame), settings)).status).toBe(200)
+  await runInDurableObject(stub, (_i, state) => expect(new PiSessionStorage(state.storage).nextKeet()).toBeUndefined())
+  for (const frame of [own, own]) expect((await worker.fetch(request(frame), settings)).status).toBe(200)
+  expect((await worker.fetch(request({ ...own, reply_to_sender_id: '@else:test' }), settings)).status).toBe(409)
+  await runInDurableObject(stub, async (instance, state) => {
+    const store = new PiSessionStorage(state.storage), next = store.nextKeet()!
+    expect(JSON.parse(next.source.original!)).toEqual(own)
+    expect(next.prompt).toContain('other author context'); expect(next.prompt).toContain('unknown author context')
+    expect(next.prompt).not.toContain('foreign room sentinel')
+    await instance.drainPendingWork(); await (instance as unknown as NativeFixture).native.wait(next.operationId)
+    await vi.waitFor(() => expect(store.nextKeet()).toBeUndefined())
+    const reopened = new PiSessionStorage(state.storage)
+    expect(state.storage.sql.exec('SELECT * FROM keet_queue').toArray()).toHaveLength(1)
+    const entry = reopened.entriesInOrder().find(entry => reopened.keetSource(entry.id))!
+    expect(JSON.parse(reopened.keetSource(entry.id)!.original!)).toEqual(own)
+  })
+  expect(calls).toHaveLength(1)
+  expect((await worker.fetch(request(own), settings)).status).toBe(200)
+  await runInDurableObject(stub, (_i, state) => expect(new PiSessionStorage(state.storage).nextKeet()).toBeUndefined())
+})
+it('rejects invalid reply facts at HTTP ingress before durable admission', async () => {
+  const { settings, stub } = await setup()
+  for (const fields of [{ reply_to_sender_id: '@self:test' }, { reply_to_sender_id: '@self:test', reply_to_event_id: '' }, { reply_to_sender_id: '@self:test\n', reply_to_event_id: '$target' }, { reply_to_sender_id: null, reply_to_event_id: '$target' }]) expect((await worker.fetch(request({ ...matrix(310), ...fields }), settings)).status).toBe(400)
+  await runInDurableObject(stub, (_i, state) => expect(state.storage.sql.exec('SELECT * FROM inbound_receipts').toArray()).toHaveLength(0))
+})
+it('classifies identical Hosted reply bytes by each selected owner identity', async () => {
+  const owners = [crypto.randomUUID(), crypto.randomUUID()], instances = await Promise.all(owners.map(setup))
+  const event = { ...matrix(320, 'ordinary hosted reply'), reply_to_event_id: '$target', reply_to_sender_id: '@self:test' }
+  const settings = { ...env, HOSTED_MODE: 'true', CHAT_INTERNAL_SECRET: 'fixture-internal', PLATFORM: { fetch: async (input: RequestInfo | URL) => Response.json({ matrix: { ...config.matrix, selfUserId: new Request(input).url.endsWith(owners[0]) ? '@self:test' : '@second:test' } }) } as Fetcher } as Env
+  for (const owner of owners) {
+    const req = request(event); req.headers.delete('authorization'); req.headers.set('x-lamplit-instance', owner); req.headers.set('x-lamplit-internal-secret', 'fixture-internal')
+    expect((await worker.fetch(req, settings)).status).toBe(200)
+  }
+  for (const [index, { stub }] of instances.entries()) await runInDurableObject(stub, (_i, state) => {
+    const store = new PiSessionStorage(state.storage)
+    expect(!!store.nextKeet()).toBe(index === 0)
+    expect(state.storage.sql.exec('SELECT * FROM inbound_receipts').toArray()).toHaveLength(1)
+    expect(state.storage.sql.exec('SELECT * FROM keet_context').toArray()).toHaveLength(index)
   })
 })
 it('uses only selected Hosted settings and existing owner default, with sanitized failure', async () => {

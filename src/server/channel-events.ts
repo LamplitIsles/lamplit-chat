@@ -26,17 +26,19 @@ export function parseChannelEvent(channel: Channel, value: unknown, config: Chan
   const data = object(value)
   if (data.type !== 'message') invalid()
   if (channel === 'matrix') {
-    only(data, ['type', 'room_id', 'event_id', 'sender_id', 'sender_display_name', 'body', 'mentions', 'reply_to_event_id', 'timestamp', 'truncated'])
+    only(data, ['type', 'room_id', 'event_id', 'sender_id', 'sender_display_name', 'body', 'mentions', 'reply_to_event_id', 'reply_to_sender_id', 'timestamp', 'truncated'])
     const room = string(data.room_id, 255), event = string(data.event_id, 255), sender = string(data.sender_id, 255)
     const label = string(data.sender_display_name, 255, true), body = string(data.body, 16000, true)
     if (!Array.isArray(data.mentions) || data.mentions.length > 100) invalid()
     const mentions = (data.mentions as unknown[]).map(value => string(value, 255, true))
     const replyTo = data.reply_to_event_id === undefined ? undefined : string(data.reply_to_event_id, 255, true)
+    const replySender = data.reply_to_sender_id === undefined ? undefined : string(data.reply_to_sender_id, 255)
+    if (replySender !== undefined && (!replyTo?.trim() || !/^@[^\s:]+:[^\s]+$/u.test(replySender))) invalid()
     const timestamp = integer(data.timestamp), truncated = boolean(data.truncated)
     const self = config.selfUserId
     if (!self) throw new ChannelError(503)
     const eligible = sender !== self && !!body.trim()
-    return { key: JSON.stringify([room, event]), room, trigger: eligible && (mentions.includes(self) || config.aliases.some(alias => body.includes(alias))), buffer: eligible,
+    return { key: JSON.stringify([room, event]), room, trigger: eligible && (mentions.includes(self) || replySender === self || config.aliases.some(alias => body.includes(alias))), buffer: eligible,
       source: { channel, destination: room, sender: label || sender, senderId: sender, eventId: event, text: body, timestamp, replyTo, truncated }, reactions: [] }
   }
   only(data, ['type', 'eventId', 'sequence', 'messageId', 'timestamp', 'destination', 'senderLabel', 'text', 'replyTo', 'addressing', 'images', 'reactionContext'])

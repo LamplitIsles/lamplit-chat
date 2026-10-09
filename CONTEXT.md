@@ -16,6 +16,14 @@ _Avoid_: MCP connection, combined messaging connector
 The companion's rules for deciding whether an admitted external message starts a turn or contributes conversation context. The source reports message facts rather than deciding the companion's response.
 _Avoid_: Producer trigger, external tool permission
 
+**Verified reply-target author（已验证回复目标作者）**:
+The original Matrix event author's exact full user ID, reported by MFA as optional
+`reply_to_sender_id` with a nonblank reply pointer. An absent author is unknown.
+Chat wakes a nonblank external reply only when that author equals its configured
+Matrix identity, or an independent mention/alias matches. The fact stays private
+in the immutable receipt and source snapshot; it adds no public UI source field.
+_Avoid_: Quoted author, display-name identity, producer trigger decision
+
 **Lamplit**:
 The product's public name. It refers to the user-facing personal AI experience; `pi-on-cf` is only the repository's historical name.
 _Avoid_: Pi on Cloudflare as the product name

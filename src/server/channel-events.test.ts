@@ -30,4 +30,21 @@ describe('independent inbound contracts', () => {
     expect(parse({ ...matrix, body: 'Companion' }).trigger).toBe(true)
     expect(parse({ ...matrix, body: 'companion' }).trigger).toBe(false)
   })
+  it('wakes only verified own replies, retaining normal mention/alias and self/blank rules', () => {
+    const parse = (fields: object) => parseChannelEvent('matrix', { ...matrix, reply_to_event_id: '$target', ...fields }, config)
+    expect(parse({ reply_to_sender_id: config.selfUserId })).toMatchObject({ trigger: true, buffer: true, source: { text: matrix.body, timestamp: matrix.timestamp, replyTo: '$target' } })
+    expect(parse({ reply_to_sender_id: config.selfUserId, mentions: [config.selfUserId], body: 'Companion' }).trigger).toBe(true)
+    for (const reply_to_sender_id of [undefined, '@else:test']) {
+      expect(parse({ reply_to_sender_id })).toMatchObject({ trigger: false, buffer: true })
+      expect(parse({ reply_to_sender_id, mentions: [config.selfUserId] }).trigger).toBe(true)
+      expect(parse({ reply_to_sender_id, body: 'Companion' }).trigger).toBe(true)
+    }
+    for (const fields of [{ body: '' }, { body: ' \n\t' }, { sender_id: config.selfUserId }]) expect(parse({ reply_to_sender_id: config.selfUserId, mentions: [config.selfUserId], ...fields })).toMatchObject({ trigger: false, buffer: false })
+    expect(parse({ reply_to_sender_id: '@' + '😀'.repeat(123) + ':test' }).trigger).toBe(false)
+    expect(parse({ reply_to_sender_id: '@' + 'a'.repeat(249) + ':test' }).trigger).toBe(false)
+  })
+  it('rejects malformed and orphan reply authors without clipping identities', () => {
+    for (const reply_to_sender_id of [null, 1, '', ' ', '@self', 'self:test', '@:test', '@self:', '@self :test', '@self:test\n', '@' + '😀'.repeat(125) + ':test', '@' + 'a'.repeat(250) + ':test']) expect(() => parseChannelEvent('matrix', { ...matrix, reply_to_event_id: '$target', reply_to_sender_id }, config)).toThrow()
+    for (const reply_to_event_id of [undefined, '', ' \t']) expect(() => parseChannelEvent('matrix', { ...matrix, reply_to_event_id, reply_to_sender_id: config.selfUserId }, config)).toThrow()
+  })
 })
