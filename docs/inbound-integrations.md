@@ -95,8 +95,10 @@ ambiguous placement; settled work is not repeated after restart. Existing archiv
 source, media, memory, wake and native conversion associations remain intact. The
 receipt confirms admission, not model success or exactly-once remote delivery.
 
-Keet retains the approved Keet source presentation. Matrix uses explicit sender and
-room attribution plus original body in the approved text field, with original author
-time. Its full original facts remain in private source associations and provider,
-compaction and memory attribution. The frozen App source schema remains unchanged;
-Matrix is never labelled Keet. Reopen reads retain the same public presentation.
+Keet retains the approved Keet source presentation. Matrix public messages show the
+original display name (exact sender ID when empty), sender ID and exact room ID in
+a separate source header. Body and authored time come from the durable original
+event; the full webhook, provider/compaction/memory attribution and buffered context
+remain private. Receiving policy and the MFA wire are unchanged; no room-name or
+sender lookup is added. Initial, reconnect and older reads retain the same source.
+See [Matrix source UI and native acceptance](matrix-source-ui.md).

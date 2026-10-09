@@ -252,7 +252,9 @@ export class PiSession extends HostedAgent {
     const rows = this.sessionStorage.getEntriesWithSeq().filter(row => this.timelineIds.includes(row.entry.id))
     return { leafId: this.sessionStorage.getLeafId(), revision: rows.at(-1)?.seq ?? 0, entries: rows.map(({ seq, entry }) => {
       const source = this.sessionStorage.keetSource(entry.id)
-      return { ...storedEntry(seq, entry), ...(source ? { authoredAt: source.timestamp } : {}), photos: this.sessionStorage.photosForEntry(entry.id), ...(source && source.kind !== 'matrix' ? { keet: { kind: source.kind, sender: source.sender, destination: source.destination, text: source.text } } : {}) }
+      // Original Matrix facts are retained by validated ingress, separately from the model prompt.
+      const matrix: { sender_id: string; sender_display_name: string; room_id: string; body: string } | undefined = source?.kind === 'matrix' ? JSON.parse(source.original) : undefined
+      return { ...storedEntry(seq, entry), ...(matrix ? { matrix: { senderId: matrix.sender_id, senderDisplayName: matrix.sender_display_name, roomId: matrix.room_id, text: matrix.body } } : {}), ...(source ? { authoredAt: source.timestamp } : {}), photos: this.sessionStorage.photosForEntry(entry.id), ...(source && source.kind !== 'matrix' ? { keet: { kind: source.kind, sender: source.sender, destination: source.destination, text: source.text } } : {}) }
     }) }
   }
   @hostedCallable()

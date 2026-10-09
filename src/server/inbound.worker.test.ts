@@ -90,8 +90,68 @@ it('projects truthful Matrix text/time and private context through approved sock
     const socket = response.webSocket!; socket.accept(); let view: ChatView | undefined
     const client = await openChat(socket, next => { view = next }, () => {})
     const message = view!.messages.find(item => item.role === 'user')!
-    expect(message.text).toBe('[Matrix: !room:test; sender: Alice (@other:test)]\nCompanion'); expect(message.source).toBeUndefined(); expect(message.createdAt).toBe(matrix(2).timestamp)
+    expect(message.text).toBe('Companion'); expect(message.source).toEqual({ kind: 'matrix', senderId: '@other:test', senderDisplayName: 'Alice', roomId: '!room:test' }); expect(message.createdAt).toBe(matrix(2).timestamp)
     expect(JSON.stringify(view)).not.toContain('private sentinel'); client.close(); socket.close()
+  }
+})
+it('retains original Matrix names, IDs and multiline body from durable facts on public reopen', async () => {
+  const { settings, stub } = await setup()
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => nativeReply('openrouter', 'Fixture reply'))
+  const cases = [
+    { sender_id: '@other:test', sender_display_name: 'Alice' },
+    { sender_id: '@fallback:test', sender_display_name: '' },
+    { sender_id: '@' + '😀'.repeat(120) + ':test', sender_display_name: '😀灯'.repeat(80) },
+    { sender_id: '@hostile:test', sender_display_name: '<img src=x onerror="unsafe()">' },
+  ].map((fields, n) => ({ ...matrix(200 + n, `[Matrix: authored literal]\n\nOriginal **body** ${n}`), ...fields, mentions: ['@self:test'], room_id: '!灯:test' }))
+  for (const event of cases) {
+    expect((await worker.fetch(request(event), settings)).status).toBe(200)
+    await runInDurableObject(stub, async (instance, state) => {
+      const store = new PiSessionStorage(state.storage), next = store.nextKeet()!
+      await instance.drainPendingWork(); await (instance as unknown as NativeFixture).native.wait(next.operationId)
+      await vi.waitFor(() => expect(store.nextKeet()).toBeUndefined())
+      const source = store.keetSource(store.entriesInOrder().reverse().find(entry => store.keetSource(entry.id))!.id)!
+      expect(JSON.parse(source.original!)).toEqual(event)
+      expect(store.keetModelPrompt(store.entriesInOrder().reverse().find(entry => store.keetSource(entry.id))!.id)).toContain('Original **body**')
+    })
+  }
+  for (let n = 0; n < 2; n++) {
+    const response = await worker.fetch(new Request('https://chat.fixture/api/chat/socket', { headers: { upgrade: 'websocket', origin: 'https://chat.fixture', authorization: `Basic ${btoa('owner:fixture-password-long-enough')}` } }), settings)
+    const socket = response.webSocket!; socket.accept(); let view: ChatView | undefined
+    const client = await openChat(socket, next => { view = next }, () => {})
+    const messages = view!.messages.filter(message => message.source?.kind === 'matrix')
+    expect(messages).toHaveLength(cases.length)
+    for (const [index, event] of cases.entries()) {
+      expect(messages[index]).toMatchObject({ text: event.body, createdAt: event.timestamp, source: { kind: 'matrix', senderId: event.sender_id, senderDisplayName: event.sender_display_name, roomId: event.room_id } })
+      expect(Object.keys(messages[index].source!).sort()).toEqual(['kind', 'roomId', 'senderDisplayName', 'senderId'])
+    }
+    expect(new Set(messages.map(message => message.id)).size).toBe(cases.length)
+    client.close(); socket.close()
+  }
+})
+it('keeps Matrix public source and body isolated between two Hosted owners', async () => {
+  const owners = [crypto.randomUUID(), crypto.randomUUID()]
+  const instances = await Promise.all(owners.map(owner => setup(owner)))
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => nativeReply('openrouter', 'Fixture reply'))
+  const settings = { ...env, HOSTED_MODE: 'true', CHAT_INTERNAL_SECRET: 'fixture-internal', PLATFORM: { fetch: async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ matrix: config.matrix }) } as Fetcher } as Env
+  for (const [index, owner] of owners.entries()) {
+    const event = { ...matrix(900, `Companion original owner ${index}`), sender_display_name: index ? '' : 'Alice', sender_id: `@owner${index}:test` }
+    const req = request(event); req.headers.delete('authorization'); req.headers.set('x-lamplit-instance', owner); req.headers.set('x-lamplit-internal-secret', 'fixture-internal')
+    expect((await worker.fetch(req, settings)).status).toBe(200)
+    await runInDurableObject(instances[index].stub, async (instance, state) => {
+      const store = new PiSessionStorage(state.storage), next = store.nextKeet()!
+      await instance.drainPendingWork(); await (instance as unknown as NativeFixture).native.wait(next.operationId)
+      await vi.waitFor(() => expect(store.nextKeet()).toBeUndefined())
+    })
+  }
+  for (const [index, owner] of owners.entries()) {
+    const response = await worker.fetch(new Request('https://chat.fixture/api/chat/socket', { headers: { upgrade: 'websocket', origin: 'https://chat.fixture', 'x-lamplit-instance': owner, 'x-lamplit-internal-secret': 'fixture-internal', 'x-lamplit-session-hash': 'a'.repeat(64) } }), settings)
+    const socket = response.webSocket!; socket.accept(); let view: ChatView | undefined
+    const client = await openChat(socket, next => { view = next }, () => {})
+    const messages = view!.messages.filter(message => message.source?.kind === 'matrix')
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({ text: `Companion original owner ${index}`, source: { kind: 'matrix', senderId: `@owner${index}:test`, senderDisplayName: index ? '' : 'Alice', roomId: '!room:test' } })
+    expect(JSON.stringify(view)).not.toContain(`Companion original owner ${1 - index}`)
+    client.close(); socket.close()
   }
 })
 it('keeps buffered reaction snapshots until admission and consumes each snapshot once', async () => {

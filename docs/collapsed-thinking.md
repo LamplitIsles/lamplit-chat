@@ -66,4 +66,7 @@ README, default frontend and native integration guidance are updated. No local
 AGENTS.md/CLAUDE.md exists. Search/import/provider/media/voice/panels guidance needs
 no behavioral edit because their semantics and stored records are unchanged.
 App UI work and design evidence belong to #3522; no Chat UI source is edited.
-Local success awaits Orc joint identity reconciliation; merge/deploy are separate.
+Current artifact consumption follows [Matrix source acceptance](matrix-source-ui.md):
+unchanged approved Matrix bytes include thinking, attributed to equal-tree merged
+App PR18 main132d7ded. PR43 thinking behavior and native controls are retained.
+Orc owns final integrated review/host merge; deployment remains separate.

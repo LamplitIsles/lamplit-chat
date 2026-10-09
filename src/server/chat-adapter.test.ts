@@ -34,3 +34,15 @@ it('retains thinking-only failure, tool-call-only omission, failure and stop not
   expect(view.messages.map(m => [m.id, m.role, m.text])).toEqual([['only', 'notice', '回复失败'], ['error', 'notice', '回复失败'], ['stop', 'notice', '已停止回复']])
   for (const message of view.messages) expect(message).not.toHaveProperty('thinking')
 })
+it('preserves Matrix original body/source/time alongside ordered assistant thinking through read and history', async () => {
+  const matrix = { senderId: '@sender:fixture', senderDisplayName: '', roomId: '!room:fixture', text: '[Matrix: authored literal]\noriginal body' }
+  const incoming = { ...entry('matrix', 'user', 'private model attribution'), matrix, authoredAt: 1700000000000 }
+  const answer = { ...entry('answer', 'assistant', [{ type: 'thinking', thinking: 'first' }, { type: 'text', text: 'reply' }, { type: 'thinking', thinking: 'second' }]), authoredAt: 1700000001000 }
+  const chat = backend([incoming, answer, entry('cursor', 'user', 'later')])
+  const view = await chat.read()
+  expect(view.messages[0]).toMatchObject({ id: 'matrix', text: matrix.text, createdAt: incoming.authoredAt, source: { kind: 'matrix', senderId: matrix.senderId, senderDisplayName: '', roomId: matrix.roomId } })
+  expect(view.messages[0]).not.toHaveProperty('thinking')
+  expect(view.messages[1]).toMatchObject({ text: 'reply', thinking: 'first\nsecond', createdAt: answer.authoredAt })
+  expect((await chat.history('cursor')).messages).toEqual(view.messages.slice(0, 2))
+  expect(JSON.stringify(view)).not.toContain('private model attribution')
+})

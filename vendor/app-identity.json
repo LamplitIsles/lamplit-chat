@@ -1,10 +1,13 @@
 {
-  "spec": 3522,
-  "head": "fe838e10f59e4e8ca0816c9ea85828408fc45b60",
-  "archive": "89b016e76b392e618faaecf53ec2b8cd49780125e04977517caa837dd064e735",
+  "spec": 3561,
+  "head": "132d7dedd8c52eecefa8ea6bb9bb6038d5cdc9e8",
+  "archive": "5b8fa6d5c2265017582465abafac6e684fffd44e2fa7150166e7c657bc9b0a6a",
   "manifests": {
-    "browser": "448701990915ac750459aaa278436b38b6a613c0f142198b9ac59bcfe3284446",
-    "contracts": "da18192e08c728793147aaa8cf611e4f2ab4d8d2c9313b065d175aa0a6bb9bda",
-    "acceptance": "18246f2f11eb0111e80ab3fac55e1e46d132ea3d64854ce5627b414b7d416d8b"
-  }
+    "browser": "457e5fbf054221f69e1eb54795f8752e33a018d24278bf3b25ec40f82bd11fa9",
+    "contracts": "4e165fec721d6c7f188b8c32ca625d7459aa82dfa7ee5bd3c2a50f50d74ea46f",
+    "acceptance": "11622bd66ea603647fafba8b74b245241bc76b8939608736e06e08a4e077b626"
+  },
+  "artifactHead": "3e95c3385ac00ba8317d21b85b76484637ce3fc6",
+  "sourceTree": "ac660d08d4f7ccb0b3845de11ac185df5c50301a",
+  "artifactTree": "ac660d08d4f7ccb0b3845de11ac185df5c50301a"
 }

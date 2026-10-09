@@ -303,6 +303,9 @@ existing Companion. Keet and Matrix receiving settings are independent of generi
 `MCP_CONFIG`; Matrix supplies `selfUserId` directly. See
 [independent inbound setup, policy, receipts and recovery](docs/inbound-integrations.md)
 and [native Keet source restoration](docs/keet-source-restoration.md).
+Matrix messages have a separate sender/room header, with sender ID fallback for
+empty names, while retaining the original body and authored time across history
+and reconnect. See [Matrix presentation and native acceptance](docs/matrix-source-ui.md).
 
 Deployment-owned remote MCP tools can be enabled per instance with an optional
 backend secret; see [injected remote MCP](docs/injected-remote-mcp.md).

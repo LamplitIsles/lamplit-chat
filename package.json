@@ -22,7 +22,7 @@
     "@earendil-works/pi-ai": "1.0.4",
     "@earendil-works/pi-durable": "1.0.4",
     "@earendil-works/pi-mcp": "1.0.4",
-    "@lamplit/contracts": "file:vendor/lamplit-contracts-collapsed-thinking-0.1.0.tgz",
+    "@lamplit/contracts": "file:vendor/lamplit-contracts-0.1.0.tgz",
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@modelcontextprotocol/server": "2.0.0",

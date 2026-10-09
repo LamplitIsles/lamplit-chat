@@ -1,20 +1,20 @@
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { verifyDefaultArtifacts } from './default-shared-artifacts.mjs'
+import { nativeFixtureRoot } from './native-fixture-root.mjs'
 verifyDefaultArtifacts()
 const repo = resolve(import.meta.dirname, '..')
 const scratch = join(repo, '.scratch/native-durable-submissions')
-mkdirSync(scratch, { recursive: true })
-const root = mkdtempSync(join(scratch, 'native-browser-'))
+const root = nativeFixtureRoot(scratch, process.env.NATIVE_FIXTURE_RESUME)
 const config = JSON.parse(readFileSync(join(repo, 'wrangler.test.jsonc')))
 config.name = 'lamplit-native-submissions-fixture'
 config.compatibility_date = '2026-10-03'
 const suite = process.argv[2] ?? 'submissions'
-if (!['submissions', 'images', 'voice', 'compact', 'search', 'keet', 'thinking'].includes(suite)) throw new Error('Unknown native suite')
-config.main = join(repo, `scripts/fixtures/${{submissions:'native-submissions',images:'image-send-recovery',voice:'text-voice',compact:'quiet-compaction',search:'conversation-search',keet:'keet-source-restoration',thinking:'collapsed-thinking'}[suite]}.ts`)
+if (!['submissions', 'images', 'voice', 'compact', 'search', 'keet', 'matrix', 'thinking'].includes(suite)) throw new Error('Unknown native suite')
+config.main = join(repo, `scripts/fixtures/${{submissions:'native-submissions',images:'image-send-recovery',voice:'text-voice',compact:'quiet-compaction',search:'conversation-search',keet:'keet-source-restoration',matrix:'matrix-source-ui',thinking:'collapsed-thinking'}[suite]}.ts`)
 config.assets = { directory: join(scratch, 'app-browser'), binding: 'ASSETS', not_found_handling: 'none', html_handling: 'none', run_worker_first: true }
-config.vars = { ...config.vars, MODEL_API_KEY: 'fixture-key', AUTH_PASSWORD: 'fixture-password-long-enough', VOICE_API_KEY: 'fixture-voice-key', CHAT_INTEGRATIONS: JSON.stringify({keet:{webhookToken:'fixture-ingest-token'}}) }
+config.vars = { ...config.vars, MODEL_API_KEY: 'fixture-key', AUTH_PASSWORD: 'fixture-password-long-enough', VOICE_API_KEY: 'fixture-voice-key', CHAT_INTEGRATIONS: JSON.stringify({keet:{webhookToken:'fixture-ingest-token'},matrix:{webhookToken:'fixture-matrix-token',selfUserId:'@self:example.test'}}) }
 const path = join(root, 'wrangler.jsonc')
 writeFileSync(path, JSON.stringify(config, null, 2)); writeFileSync(join(root, '.dev.vars'), '')
 console.log(JSON.stringify({ root, port: process.env.NATIVE_FIXTURE_PORT ?? '8991' }))

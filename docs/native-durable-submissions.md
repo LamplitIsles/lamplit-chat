@@ -139,12 +139,13 @@ archive and media/search associations. Converted old rows keep their original ID
 
 ## Approved App identity and local acceptance
 
-App #3522 HEAD `fe838e10f59e4e8ca0816c9ea85828408fc45b60` / PR 17 is the approved
-backend handoff. Archive SHA-256 is
-`89b016e76b392e618faaecf53ec2b8cd49780125e04977517caa837dd064e735`.
+App #3560 immutable artifact HEAD `3e95c3385ac00ba8317d21b85b76484637ce3fc6` is the
+Owner-approved backend handoff, now attributed to equal-tree merged App PR18
+main `132d7dedd8c52eecefa8ea6bb9bb6038d5cdc9e8`. See [Matrix source acceptance](matrix-source-ui.md). Archive SHA-256 is
+`5b8fa6d5c2265017582465abafac6e684fffd44e2fa7150166e7c657bc9b0a6a`.
 `vendor/app-identity.json` pins its three manifests. The packed contract dependency
 contains unchanged approved files. `npm run build` verifies archive, SOURCE_HEAD
-and all 331 manifested files, then copies the approved browser into owned scratch
+and all 334 manifested files, then copies the approved browser into owned scratch
 assets. It never reads/builds the adjacent moving App checkout.
 
 Extract the approved archive into an empty test-owned directory. Verify all
@@ -158,7 +159,7 @@ npm ci
 npm run lint
 npm run typecheck
 npm test
-LAMPLIT_APP_ARTIFACT=/absolute/approved/lamplit-collapsed-thinking-fe838e1.tgz npm run build
+LAMPLIT_APP_ARTIFACT=/absolute/approved/lamplit-matrix-source-ui.tgz npm run build
 node scripts/native-durable-local.mjs
 node scripts/native-submissions-local.mjs
 ```
@@ -200,3 +201,12 @@ fake-provider and replica passes do not establish paid provider behavior, physic
 camera/microphone/PWA behavior, production migration or a joint native PASS.
 Orc owns joint native acceptance, lifecycle and merge. This work performs no merge,
 deployment, live migration or production service operation.
+
+Current source attribution is actual merged App PR18 main
+`132d7dedd8c52eecefa8ea6bb9bb6038d5cdc9e8`. Its tree
+`ac660d08d4f7ccb0b3845de11ac185df5c50301a` equals the approved candidate tree.
+`vendor/app-identity.json` records both merged `head` and frozen `artifactHead`
+`3e95c3385ac00ba8317d21b85b76484637ce3fc6`, with their equal trees. The verifier
+checks the frozen SOURCE_HEAD against artifactHead and all334 original file hashes;
+it reports the merged source attribution separately. Archive bytes and SOURCE_HEAD
+remain unchanged.
