@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 import { verifyDefaultArtifacts } from './default-shared-artifacts.mjs'
 const root = resolve(import.meta.dirname,'..')
-const archive = resolve(process.env.LAMPLIT_APP_ARTIFACT ?? resolve(root,'.scratch/native-durable-submissions/lamplit-native-durable-submissions.tgz'))
+const archive = resolve(process.env.LAMPLIT_APP_ARTIFACT ?? resolve(root,'.scratch/collapsed-thinking/lamplit-collapsed-thinking-fe838e1.tgz'))
 const scratch = resolve(root,'.scratch/native-durable-submissions')
 await mkdir(scratch,{recursive:true})
 const extraction = await mkdtemp(resolve(scratch,'build-app-'))

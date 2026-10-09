@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { createHash } from 'node:crypto'
 const repo = resolve(import.meta.dirname, '..')
-export const artifactRoot = resolve(process.env.LAMPLIT_APP_EXTRACTION ?? join(repo, '.scratch/native-durable-submissions/approved-app-3aaa48a'))
-export function verifyDefaultArtifacts(extractionRoot = artifactRoot, archive = process.env.LAMPLIT_APP_ARTIFACT ?? join(repo, '.scratch/native-durable-submissions/lamplit-native-durable-submissions.tgz')) {
+export const artifactRoot = resolve(process.env.LAMPLIT_APP_EXTRACTION ?? join(repo, '.scratch/collapsed-thinking/approved-app-fe838e1'))
+export function verifyDefaultArtifacts(extractionRoot = artifactRoot, archive = process.env.LAMPLIT_APP_ARTIFACT ?? join(repo, '.scratch/collapsed-thinking/lamplit-collapsed-thinking-fe838e1.tgz')) {
   const identity = JSON.parse(readFileSync(join(repo, 'vendor/app-identity.json')))
   const hash = bytes => createHash('sha256').update(bytes).digest('hex')
   if (hash(readFileSync(archive)) !== identity.archive) throw new Error('Approved archive identity changed')

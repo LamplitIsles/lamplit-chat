@@ -15,6 +15,12 @@ for #3436, the approved App identity, local gates and remaining Orc acceptance.
 
 ## Chat on mobile
 
+Actual assistant thinking is available as a separate, default-collapsed disclosure
+above answers, labelled「不许你看的小想法」. It uses the shared App renderer;
+answer copy and search remain text-only. See [collapsed thinking and isolated
+native acceptance](docs/collapsed-thinking.md) for the optional contract, native
+projection rules and exact immutable App identity.
+
 The Companion uses a mist blue light theme and a coordinated blue grey dark theme. Theme (`light`, `dark`, or `system`) and Chinese/English preferences are stored locally using `her.companion.appearance` and `her.companion.language`. Hosted users configure them in the management App at `/settings`; the chat App opens at `/chat`. Both entries share the user's personal origin. The chat synchronizes preferences on storage events, focus and foreground return, without a manual refresh. Self-hosted users use the chat's Settings control.
 
 Companion and user display names are persisted through `/api/display-names` and refreshed across the two entries; avatars and backgrounds use private UI assets. These names only affect display and greetings, not the personality file or system prompt. Basic hosted chat is free with BYOK; optional development environments remain planned and are not required for import, personality or memory management.

@@ -11,8 +11,8 @@ const config = JSON.parse(readFileSync(join(repo, 'wrangler.test.jsonc')))
 config.name = 'lamplit-native-submissions-fixture'
 config.compatibility_date = '2026-10-03'
 const suite = process.argv[2] ?? 'submissions'
-if (!['submissions', 'images', 'voice', 'compact', 'search', 'keet'].includes(suite)) throw new Error('Unknown native suite')
-config.main = join(repo, `scripts/fixtures/${{submissions:'native-submissions',images:'image-send-recovery',voice:'text-voice',compact:'quiet-compaction',search:'conversation-search',keet:'keet-source-restoration'}[suite]}.ts`)
+if (!['submissions', 'images', 'voice', 'compact', 'search', 'keet', 'thinking'].includes(suite)) throw new Error('Unknown native suite')
+config.main = join(repo, `scripts/fixtures/${{submissions:'native-submissions',images:'image-send-recovery',voice:'text-voice',compact:'quiet-compaction',search:'conversation-search',keet:'keet-source-restoration',thinking:'collapsed-thinking'}[suite]}.ts`)
 config.assets = { directory: join(scratch, 'app-browser'), binding: 'ASSETS', not_found_handling: 'none', html_handling: 'none', run_worker_first: true }
 config.vars = { ...config.vars, MODEL_API_KEY: 'fixture-key', AUTH_PASSWORD: 'fixture-password-long-enough', VOICE_API_KEY: 'fixture-voice-key', CHAT_INTEGRATIONS: JSON.stringify({keet:{webhookToken:'fixture-ingest-token'}}) }
 const path = join(root, 'wrangler.jsonc')

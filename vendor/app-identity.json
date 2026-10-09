@@ -1,10 +1,10 @@
 {
-  "spec": 3435,
-  "head": "3aaa48a384549f72cc417a6cb3e6108fe0999b37",
-  "archive": "a921c9d47f041cf6978653c5af6cda5d65a28e6cde3ceb5e91b0ecb5a5c301d1",
+  "spec": 3522,
+  "head": "fe838e10f59e4e8ca0816c9ea85828408fc45b60",
+  "archive": "89b016e76b392e618faaecf53ec2b8cd49780125e04977517caa837dd064e735",
   "manifests": {
-    "browser": "c926f668688238298a7e83cb81bd092ce6d1443951559df02dc3e492cd0bc58a",
-    "contracts": "9f3b08860aed9f215cedf66bb2628d4145b32827948b089c42daebc91cd731e3",
-    "acceptance": "a9a69d563f2ca8d61fd03e210d14a72264c5f0282cf9ddf2ef7daef25f1bd42f"
+    "browser": "448701990915ac750459aaa278436b38b6a613c0f142198b9ac59bcfe3284446",
+    "contracts": "da18192e08c728793147aaa8cf611e4f2ab4d8d2c9313b065d175aa0a6bb9bda",
+    "acceptance": "18246f2f11eb0111e80ab3fac55e1e46d132ea3d64854ce5627b414b7d416d8b"
   }
 }

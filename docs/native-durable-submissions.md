@@ -139,12 +139,12 @@ archive and media/search associations. Converted old rows keep their original ID
 
 ## Approved App identity and local acceptance
 
-App #3439 HEAD `3aaa48a384549f72cc417a6cb3e6108fe0999b37` / PR 16 is the approved
+App #3522 HEAD `fe838e10f59e4e8ca0816c9ea85828408fc45b60` / PR 17 is the approved
 backend handoff. Archive SHA-256 is
-`a921c9d47f041cf6978653c5af6cda5d65a28e6cde3ceb5e91b0ecb5a5c301d1`.
+`89b016e76b392e618faaecf53ec2b8cd49780125e04977517caa837dd064e735`.
 `vendor/app-identity.json` pins its three manifests. The packed contract dependency
 contains unchanged approved files. `npm run build` verifies archive, SOURCE_HEAD
-and all 326 manifested files, then copies the approved browser into owned scratch
+and all 331 manifested files, then copies the approved browser into owned scratch
 assets. It never reads/builds the adjacent moving App checkout.
 
 Extract the approved archive into an empty test-owned directory. Verify all
@@ -158,7 +158,7 @@ npm ci
 npm run lint
 npm run typecheck
 npm test
-LAMPLIT_APP_ARTIFACT=/absolute/approved/lamplit-native-durable-submissions.tgz npm run build
+LAMPLIT_APP_ARTIFACT=/absolute/approved/lamplit-collapsed-thinking-fe838e1.tgz npm run build
 node scripts/native-durable-local.mjs
 node scripts/native-submissions-local.mjs
 ```
