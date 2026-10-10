@@ -80,3 +80,10 @@ null lookup, explicit refusal, recovery editing, withdrawal, failure and stop on
 real workerd/SQLite/socket. Image and affected domain regressions remain required.
 All fixture R2, configuration and credentials are test-owned; no real account is
 migrated. Orc owns joint native acceptance and later merge/deployment.
+
+Settled ordinary input bodies are retired from admission storage after proven
+native placement; immutable fingerprints retain changed-content rejection.
+Unplaced, refused and withdrawn originals remain available for recovery. History
+and album membership resolve the actual native/source entry with target-only
+photo associations. [ADR #3646](native-durable-submissions.md#accepted-adr-3646)
+defines the native history boundary and external public-source privacy checks.

@@ -17,10 +17,13 @@ There is no Loader/container or old engine fallback. Original records remain a
 readable archive; the product exposes no tree navigation, fork/clone or branch
 summary generation. [Native runtime and conversion](native-durable-submissions.md)
 defines exact package and App identities, data handling and verification.
+History pages query native records before presentation, with a frozen boundary and
+opaque continuation; metadata references support bounded incremental consumers.
+Original archive-only sources remain readable without a current transcript mirror.
 
 The authenticated host compares immutable submission content before native admission.
 Native requestId deduplication proves reuse, rather than content equality. Domain
-associations retain text/images/replacement identities missing from withdrawn queued
+associations retain necessary text/images/replacement identities missing from withdrawn queued
 native records. Receipts distinguish submitted input and definite failed admission;
 null means uncertain lookup. Native reply success/failure/stop is independent.
 Reconnect reads persisted native state and does not replay ambiguous input.
@@ -49,11 +52,14 @@ visible messages; authenticated HTTP serves bounded variants by owner/session
 membership. Missing originals remain explainable. New image input requires R2 and
 native model image support; existing media stays readable after switching models.
 
-Keet FIFO/checkpoints/source tables remain domain data. Native entries retain display
-text; generation, compaction and memory restore separate private DM/Group attribution.
-Visible source, search and panels never reveal private context. Optional MCP tools
-retain destination authorization, independent credentials and uncertain-send rules.
-No automatic external exactly-once promise is introduced.
+Keet FIFO/checkpoints/source tables remain domain data, including the immutable
+original public body. Future native entries hold frozen private external prompts;
+exact operation/request placement binds their public source facts. History, search
+and panels read public source data and fail closed if association is unresolved.
+Old native models stay unchanged under the user-accepted old-context limitation.
+See [accepted ADR #3646 and history boundary](native-durable-submissions.md#accepted-adr-3646).
+Optional MCP tools retain destination authorization, independent credentials and
+uncertain-send rules. No automatic external exactly-once promise is introduced.
 
 Timed-wake arrangements retain Croner zones/DST/anchors and Agents Date schedules.
 Occurrences advance and future registration completes before model execution.

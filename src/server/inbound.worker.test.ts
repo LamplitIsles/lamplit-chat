@@ -47,7 +47,7 @@ it.each(['Free', 'Hosted'])('accepts exact MFA-produced reply bytes through %s n
         expect(JSON.parse(next.source.original!)).toEqual(JSON.parse(body))
         await instance.drainPendingWork(); await (instance as unknown as NativeFixture).native.wait(next.operationId)
         await vi.waitFor(() => expect(store.nextKeet()).toBeUndefined())
-        const source = store.keetSource(store.entriesInOrder().find(entry => store.keetSource(entry.id))!.id)!
+        const source = store.keetSource((await instance.getBranch()).entries.find(entry => store.keetSource(entry.id))!.id)!
         expect(source.timestamp).toBe(1700000000000); expect(source.event?.eventId).toBe('$reply-own')
       }
       expect(state.storage.sql.exec('SELECT * FROM inbound_receipts').toArray()).toHaveLength(index + 1)
@@ -106,7 +106,7 @@ it('admits one Free reply turn with immutable original facts and room-scoped con
     await vi.waitFor(() => expect(store.nextKeet()).toBeUndefined())
     const reopened = new PiSessionStorage(state.storage)
     expect(state.storage.sql.exec('SELECT * FROM keet_queue').toArray()).toHaveLength(1)
-    const entry = reopened.entriesInOrder().find(entry => reopened.keetSource(entry.id))!
+    const entry = (await instance.getBranch()).entries.find(entry => reopened.keetSource(entry.id))!
     expect(JSON.parse(reopened.keetSource(entry.id)!.original!)).toEqual(own)
   })
   expect(calls).toHaveLength(1)
@@ -164,7 +164,7 @@ it('projects truthful Matrix text/time and private context through approved sock
     const store = new PiSessionStorage(state.storage), next = store.nextKeet()!
     await instance.drainPendingWork(); await (instance as unknown as NativeFixture).native.wait(next.operationId)
     await vi.waitFor(() => expect(store.nextKeet()).toBeUndefined())
-    expect(store.keetSource(store.entriesInOrder().find(entry => store.keetSource(entry.id))!.id)?.kind).toBe('matrix')
+    expect(store.keetSource((await instance.getBranch()).entries.find(entry => store.keetSource(entry.id))!.id)?.kind).toBe('matrix')
   })
   expect(JSON.stringify(requests)).toContain('private sentinel')
   for (let n = 0; n < 2; n++) {
@@ -191,9 +191,9 @@ it('retains original Matrix names, IDs and multiline body from durable facts on 
       const store = new PiSessionStorage(state.storage), next = store.nextKeet()!
       await instance.drainPendingWork(); await (instance as unknown as NativeFixture).native.wait(next.operationId)
       await vi.waitFor(() => expect(store.nextKeet()).toBeUndefined())
-      const source = store.keetSource(store.entriesInOrder().reverse().find(entry => store.keetSource(entry.id))!.id)!
+      const source = store.keetSource((await instance.getBranch()).entries.reverse().find(entry => store.keetSource(entry.id))!.id)!
       expect(JSON.parse(source.original!)).toEqual(event)
-      expect(store.keetModelPrompt(store.entriesInOrder().reverse().find(entry => store.keetSource(entry.id))!.id)).toContain('Original **body**')
+      expect(store.keetModelPrompt((await instance.getBranch()).entries.reverse().find(entry => store.keetSource(entry.id))!.id)).toContain('Original **body**')
     })
   }
   for (let n = 0; n < 2; n++) {

@@ -142,7 +142,10 @@ describe('native Keet ingress, queue and shared source', () => {
       await appendNative(lane, { role: 'user', content: 'retained web tail ' + 'x'.repeat(3000), timestamp: Date.now() }, BACKGROUND_CONTEXT)
       const before = (await instance.getBranch()).entries
       requests.length = 0
-      if (maintenance === 'memory') await (instance as unknown as { extractNextMemoryBatch(): Promise<void> }).extractNextMemoryBatch()
+      if (maintenance === 'memory') {
+        await (instance as unknown as { flushOutboxToRegistry(): Promise<void> }).flushOutboxToRegistry()
+        await (instance as unknown as { extractNextMemoryBatch(): Promise<void> }).extractNextMemoryBatch()
+      }
       else await (await native.getHarness()).waitForTask(await lane.compact(undefined, BACKGROUND_CONTEXT), BACKGROUND_CONTEXT)
       expect(JSON.stringify(requests)).toContain('[Keet Group: Room; sender: Bob;')
       expect(JSON.stringify(requests)).toContain('[Keet DM: Peer; sender: Bob;')
@@ -150,8 +153,101 @@ describe('native Keet ingress, queue and shared source', () => {
       expect((await instance.getBranch()).entries.filter(entry => entry.keet)).toEqual(before.filter(entry => entry.keet))
       expect(JSON.stringify(before)).not.toContain('native-only context sentinel')
       const storage = new PiSessionStorage(state.storage)
-      expect(storage.entriesInOrder().filter(entry => storage.keetSource(entry.id)).map(entry => storage.keetSource(entry.id)!.text)).toEqual(['Bob original group', 'Bob original DM'])
+      expect((await instance.getBranch()).entries.filter(entry => entry.keet).map(entry => entry.keet!.text)).toEqual(['Bob original group', 'Bob original DM'])
       expect(storage.getOutbox().some(entry => 'text' in entry && entry.text.includes('native-only context sentinel'))).toBe(false)
     })
   })
+})
+
+it('recovers exact external placement after lost acknowledgement and reopen without leaking or replaying', async () => {
+  const { stub, configured } = await create()
+  const calls: unknown[] = []
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    if (!(input instanceof Request ? input.url : input.toString()).includes('openrouter.ai')) throw new Error('Unmatched external request denied')
+    calls.push(JSON.parse(init!.body as string)); return nativeReply('openrouter')
+  })
+  await worker.fetch(request(frame(1, 'group', 'private sentinel lost ack')), configured)
+  await worker.fetch(request(frame(2, 'group', 'same public text', 'mention')), configured)
+  await runInDurableObject(stub, async (instance, state) => {
+    const native = instance as unknown as NativeFixture
+    const store = new PiSessionStorage(state.storage), next = store.nextKeet()!
+    // The native acknowledgement is lost before application association writes.
+    store.reserveExternalInput(next.operationId)
+    const time = Date.now()
+    const now = vi.spyOn(Date, 'now').mockReturnValue(time)
+    try {
+      await appendNative(await native.getLane(), { role: 'user', content: 'same public text', timestamp: time }, BACKGROUND_CONTEXT)
+      await native.native.submit(next.prompt, { operationId: next.operationId })
+      await native.native.wait(next.operationId)
+    } finally { now.mockRestore() }
+    await appendNative(await native.getLane(), { role: 'user', content: 'late fictional input after captured request', timestamp: time }, BACKGROUND_CONTEXT)
+    await native.native.wait(next.operationId)
+    await native.native.dispose()
+    const branch = await instance.getBranch()
+    expect(JSON.stringify(branch)).not.toContain('private sentinel lost ack')
+    expect(branch.entries.find(entry => entry.keet)?.keet).toMatchObject({ text: 'same public text', sender: 'Alice', destination: 'Room' })
+    const external = branch.entries.find(entry => entry.keet)!
+    expect((await instance.readSearchRecord(external.id)).record.content).toBe('same public text')
+    expect(JSON.stringify(await instance.flushOutbox())).not.toContain('private sentinel lost ack')
+    await instance.drainPendingWork()
+    await vi.waitFor(() => expect(store.nextKeet()).toBeUndefined())
+    expect(store.keetSource(external.id)!.context[0].text).toBe('private sentinel lost ack')
+    state.storage.sql.exec('DELETE FROM keet_sources WHERE entry_id=?', external.id)
+    await expect(instance.getBranch()).rejects.toThrow('External source association is unavailable')
+    await expect(instance.readSearchRecord(external.id)).rejects.toThrow('External source association is unavailable')
+    await expect(instance.flushOutbox()).rejects.toThrow('External source association is unavailable')
+  })
+  expect(calls).toHaveLength(1)
+  expect(JSON.stringify(calls)).toContain('private sentinel lost ack')
+  expect(JSON.stringify(calls)).not.toContain('late fictional input after captured request')
+})
+
+it('holds unknown external admissions for inspection across reopen and never automatically replays them', async () => {
+  const { stub, configured } = await create()
+  const outbound = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unmatched external request denied'))
+  await worker.fetch(request(frame(1, 'dm', 'unknown original', 'dm')), configured)
+  await runInDurableObject(stub, async (instance, state) => {
+    const store = new PiSessionStorage(state.storage), next = store.nextKeet()!
+    store.reserveExternalInput(next.operationId)
+    await instance.drainPendingWork()
+    await (instance as unknown as NativeFixture).native.dispose()
+    await instance.drainPendingWork()
+    expect(store.nextKeet()!.source.text).toBe('unknown original')
+    await expect(instance.getBranch()).rejects.toThrow('inspection is required')
+    await expect(instance.flushOutbox()).rejects.toThrow('inspection is required')
+  })
+  expect(outbound).not.toHaveBeenCalled()
+})
+
+it('retains withdrawn external originals and retires queued work without another admission', async () => {
+  const { stub, configured } = await create()
+  let finish: (() => Promise<void>) | undefined
+  const requests: unknown[] = []
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    if (!(input instanceof Request ? input.url : input.toString()).includes('openrouter.ai')) throw new Error('Unmatched external request denied')
+    requests.push(JSON.parse(init!.body as string))
+    return new Response(new ReadableStream({ start(controller) {
+      finish = async () => { controller.enqueue(new Uint8Array(await nativeReply('openrouter').arrayBuffer())); controller.close() }
+    } }), { headers: { 'content-type': 'text/event-stream' } })
+  })
+  await worker.fetch(request(frame(1, 'dm', 'withdrawn immutable original', 'dm')), configured)
+  await runInDurableObject(stub, async (instance, state) => {
+    const native = instance as unknown as NativeFixture
+    const store = new PiSessionStorage(state.storage), next = store.nextKeet()!
+    const web = crypto.randomUUID()
+    await native.native.submit('active web input', { operationId: web })
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    await instance.drainPendingWork()
+    expect(await native.native.abort({ operationId: next.operationId })).toBe(true)
+    await instance.getBranch()
+    expect(store.nextKeet()).toBeUndefined()
+    const row = state.storage.sql.exec<{ source: string; state: string }>('SELECT source,state FROM keet_queue WHERE operation_id=?', next.operationId).one()
+    expect(row.state).toBe('withdrawn')
+    expect(JSON.parse(row.source).text).toBe('withdrawn immutable original')
+    await finish!()
+    await native.native.wait(web)
+    await native.native.dispose()
+    await instance.drainPendingWork()
+  })
+  expect(requests).toHaveLength(1)
 })

@@ -23,8 +23,8 @@ update time does not reorder tied records. The response uses
 The existing registry projection contains completed user/assistant text and native
 compaction summaries. New summaries flow through the usual eventual outbox
 indexing. On shared search, sessions without a summary-refresh marker contribute
-only their stored native compactions to the same projection, then save that
-marker. This targeted refresh does not rebuild transcripts or change the SDK.
+a bounded batch of original compactions to the same projection, then save its
+continuation/completion marker. This targeted refresh does not rebuild transcripts or change the SDK.
 Already stored originals and unselected branches remain searchable. Imported
 system/tool-role nodes, thinking, historical tools and attachments are excluded
 from the shared hit/reader projection before the result limit.
@@ -40,7 +40,9 @@ native session membership before resolving its owning DO. Public session metadat
 never chooses an instance. Existing HTTP authentication and hosted per-call
 Platform session authorization remain in force; there are no signed handles.
 
-Context follows source ancestors and unique successors, stopping at a fork.
+Original-source context follows ancestors and unique successors, stopping at a fork.
+Current native records use bounded neighboring public native queries; model head
+and compaction do not hide old original history.
 Unsupported source nodes participate in traversal but never appear as content.
 Insertion order and the current engine branch do not select context. Return up
 to eight eligible records before and after the selected record, with native
@@ -59,3 +61,9 @@ original archive records/IDs and FTS results from test-owned SQLite, without
 switching execution or replaying historical inputs. Public native conversion keeps
 old compaction summaries and alternate source paths readable. No old SDK export
 patch or private engine API is used. Orc joint native acceptance remains separate.
+
+Current native indexing stores references and progress rather than another body
+archive. Readback resolves the exact native/source identity. External public text
+and authored time come from the original source domain, never private-prompt
+parsing or content/time matching. Missing association fails closed before FTS
+publication. See [accepted ADR #3646](native-durable-submissions.md#accepted-adr-3646).

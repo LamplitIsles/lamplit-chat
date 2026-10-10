@@ -52,3 +52,10 @@ Current source attribution is actual merged App PR18 main
 checks the frozen SOURCE_HEAD against artifactHead and all334 original file hashes;
 it reports the merged source attribution separately. Archive bytes and SOURCE_HEAD
 remain unchanged.
+
+For history changes, use the public native/SQLite/socket regressions in
+`native-history.worker.test.ts` and the existing submission, source, search,
+conversion and media suites. [ADR #3646](native-durable-submissions.md#accepted-adr-3646)
+records the authority and preservation boundary. Keep old diagnosis/profile
+results labeled with their original revisions; new behavior counters belong to
+test-owned current native records. No App rebuild or contract change is needed.

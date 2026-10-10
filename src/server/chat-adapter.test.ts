@@ -5,7 +5,7 @@ import type { StoredSessionEntry } from '../shared/pi-contract'
 const entry = (id: string, role: string, content: unknown, stopReason = 'stop'): StoredSessionEntry => ({ id, seq: 1, parentId: null, type: 'message', timestamp: '2026-10-09T00:00:00Z', message: { role, content, ...{ stopReason } } })
 function backend(entries: StoredSessionEntry[]) {
   const source = {
-    branch: async () => ({ leafId: null, revision: 1, entries }), records: async () => new Map(),
+    page: async (before?: string) => ({ leafId: null, revision: 1, entries: before ? entries.slice(0, entries.findIndex(entry => entry.id === before)) : entries, before: null }), records: async () => new Map(),
     images: async () => [], pendingMessages: async () => [], outcomes: async () => [], recovery: async () => [],
     identity: async () => ({ id: 'fixture', name: 'fixture', turnId: null }),
     observation: async () => ({ sessionId: 'fixture', name: 'fixture', activeTurnId: null, contextUsage: { tokens: 0, capacity: 0 }, compaction: null }),

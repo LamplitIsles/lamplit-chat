@@ -251,7 +251,7 @@ it('memory extraction and companion compaction use the same native selected prov
     await account.native(async n => {
       const lane = await n.getLane()
       for (let index = 0; index < 4; index++) await appendNative(lane, { role: 'user', content: `Synthetic maintenance history ${index} ` + 'a'.repeat(12000), timestamp: Date.now() }, context)
-      await (n as unknown as { syncNativeEntries():Promise<void> }).syncNativeEntries()
+      await (n as unknown as { flushOutboxToRegistry(): Promise<void> }).flushOutboxToRegistry()
       await n.extractNextMemoryBatch()
     })
     expect(requests[0].key).toBe('Bearer maintenance-deepseek-key')
@@ -315,7 +315,7 @@ it.each(['google-vertex', 'mistral', 'radius', 'amazon-bedrock'])('new native %s
       const lane = await n.getLane()
       expect(await selectedNativeModel(lane, context)).toEqual(model)
       expect((await runNative(n, 'Use read then reply')).status).toBe('done')
-      await (n as unknown as { syncNativeEntries():Promise<void> }).syncNativeEntries()
+      await (n as unknown as { flushOutboxToRegistry(): Promise<void> }).flushOutboxToRegistry()
       await n.extractNextMemoryBatch()
     })
     const branch = await runInDurableObject(account.stub, n => n.getBranch())

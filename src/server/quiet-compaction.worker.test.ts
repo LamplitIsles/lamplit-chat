@@ -59,7 +59,7 @@ it('runs native manual/automatic compaction, refuses active/queued work, preserv
     await native(() => { const finish = release; release = undefined; finish!() })
     await vi.waitFor(() => expect(view?.compaction?.status).toBe('complete'), { timeout: 10000 })
     expect(view?.contextUsage).toEqual({ tokens: 0, capacity: 128000 })
-    const branch = await native(n => n.sessionStorage.entriesInOrder())
+    const branch = await native(n => (n as unknown as PiSession).getBranch().then(page => page.entries))
     expect(branch.filter(e => e.type === 'compaction')).toHaveLength(1)
     expect(view?.messages.some(m => m.text.includes('Native continuity checkpoint'))).toBe(false)
     client.close(); ws.close(); ws = await open(); client = await openChat(ws, value => { view = value }, () => {})
@@ -72,7 +72,7 @@ it('runs native manual/automatic compaction, refuses active/queued work, preserv
     expect((await client.compact({ sessionId: created.id })).accepted).toBe(true)
     await vi.waitFor(() => expect(calls).toBe(2), { timeout: 10000 }); await native(() => { const finish = release; release = undefined; finish!() })
     await vi.waitFor(() => expect(view?.compaction?.status).toBe('failed'), { timeout: 10000 })
-    expect((await native(n => n.sessionStorage.entriesInOrder())).filter(e => e.type === 'compaction')).toHaveLength(1)
+    expect((await native(n => (n as unknown as PiSession).getBranch().then(page => page.entries))).filter(e => e.type === 'compaction')).toHaveLength(1)
     expect(view?.contextUsage.tokens).toBe(12000)
     // Automatic compaction uses the real threshold path and native start/end events.
     fail = false
@@ -82,7 +82,7 @@ it('runs native manual/automatic compaction, refuses active/queued work, preserv
     await vi.waitFor(() => expect(calls).toBe(3), { timeout: 10000 }); await vi.waitFor(() => expect(view?.compaction?.status).toBe('running'), { timeout: 10000 }); await native(() => { const finish = release; release = undefined; finish!() })
     await vi.waitFor(() => expect(calls).toBe(4), { timeout: 10000 }); await native(() => { const finish = release; release = undefined; finish!() })
     await vi.waitFor(() => expect(view?.compaction?.status).toBe('complete'), { timeout: 10000 })
-    expect((await native(n => n.sessionStorage.entriesInOrder())).filter(e => e.type === 'compaction')).toHaveLength(2)
+    expect((await native(n => (n as unknown as PiSession).getBranch().then(page => page.entries))).filter(e => e.type === 'compaction')).toHaveLength(2)
     // A later fast native operation can complete without a socket poll ever
     // seeing it running. Its terminal record must retire the prior failure.
     await native(async n => {

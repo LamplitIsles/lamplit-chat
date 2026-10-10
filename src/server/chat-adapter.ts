@@ -10,23 +10,24 @@ export interface PiChatSource {
   compact(input: CompactInput): Promise<CompactResult>
   search: import('@lamplit/contracts').SearchBackend
   panels: PanelBackend
-  branch(): Promise<SessionBranch>
+  page(before?: string, limit?: number): Promise<SessionBranch & { before: string | null }>
   identity(): Promise<{ id: string; name: string; turnId: string | null }>
-  records(): Promise<Map<string, ChatAdmission>>
+  records(entryIds: string[]): Promise<Map<string, ChatAdmission>>
   submit(input: Submission): Promise<Receipt>
   lookup(id: string): Promise<Receipt | null>
   images(entryId: string): Promise<ImageRef[]>
   recovery(): Promise<InputRecovery[]>
   imageLimits(): ImageLimits | false
   pendingMessages(): Promise<ChatMessage[]>
-  outcomes(): Promise<ChatMessage[]>
+  outcomes(entryIds: string[]): Promise<ChatMessage[]>
   stop(turnId: string): Promise<{ stopped: boolean }>
 }
 export function createPiChatBackend(source: PiChatSource): ChatBackend {
-  async function messages(): Promise<ChatMessage[]> {
-    const [branch, records] = await Promise.all([source.branch(), source.records()]);
-    const admissions = await Promise.all([...records].map(async ([id, r]) => [id, r, await source.lookup(id)] as const));
-    const entryOperations = new Map(admissions.flatMap(([id, r, a]) => a?.messageId ? [[r.entryId ?? a.messageId, { id, turnId: r.turnId, messageId: a.messageId }]] as const : []));
+  async function messages(before?: string) {
+    const pending = before ? [] : await source.pendingMessages();
+    const branch = await source.page(before, Math.floor((PAGE_SIZE - pending.length) / 2));
+    const records = await source.records(branch.entries.map(entry => entry.id));
+    const entryOperations = new Map([...records].flatMap(([id, r]) => r.entryId ? [[r.entryId, { id, turnId: r.turnId, messageId: `submission:${id}` }]] as const : []));
     const history = await Promise.all(branch.entries.map(async (entry): Promise<ChatMessage | null> => {
       if (entry.type !== 'message' || !(['user', 'assistant'].includes(entry.message?.role ?? '') || entry.wakeSource)) return null;
       const content = entry.message?.content;
@@ -41,13 +42,13 @@ export function createPiChatBackend(source: PiChatSource): ChatBackend {
       if (entry.message?.role === 'assistant' && !text && !failed && !images.length) return null;
       return { ...(entry.matrix ? { source: { kind: 'matrix' as const, senderId: entry.matrix.senderId, senderDisplayName: entry.matrix.senderDisplayName, roomId: entry.matrix.roomId } } : {}), ...(entry.keet ? { source: { kind: 'keet' as const, channel: entry.keet.kind, senderLabel: entry.keet.sender, destination: entry.keet.destination } } : {}), ...(entry.wakeSource ? { source: { kind: 'reminder' as const, reminderId: entry.wakeSource.wakeId, occurrenceId: occurrenceKey(entry.wakeSource) } } : {}), ...(thinking && !failed ? { thinking } : {}), id: operation?.messageId ?? entry.id, role: failed ? 'notice' : !entry.wakeSource && entry.message!.role === 'user' ? 'user' : 'agent', images, text: failed ? stopReason === 'aborted' ? '已停止回复' : '回复失败' : text, createdAt: entry.authoredAt ?? Date.parse(entry.timestamp), operationId: operation?.id ?? null, turnId: operation?.turnId ?? null } satisfies ChatMessage;
     }));
-    return [...history.filter((m): m is ChatMessage => m !== null), ...await source.pendingMessages(), ...await source.outcomes()].sort((a, b) => a.createdAt - b.createdAt);
-  }
-  function page(all: ChatMessage[], before?: string) {
-    const end = before ? all.findIndex(m => m.id === before) : all.length;
-    if (end < 0) throw new Error('History cursor no longer exists');
-    const start = Math.max(0, end - PAGE_SIZE);
-    return { messages: all.slice(start, end), before: start > 0 ? all[start]!.id : null };
+    const projected = history.filter((m): m is ChatMessage => m !== null);
+    const placed = new Set(projected.map(message => message.id));
+    const outcomes = await source.outcomes(branch.entries.map(entry => entry.id));
+    // A bounded reply notice replaces its failed input's empty response slot.
+    const all = [...projected, ...pending.filter(message => !placed.has(message.id)), ...outcomes].sort((a, b) => a.createdAt - b.createdAt);
+    if (all.length > PAGE_SIZE) throw new Error('History page exceeds message limit');
+    return { messages: all, before: branch.before };
   }
   return {
     ...source.panels,
@@ -58,11 +59,11 @@ export function createPiChatBackend(source: PiChatSource): ChatBackend {
         const [all, recovery] = await Promise.all([messages(), source.recovery()]);
         const observation = await source.observation();
         if (observation.sessionId !== identity.id) continue;
-        return { version: 2, ...page(all), recovery, capabilities: { ...capabilities, images: source.imageLimits() }, ...observation };
+        return { version: 2, ...all, recovery, capabilities: { ...capabilities, images: source.imageLimits() }, ...observation };
       }
     },
     compact: input => source.compact(input),
-    async history(before) { return page(await messages(), before); },
+    async history(before) { return messages(before); },
     submit: input => source.submit(input), lookup: id => source.lookup(id), stop: id => source.stop(id),
     subscribe(changed) { const timer = setInterval(changed, 1000); return () => clearInterval(timer); },
   };

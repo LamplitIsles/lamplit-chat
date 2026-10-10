@@ -62,9 +62,10 @@ it('validates public intake before allocation, enforces session/operation owners
     await runInDurableObject(f.stub, async instance => {
       await (instance as unknown as NativeFixture).native.wait(input.operationId)
       await instance.getBranch()
-      const storage = (instance as unknown as { sessionStorage: PiSessionStorage }).sessionStorage
-      expect(storage.entriesInOrder().filter(entry => entry.type === 'message' && entry.message.role === 'user')).toHaveLength(1)
-      expect(storage.entriesInOrder().find(entry => entry.type === 'message' && entry.message.role === 'user')).toMatchObject({ message: { content: [{ type: 'image', mimeType: 'image/jpeg', data: model }] } })
+      const fixture = instance as unknown as NativeFixture
+      const page = await (await fixture.getLane()).entries({}, 30, undefined, fixture.nativeContext)
+      expect(page.items.filter(entry => entry.kind === 'pi.user')).toHaveLength(1)
+      expect(page.items.find(entry => entry.kind === 'pi.user')).toMatchObject({ model: [{ content: [{ type: 'image', mimeType: 'image/jpeg', data: model }] }] })
     })
     expect(fake).toHaveBeenCalledTimes(1)
     const read = await f.request(`/api/chat/media/${image.attachmentId}/model`)

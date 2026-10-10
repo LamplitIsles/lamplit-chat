@@ -41,6 +41,12 @@ it('converts a test-owned deployed-format replica atomically, preserves source b
       expect((await root.context(context)).messages.map(message=>message.role)).toEqual(['user','assistant'])
       expect(JSON.stringify((await root.context(context)).messages)).toContain('Synthetic old reply')
       expect(domain.entriesInOrder().map(entry=>entry.id)).toEqual(['old-user','old-answer','other-user'])
+      const { NativeHistory } = await import('./native-history')
+      const reader = new NativeHistory(domain, root, context)
+      let page = await reader.page(), retained = [...page.entries]
+      while (page.before) { page = await reader.page(page.before); retained.unshift(...page.entries) }
+      expect(retained.map(entry => entry.id).sort()).toEqual(['old-user','old-answer','other-user'].sort())
+      for (const original of domain.entriesInOrder()) expect(await reader.entry(original.id)).toMatchObject({ id: original.id, timestamp: original.timestamp })
       expect(domain.legacyWrites()).toEqual(fixture.writes)
       expect(domain.sourceId((await root.context(context)).entries[0].id)).toBe('old-user')
       expect(domain.getSetting('timedWakes')).toEqual([{fixture:'retained'}])

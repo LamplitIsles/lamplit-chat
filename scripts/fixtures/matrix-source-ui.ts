@@ -50,7 +50,7 @@ export class PiSession extends NativeSession {
     await this.finishWeb()
   }
   async fixtureState() {
-    return { submissions: [...this.sessionStorage.chatRecords().values()].map(record => record.text), requests: fixture.requests, branch: await this.getBranch() }
+    return { submissions: await Promise.all([...this.sessionStorage.chatRecords().values()].map(async record => { const entry = record.entryId && await (await this.history()).entry(record.entryId); return entry?.type === 'message' && typeof entry.message.content === 'string' ? entry.message.content : record.text })), requests: fixture.requests, branch: await this.getBranch() }
   }
   async disconnectFixture() { for (const connection of this.getConnections()) connection.close(1012, 'Owned fixture reconnect'); return { disconnected: true } }
 }

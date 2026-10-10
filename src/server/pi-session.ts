@@ -1,3 +1,4 @@
+import { NativeHistory } from './native-history'
 import { type ChannelEvent } from './channel-events'
 import { ChannelError, type Channel } from './channel-config'
 import { accountModels, nativeProviders, selectedModel, resolveModelSelection, selfHostModelEnvironment } from './model-catalog'
@@ -22,9 +23,8 @@ import {
 } from '@cloudflare/computer'
 import { ensureNativeRoot } from './native-data-migration'
 import { PiHarness } from 'agents/harness/pi'
-import { Harness, CompactionTask, ROOT_CONVERSATION_ID, type CompactionResult, type SubmissionRecord, type EntryRecord } from '@earendil-works/pi-durable'
+import { Harness, CompactionTask, ROOT_CONVERSATION_ID, type CompactionResult, type SubmissionRecord, type EntryId, type Cursor } from '@earendil-works/pi-durable'
 import type { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite'
-import type { Message } from '@earendil-works/pi-ai'
 import type { ArchiveEntry as Entry } from './conversation-archive'
 import { hostedCallable, HostedAgent } from './hosted-agent'
 import { getCurrentAgent } from 'agents'
@@ -132,19 +132,15 @@ export class PiSession extends HostedAgent {
       }),
       observation: () => this.chatObservation(),
       compact: input => this.compactChat(input),
-      branch: () => this.getBranch(),
+      page: (before, limit) => this.historyPage(before, limit),
       identity: async () => ({ id: this.sessionStorage.getMetadataSync().id, name: this.sessionStorage.getSetting<string>('name') ?? 'Lamplit', turnId: await this.activeTurn() }),
-      records: async () => {
-        const records = this.sessionStorage.chatRecords()
-        for (const [id, record] of records) { await this.lookupChat(id); records.set(id, { ...record, entryId: this.sessionStorage.inputEntry(id) }) }
-        return records
-      },
+      records: async ids => this.sessionStorage.chatForEntries(ids),
       images: id => this.sharedImages(this.sessionStorage.photosForEntry(id)),
       recovery: () => this.chatRecovery(),
       imageLimits: () => this.env.COMPUTER_R2 && this.modelSupportsImages ? PI_IMAGE_LIMITS : false,
       submit: input => this.submitChat(input), lookup: id => this.lookupChat(id),
       pendingMessages: () => this.pendingChatMessages(),
-      outcomes: () => this.replyOutcomes(),
+      outcomes: ids => this.replyOutcomes(ids),
       stop: async turnId => ({ stopped: await this.native.abort({ operationId: turnId }) }),
     }))
   }
@@ -199,7 +195,7 @@ export class PiSession extends HostedAgent {
       storage, context, env: modelEnv, tools: this.runtimeTools, memory: registry, compaction: this.compactionSettings(),
       loadCompactionPrompt: async () => (await new CompanionFiles(this.workspace).effective()).content,
       loadInstructions: () => this.workspace.readFile(`${WORKSPACE_ROOT}/AGENTS.md`), getUserTimeZone: () => registry.getUserTimeZone(),
-      awaitWakeSchedules: () => this.awaitWakeSchedules(), projectKeet: messages => this.projectKeetMessages(messages),
+      awaitWakeSchedules: () => this.awaitWakeSchedules(),
     })
     await ensureNativeRoot(harness, this.sessionStorage, context)
     const root = await harness.root(context)
@@ -241,21 +237,27 @@ export class PiSession extends HostedAgent {
   async getOverview(): Promise<SessionOverview> {
     await this.waitUntilInitialized()
     const metadata = this.sessionStorage.getMetadataSync()
-    await this.syncNativeEntries()
-    const rows = this.sessionStorage.getEntriesWithSeq()
-    return { ...metadata, name: this.sessionStorage.getSetting<string>('name'), status: 'ready', messageCount: rows.filter(row => row.entry.type === 'message').length,
-      activeLeafId: this.sessionStorage.getLeafId(), revision: rows.at(-1)?.seq ?? 0, running: !!await this.activeTurn(), compaction: this.compactionSettings() }
+    await this.observeNative()
+    const stats = this.sessionStorage.historyStats()
+    return { ...metadata, name: this.sessionStorage.getSetting<string>('name'), status: 'ready', messageCount: stats.messageCount,
+      activeLeafId: stats.leafId, revision: stats.revision, running: !!await this.activeTurn(), compaction: this.compactionSettings() }
   }
 
-  async getBranch(): Promise<SessionBranch> {
-    await this.syncNativeEntries()
-    const rows = this.sessionStorage.getEntriesWithSeq().filter(row => this.timelineIds.includes(row.entry.id))
-    return { leafId: this.sessionStorage.getLeafId(), revision: rows.at(-1)?.seq ?? 0, entries: rows.map(({ seq, entry }) => {
-      const source = this.sessionStorage.keetSource(entry.id)
-      // Original Matrix facts are retained by validated ingress, separately from the model prompt.
-      const matrix: { sender_id: string; sender_display_name: string; room_id: string; body: string } | undefined = source?.kind === 'matrix' ? JSON.parse(source.original) : undefined
-      return { ...storedEntry(seq, entry), ...(matrix ? { matrix: { senderId: matrix.sender_id, senderDisplayName: matrix.sender_display_name, roomId: matrix.room_id, text: matrix.body } } : {}), ...(source ? { authoredAt: source.timestamp } : {}), photos: this.sessionStorage.photosForEntry(entry.id), ...(source && source.kind !== 'matrix' ? { keet: { kind: source.kind, sender: source.sender, destination: source.destination, text: source.text } } : {}) }
-    }) }
+  private async history() { return new NativeHistory(this.sessionStorage, await this.getLane(), this.nativeContext!) }
+  async getBranch(): Promise<SessionBranch> { return this.historyPage() }
+  private async historyPage(before?: string, limit?: number): Promise<SessionBranch & { before: string | null }> {
+    const page = await (await this.history()).page(before, limit)
+    await this.reconcileExternalInputs()
+    for (const [id] of this.sessionStorage.unsettledChats('reconcile')) await this.lookupChat(id)
+    return { ...page, entries: page.entries.map(entry => this.presentEntry(entry)) }
+  }
+  private presentEntry(entry: Entry): StoredSessionEntry {
+    if (this.sessionStorage.externalEntry(entry.id) && !this.sessionStorage.keetSource(entry.id)) throw new Error('External source association is unavailable')
+    const source = this.sessionStorage.keetSource(entry.id)
+    const matrix: { sender_id: string; sender_display_name: string; room_id: string; body: string } | undefined = source?.kind === 'matrix' ? JSON.parse(source.original) : undefined
+    const wake = this.sessionStorage.getSetting<WakeSource>(`wakeEntry:${entry.id}`)
+    const publicEntry = source && entry.type === 'message' && entry.message.role === 'user' ? { ...entry, message: { ...entry.message, content: matrix?.body ?? source.text } } : entry
+    return { ...storedEntry(entry.seq, publicEntry), ...(wake ? { wakeSource: wake } : {}), ...(matrix ? { matrix: { senderId: matrix.sender_id, senderDisplayName: matrix.sender_display_name, roomId: matrix.room_id, text: matrix.body } } : {}), ...(source ? { authoredAt: source.timestamp } : {}), photos: this.sessionStorage.photosForEntry(entry.id), ...(source && source.kind !== 'matrix' ? { keet: { kind: source.kind, sender: source.sender, destination: source.destination, text: source.text } } : {}) }
   }
   @hostedCallable()
   async setSessionName(name: string): Promise<SessionOverview> {
@@ -269,15 +271,13 @@ export class PiSession extends HostedAgent {
     const model = nativeProviders().find(provider => provider.id === reference?.provider)?.getModels().find(model => model.id === reference?.modelId)
     this.modelSupportsImages = model?.input.includes('image') ?? false
     const view = await lane.context(this.nativeContext!)
-    const latest = [...this.sessionStorage.entriesInOrder()].reverse().find(entry => entry.type === 'compaction')
+    const latest = this.sessionStorage.latestCompaction()
     // Terminal native compaction tasks remain authoritative even when a fast
     // operation starts and finishes between socket observations.
-    let cursor: Parameters<SqliteStorage['scanTasks']>[2]
-    let task: Awaited<ReturnType<SqliteStorage['scanTasks']>>['items'][number] | undefined
-    do {
-      const page = await this.nativeStorage!.scanTasks({conversationId:ROOT_CONVERSATION_ID,kind:CompactionTask.definition.name},100,cursor,this.nativeContext!)
-      task = page.items.at(-1) ?? task; cursor = page.next
-    } while (cursor)
+    const progress = this.sessionStorage.getSetting<{ cursor?: Cursor; task?: Awaited<ReturnType<SqliteStorage['scanTasks']>>['items'][number] }>('compactionObservation') ?? {}
+    const page = await this.nativeStorage!.scanTasks({ conversationId: ROOT_CONVERSATION_ID, kind: CompactionTask.definition.name }, 30, progress.cursor, this.nativeContext!)
+    const task = page.items.at(-1) ?? progress.task
+    if (page.items.length) this.sessionStorage.setSetting('compactionObservation', { cursor: page.next ?? progress.cursor, task })
     const outcome = task?.state.status === 'terminal' ? task.state.outcome : undefined
     const result = outcome?.status === 'completed' ? outcome.result as unknown as CompactionResult : undefined
     const compaction: Compaction = task ? {id:String(task.id),status:task.state.status !== 'terminal' ? 'running' : result && (result.entryId || result.submissionId) ? 'complete' : 'failed'} : latest ? {id:latest.id,status:'complete'} : null
@@ -421,7 +421,11 @@ export class PiSession extends HostedAgent {
     if (!next) return
     await this.getLane()
     this.sessionStorage.setSetting(`keetInput:${next.operationId}`, next)
-    await this.native.submit(next.source.text, { operationId: next.operationId, whenBusy: 'followUp' })
+    const existing = await this.nativeSubmission(next.operationId)
+    if (existing) { if (existing.status === 'unanswered' && !existing.entry) { this.sessionStorage.withdrawExternalInput(next.operationId); return } if (existing.entry) this.sessionStorage.bindExternalInput(next.operationId, this.sessionStorage.sourceId(existing.entry)); this.watchSettlement(next.operationId); return }
+    if (!this.sessionStorage.reserveExternalInput(next.operationId)) return
+    await this.native.submit(next.prompt, { operationId: next.operationId, whenBusy: 'followUp' })
+    await this.reconcileExternalInputs()
     this.watchSettlement(next.operationId)
   }
   private async schedulePendingDrain(): Promise<void> { if (this.sessionStorage.nextKeet()) await this.schedule(1, 'drainPendingWork', undefined, { idempotent: true }) }
@@ -475,10 +479,17 @@ export class PiSession extends HostedAgent {
   }
   async lookupChat(id: string): Promise<import('@lamplit/contracts').Receipt | null> {
     const native = await this.nativeSubmission(id)
-    const record = this.sessionStorage.chatRecords().get(id)
+    const record = this.sessionStorage.chatRecord(id)
     if (native) {
       const messageId = native.entry ? this.sessionStorage.sourceId(native.entry) : null
-      if (messageId) this.sessionStorage.correlateInput(id, messageId)
+      if (messageId) {
+        this.sessionStorage.correlateInput(id, messageId)
+        this.sessionStorage.updateChat(id, { entryId: messageId })
+        if (record && native.entry) {
+          const fingerprint = (record as typeof record & { fingerprint?: string }).fingerprint ?? await promptFingerprint(submissionIdentity(record))
+          this.sessionStorage.updateChat(id, { text: '', fingerprint }); this.sessionStorage.retireInput(id)
+        }
+      }
       if (record?.replacementSourceIds?.length) for (const source of record.replacementSourceIds) this.sessionStorage.markReplaced(source)
       if (native.status === 'unanswered' && !native.entry && native.reason === 'aborted') this.sessionStorage.withdrawInput(id)
       return { operationId: id, state: 'submitted', messageId: messageId && record ? `submission:${id}` : messageId, turnId: record?.turnId ?? id, error: null }
@@ -490,8 +501,8 @@ export class PiSession extends HostedAgent {
   async submitChat(input: Submission): Promise<import('@lamplit/contracts').Receipt> {
     const connection = getCurrentAgent().connection
     const task = this.submissionMutation.then(async () => {
-      const previous = this.sessionStorage.chatRecords().get(input.operationId)
-      if (previous && submissionIdentity(previous) !== submissionIdentity(input)) throw new Error('Submission identity conflict')
+      const previous = this.sessionStorage.chatRecord(input.operationId)
+      if (previous && ((previous as typeof previous & { fingerprint?: string }).fingerprint ? (previous as typeof previous & { fingerprint: string }).fingerprint !== await promptFingerprint(submissionIdentity(input)) : submissionIdentity(previous) !== submissionIdentity(input))) throw new Error('Submission identity conflict')
       const discovery = this.mcpDiscovery
       const existing = await this.lookupChat(input.operationId)
       if (existing) return existing
@@ -518,7 +529,11 @@ export class PiSession extends HostedAgent {
   }
   private watchSettlement(id: string): void {
     this.ctx.waitUntil(this.native.wait(id).then(async () => {
-      await this.lookupChat(id); await this.syncNativeEntries()
+      await this.lookupChat(id)
+      const wake = this.sessionStorage.getSetting<WakeSource>(`wakeSource:${id}`)
+      const submission = wake && await this.nativeSubmission(id)
+      if (wake && submission?.entry) this.sessionStorage.setSetting(`wakeEntry:${this.sessionStorage.sourceId(submission.entry)}`, wake)
+      await this.syncNativeEntries()
       const keet = this.sessionStorage.nextKeet()
       if (keet?.operationId === id) {
         const native = await this.nativeSubmission(id)
@@ -529,7 +544,7 @@ export class PiSession extends HostedAgent {
   }
   async chatRecovery(): Promise<InputRecovery[]> {
     const result: InputRecovery[] = []
-    for (const [id, record] of this.sessionStorage.chatRecords()) {
+    for (const [id, record] of this.sessionStorage.unsettledChats('recovery')) {
       await this.lookupChat(id)
       if (!this.sessionStorage.eligible(id)) continue
       const available = await this.sharedImages(this.sessionStorage.photosForOperation(id))
@@ -540,7 +555,7 @@ export class PiSession extends HostedAgent {
   }
   private async pendingChatMessages(): Promise<import('@lamplit/contracts').ChatMessage[]> {
     const messages: import('@lamplit/contracts').ChatMessage[] = []
-    for (const [id, record] of this.sessionStorage.chatRecords()) {
+    for (const [id, record] of this.sessionStorage.unsettledChats()) {
       const native = await this.nativeSubmission(id)
       if (native?.status !== 'queued' && !(native?.status === 'unanswered' && !native.entry && native.reason === 'aborted')) continue
       messages.push({ id: `submission:${id}`, operationId: id, turnId: record.turnId, role: 'user', text: record.text,
@@ -548,16 +563,19 @@ export class PiSession extends HostedAgent {
     }
     return messages
   }
-  private async replyOutcomes(): Promise<import('@lamplit/contracts').ChatMessage[]> {
+  private async replyOutcomes(ids: string[]): Promise<import('@lamplit/contracts').ChatMessage[]> {
     const result: import('@lamplit/contracts').ChatMessage[] = []
-    for (const [id, record] of this.sessionStorage.chatRecords()) {
+    for (const [id, record] of this.sessionStorage.chatForEntries(ids)) {
       const native = await this.nativeSubmission(id)
       if (native?.status !== 'unanswered' || !native.entry) continue
-      const rows = this.sessionStorage.entriesInOrder()
-      const start = rows.findIndex(entry => entry.id === this.sessionStorage.sourceId(native.entry!))
-      const nextInput = rows.findIndex((entry, index) => index > start && entry.type === 'message' && entry.message.role === 'user')
-      if (start >= 0 && rows.slice(start + 1, nextInput < 0 ? undefined : nextInput).some(entry => entry.type === 'message' && entry.message.role === 'assistant' && ['aborted','error'].includes(entry.message.stopReason))) continue
-      result.push({ id: `turn:${id}:status`, role: 'notice', text: native.reason === 'aborted' ? '已停止回复' : '回复失败', createdAt: this.sessionStorage.getEntrySync(this.sessionStorage.sourceId(native.entry))?.timestamp ?? 0, operationId: null, turnId: record.turnId, images: [] })
+      const lane = await this.getLane()
+      const following = await lane.entries({ minEntryId: (native.entry + 1) as EntryId, maxEntryId: (native.entry + 30) as EntryId }, 30, undefined, this.nativeContext!)
+      const ordered = following.items.slice().reverse()
+      const nextInput = ordered.findIndex(entry => entry.kind === 'pi.user')
+      const response = nextInput < 0 ? ordered : ordered.slice(0, nextInput)
+      if (response.some(entry => entry.model?.some(message => message.role === 'assistant' && ['aborted','error'].includes(message.stopReason)))) continue
+      const entry = await (await this.history()).entry(record.entryId!)
+      result.push({ id: `turn:${id}:status`, role: 'notice', text: native.reason === 'aborted' ? '已停止回复' : '回复失败', createdAt: entry?.timestamp ?? 0, operationId: null, turnId: record.turnId, images: [] })
     }
     return result
   }
@@ -567,7 +585,7 @@ export class PiSession extends HostedAgent {
   private async validateChatInput(input: Submission): Promise<void> {
     validateSubmission(input)
     await this.modelEnvironment()
-    if (this.sessionStorage.nativeInputs().some(existing => existing.operationId === input.operationId) && !this.sessionStorage.chatRecords().has(input.operationId)) throw new Error('Operation belongs to native input')
+    if (this.sessionStorage.nativeInput(input.operationId) && !this.sessionStorage.chatRecord(input.operationId)) throw new Error('Operation belongs to native input')
     if (input.images?.length) {
       if (!await this.acceptsModelImages()) throw new Error('Selected model does not support images.')
       const photos = this.sessionStorage.photosForOperation(input.operationId)
@@ -614,8 +632,10 @@ export class PiSession extends HostedAgent {
     await this.authorizeChatImages(owner)
     const photo = this.sessionStorage.photo(id)
     if (!photo || !this.env.COMPUTER_R2) return null
-    const membership = photo.entryId && this.sessionStorage.getEntrySync(photo.entryId)
-    const operation = this.sessionStorage.chatRecords().has(photo.operationId) || this.sessionStorage.nativeInputs().some(input => input.operationId === photo.operationId)
+    const membership = photo.entryId && await (await this.history()).entry(photo.entryId)
+    await this.reconcileExternalInputs()
+    if (membership) this.presentEntry(membership)
+    const operation = !!this.sessionStorage.chatRecord(photo.operationId) || this.sessionStorage.nativeInput(photo.operationId)
     if (!membership && (!operation || this.sessionStorage.replaced(photo.operationId))) return null
     const object = await this.env.COMPUTER_R2.get(this.photoKey(id, variant))
     const limit = variant === 'original' ? 32 * 1024 * 1024 : variant === 'preview' ? 160_000 : 320_000
@@ -671,7 +691,9 @@ export class PiSession extends HostedAgent {
         this.env.COMPUTER_R2.head(this.photoKey(photo.id, 'original')),
       ]) : [null, null]
       const base = `/api/conversation-images/${sessionId}/${photo.id}`
-      const entry = this.sessionStorage.getEntrySync(photo.entryId ?? '')
+      const entry = await (await this.history()).entry(photo.entryId ?? '')
+      await this.reconcileExternalInputs()
+      if (entry) this.presentEntry(entry)
       const origin: AlbumPage['images'][number]['origin'] = entry?.type === 'message' && entry.message.role === 'assistant' ? 'agent' : 'human'
       return { id: photo.id, filename: photo.name, createdAt: photo.created, origin,
         available: Boolean(preview && original), previewUrl: preview ? `${base}/preview` : null, originalUrl: original ? `${base}/original` : null }
@@ -734,26 +756,84 @@ export class PiSession extends HostedAgent {
   }
 
   // Internal registry reads; browser calls enter through the authenticated chat host.
-  async compactionSearchEntries(): Promise<SessionIndexEvent[]> {
+  async compactionSearchEntries(after = 0): Promise<{ events: SessionIndexEvent[]; next: number | null }> {
     const sessionId = this.sessionStorage.getMetadataSync().id
-    return this.sessionStorage.entriesInOrder().filter(entry => entry.type === 'compaction').map(entry => {
+    const history = await this.history()
+    const rows = this.sessionStorage.archiveCompactions(after)
+    const events: SessionIndexEvent[] = []
+    for (const source of rows.slice(0, 30)) {
+      const entry = await history.entry(source.id) ?? source
       const node = nativeSearchNode(entry)
-      return { eventId: `${sessionId}:summary:${entry.seq}`, type: 'message', entryId: entry.id, entrySeq: entry.seq,
-        role: 'compaction', timestamp: node.createdAt, text: node.record!.content }
-    })
+      if (node.record) events.push({ eventId: `${sessionId}:summary:${source.seq}`, type: 'message', entryId: entry.id, entrySeq: source.seq,
+        role: 'compaction', timestamp: node.createdAt, text: node.record.content })
+    }
+    return { events, next: rows.length > 30 ? rows[29].seq : null }
   }
 
   async readSearchRecord(entryId: string): Promise<import('@lamplit/contracts').SearchReadResult> {
     const metadata = this.sessionStorage.getMetadataSync()
-    return readSearchNodes(metadata.id, this.sessionStorage.getSetting<string>('name'), this.sessionStorage.entriesInOrder().map(nativeSearchNode), entryId)
+    const history = await this.history()
+    const target = await history.entry(entryId)
+    await this.reconcileExternalInputs()
+    if (!target) throw new Error('Record not found')
+    const selected: Entry[] = [target]
+    const nativeId = this.sessionStorage.nativeId(entryId) ?? Number(/^native:(\d+)/.exec(entryId)?.[1])
+    if (Number.isSafeInteger(nativeId) && !this.sessionStorage.nativeId(entryId)) {
+      const lane = await this.getLane()
+      const previous = (await lane.entries({ maxEntryId: (nativeId - 1) as EntryId }, 30, undefined, this.nativeContext!)).items.slice().reverse()
+      const following = (await lane.entries({ minEntryId: (nativeId + 1) as EntryId, maxEntryId: (nativeId + 30) as EntryId }, 30, undefined, this.nativeContext!)).items.slice().reverse()
+      const all = [...previous.flatMap(record => history.project(record)), target, ...following.flatMap(record => history.project(record))]
+      selected.splice(0, 1, ...all.map((entry, index) => ({ ...entry, parentId: all[index - 1]?.id ?? null })))
+    } else {
+      let parent = target.parentId
+      for (let work = 0; parent && work < 30; work++) { const entry = await history.entry(parent); if (!entry) break; selected.unshift(entry); parent = entry.parentId }
+      let id = target.id
+      for (let work = 0; work < 30; work++) { const children = this.sessionStorage.archiveChildren(id); if (children.length !== 1) break; selected.push(children[0]); id = children[0].id }
+    }
+    await this.reconcileExternalInputs()
+    return readSearchNodes(metadata.id, this.sessionStorage.getSetting<string>('name'), selected.map(entry => {
+      const visible = this.presentEntry(entry)
+      const source = this.sessionStorage.keetSource(entry.id)
+      if (source && entry.type === 'message' && entry.message.role === 'user') return nativeSearchNode({ ...entry, timestamp: visible.authoredAt ?? entry.timestamp, message: { ...entry.message, content: source.kind === 'matrix' ? JSON.parse(source.original).body : source.text } })
+      return nativeSearchNode(entry)
+    }), entryId)
   }
 
   async flushOutbox(): Promise<SessionIndexEvent[]> {
-    return this.sessionStorage.getOutbox() as SessionIndexEvent[]
+    await this.reconcileExternalInputs()
+    await this.observeNative()
+    const refs = this.sessionStorage.references('indexed')
+    const history = await this.history()
+    const sessionId = this.sessionStorage.getMetadataSync().id
+    const events: SessionIndexEvent[] = []
+    for (const event of this.sessionStorage.getOutbox()) {
+      if (event.type !== 'message') { events.push(event); continue }
+      const entry = await history.entry(event.entryId)
+      if (!entry) continue
+      const visible = this.presentEntry(entry)
+      const node = nativeSearchNode(entry.type === 'message' && entry.message.role === 'user' && (visible.matrix || visible.keet) ? { ...entry, timestamp: visible.authoredAt ?? entry.timestamp, message: { ...entry.message, content: visible.matrix?.text ?? visible.keet!.text } } : entry)
+      if (node.record) events.push({ ...event, text: node.record.content, timestamp: node.createdAt })
+    }
+    for (const ref of refs) {
+      const entry = await history.entry(ref.id)
+      await this.reconcileExternalInputs()
+      const visible = entry && this.presentEntry(entry)
+      const node = entry && nativeSearchNode(entry.type === 'message' && entry.message.role === 'user' && (visible?.matrix || visible?.keet) ? { ...entry, timestamp: visible.authoredAt ?? entry.timestamp, message: { ...entry.message, content: visible.matrix?.text ?? visible.keet!.text } } : entry)
+      if (node?.record?.content) events.push({ eventId: `${sessionId}:native:${ref.id}`, type: 'message', entryId: ref.id, entrySeq: ref.seq, role: node.record.kind === 'compaction' ? 'compaction' : node.record.role!, timestamp: node.createdAt, text: node.record.content })
+      else this.sessionStorage.acknowledgeReferences('indexed', [ref.id])
+    }
+    if (refs.length) {
+      const stats = this.sessionStorage.historyStats()
+      const latest = this.sessionStorage.latestReference()
+      if (latest) events.push({ eventId: `${sessionId}:native-touch:${latest.native_id}:${stats.messageCount}:${stats.leafId}`, type: 'touch', updatedAt: new Date(latest.timestamp).toISOString(), messageCount: stats.messageCount, activeLeafId: stats.leafId })
+    }
+    return events
   }
 
   async acknowledgeOutbox(eventIds: string[]): Promise<void> {
-    this.sessionStorage.acknowledgeOutbox(eventIds)
+    this.sessionStorage.acknowledgeOutbox(eventIds.filter(id => !id.includes(':native:') && !id.includes(':native-touch:')))
+    const prefix = `${this.sessionStorage.getMetadataSync().id}:native:`
+    this.sessionStorage.acknowledgeReferences('indexed', eventIds.filter(id => id.startsWith(prefix)).map(id => id.slice(prefix.length)))
   }
 
   private getHarness(): Promise<Harness> { return this.native.pi() }
@@ -784,44 +864,60 @@ export class PiSession extends HostedAgent {
     }
     return root
   }
-  private async projectKeetMessages(messages: readonly Message[]): Promise<readonly Message[]> {
-    const queued = this.sessionStorage.nextKeet()
-    let nativeMessage: Message | undefined
-    if (queued) {
-      const record = await this.nativeStorage!.submissionByRequest(ROOT_CONVERSATION_ID, queued.operationId, this.nativeContext!)
-      if (record?.entry) nativeMessage = (await this.nativeStorage!.entry(record.entry, this.nativeContext!))?.entry.model?.[0]
-    }
-    return messages.map(message => {
-      if (message.role !== 'user') return message
-      if (queued && nativeMessage?.role === 'user' && message.timestamp === nativeMessage.timestamp && JSON.stringify(message.content) === JSON.stringify(nativeMessage.content)) return { ...message, content: queued.prompt }
-      const entry = this.sessionStorage.entriesInOrder().find(entry => entry.type === 'message' && entry.message.role === 'user' && entry.message.timestamp === message.timestamp && JSON.stringify(entry.message.content) === JSON.stringify(message.content) && this.sessionStorage.keetSource(entry.id))
-      const prompt = entry && this.sessionStorage.keetModelPrompt(entry.id)
-      return prompt ? { ...message, content: prompt } : message
-    })
-  }
   private compactionSettings(): CompactionSettings { return this.sessionStorage.getSetting<CompactionSettings>('compaction') ?? { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 } }
-  private timelineIds: string[] = []
-  private async syncNativeEntries(): Promise<void> {
+  private observeMutation: Promise<unknown> = Promise.resolve()
+  private observeNative(): Promise<boolean> {
+    const next = this.observeMutation.then(() => this.observeNativeBatch())
+    this.observeMutation = next.catch(() => undefined)
+    return next
+  }
+  private async observeNativeBatch(): Promise<boolean> {
     const lane = await this.getLane()
-    let cursor: Parameters<typeof lane.entries>[2]
-    const entries: EntryRecord[] = []
-    do { const page = await lane.entries({}, 250, cursor, this.nativeContext!); entries.push(...page.items); cursor = page.next } while (cursor)
-    this.timelineIds = entries.sort((a,b) => a.id-b.id).map(entry => this.sessionStorage.sourceId(entry.id))
-    const records = this.sessionStorage.chatRecords()
-    const wakes = new Map<number, WakeSource>()
-    for (const { operationId, source } of this.sessionStorage.wakeSources()) {
-      const submission = await this.nativeSubmission(operationId)
-      if (submission?.entry) wakes.set(submission.entry, source)
+    const progress = this.sessionStorage.getSetting<{ through: number; max: number; cursor?: Cursor; entry?: number; part?: number }>('nativeObservation') ?? { through: 0, max: 0 }
+    if (!progress.max) progress.max = (await lane.entries({}, 1, undefined, this.nativeContext!)).items[0]?.id ?? 0
+    if (progress.max <= progress.through) return true
+    const history = new NativeHistory(this.sessionStorage, lane, this.nativeContext!)
+    let work = 0, references = 0, done = false
+    while (work++ < 30 && references < 30) {
+      const page = progress.entry ? undefined : await lane.entries({ minEntryId: (progress.through + 1) as EntryId, maxEntryId: progress.max as EntryId }, 1, progress.cursor, this.nativeContext!)
+      const record = progress.entry ? await history.readNative(progress.entry) : page?.items[0]
+      if (!record) { done = true; break }
+      if (page) progress.cursor = page.next
+      const part = progress.part ?? 0
+      const count = history.parts(record)
+      const selected = history.project(record, part, 30 - references)
+      for (const [offset, entry] of selected.entries()) this.sessionStorage.observeEntry(entry, record.id, part + offset)
+      references += selected.length
+      progress.part = Math.min(count, part + (30 - references + selected.length))
+      progress.entry = progress.part < count ? record.id : undefined
+      if (!progress.entry) progress.part = undefined
+      if (!progress.entry && !progress.cursor) { done = true; break }
     }
-    for (const entry of entries.sort((a,b) => a.id-b.id)) {
-      const id = this.sessionStorage.sourceId(entry.id)
-      if (this.sessionStorage.getEntrySync(id)) continue
-      const rows = this.sessionStorage.entriesInOrder()
-      const base = { id, parentId: rows.at(-1)?.id ?? null, seq: (rows.at(-1)?.seq ?? 0)+1, timestamp: entry.model?.[0] && 'timestamp' in entry.model[0] ? entry.model[0].timestamp : Date.now() }
-      if (entry.kind === 'pi.compaction') this.sessionStorage.archive({ ...base, type: 'compaction', summary: messageText(entry.model?.[0]), firstKeptEntryId: this.sessionStorage.sourceId(entry.head ?? entry.id), tokensBefore: 0 })
-      else if (entry.model?.[0] && entry.kind !== 'pi.system') this.sessionStorage.archive({ ...base, type: 'message', message: wakes.has(entry.id) ? { role: 'custom', customType: WAKE_CUSTOM_TYPE, content: messageText(entry.model[0]), timestamp: base.timestamp, details: wakes.get(entry.id) } : entry.model[0] })
+    this.sessionStorage.setSetting('nativeObservation', done ? { through: progress.max, max: 0 } : progress)
+    if (!done) await this.schedule(1, 'maintainNativeHistory', undefined, { idempotent: true })
+    return done
+  }
+
+  async maintainNativeHistory(): Promise<void> {
+    await this.flushOutboxToRegistry()
+    if (this.sessionStorage.references('indexed', 1).length || this.sessionStorage.getOutbox().length) await this.schedule(1, 'maintainNativeHistory', undefined, { idempotent: true })
+  }
+
+  private async reconcileExternalInputs(): Promise<void> {
+    for (const id of this.sessionStorage.unresolvedExternalInputs()) {
+      const submission = await this.nativeSubmission(id)
+      if (!submission) throw new Error('External admission is unresolved; inspection is required')
+      if (submission.status === 'unanswered' && !submission.entry) this.sessionStorage.withdrawExternalInput(id)
+      if (submission.entry) this.sessionStorage.bindExternalInput(id, this.sessionStorage.sourceId(submission.entry))
     }
-    for (const id of records.keys()) await this.lookupChat(id)
+  }
+  private async syncNativeEntries(): Promise<void> {
+    await this.observeNative()
+    for (const [id] of this.sessionStorage.unsettledChats('reconcile')) await this.lookupChat(id)
+    for (const source of this.sessionStorage.getSetting<WakeSource[]>('pendingWakes') ?? []) {
+      const native = await this.nativeSubmission(`wake:${occurrenceKey(source)}`)
+      if (native?.entry) this.sessionStorage.setSetting(`wakeEntry:${this.sessionStorage.sourceId(native.entry)}`, source)
+    }
     const next = this.sessionStorage.nextKeet()
     if (next) { const native = await this.nativeSubmission(next.operationId); if (native?.entry) this.sessionStorage.acceptKeet(next.sequence, this.sessionStorage.sourceId(native.entry)) }
   }
@@ -862,10 +958,10 @@ export class PiSession extends HostedAgent {
   }
 
   private async flushOutboxToRegistry(): Promise<void> {
-    const events = this.sessionStorage.getOutbox() as SessionIndexEvent[]
+    const events = await this.flushOutbox()
     if (events.length === 0) return
     await this.registry().applyIndexEvents(this.sessionStorage.getMetadataSync().id, events)
-    this.sessionStorage.acknowledgeOutbox(events.map((event) => event.eventId))
+    await this.acknowledgeOutbox(events.map((event) => event.eventId))
   }
 
   private registry(): MemoryRegistry {
@@ -885,6 +981,9 @@ export class PiSession extends HostedAgent {
       .then(async () => {
         await this.flushOutboxToRegistry()
         await this.extractNextMemoryBatch()
+        const progress = this.sessionStorage.getSetting<{ max: number }>('nativeObservation')
+        const cursor = this.sessionStorage.getSetting<number>(MEMORY_EXTRACTION_CURSOR) ?? 0
+        if (progress?.max || this.sessionStorage.references('indexed', 1).length || this.sessionStorage.references('memorized', 1).length || this.sessionStorage.archiveAfter(cursor, 1).length) await this.schedule(1, 'maintainSessionMemory', undefined, { idempotent: true })
       })
     this.memoryExtraction = extraction
     this.ctx.waitUntil(extraction
@@ -894,20 +993,32 @@ export class PiSession extends HostedAgent {
       }))
   }
 
+  async maintainSessionMemory(): Promise<void> { this.scheduleMemoryExtraction() }
+
   private async extractNextMemoryBatch(): Promise<void> {
     const modelEnv = await this.modelEnvironment()
     const cursor = this.sessionStorage.getSetting<number>(MEMORY_EXTRACTION_CURSOR) ?? 0
-    const pending = this.sessionStorage.getEntriesWithSeq().filter(({ seq }) => seq > cursor)
+    if (!await this.observeNative()) return
+    const refs = this.sessionStorage.references('memorized')
+    const history = await this.history()
+    const nativeEntries = await Promise.all(refs.map(async ref => { const entry = await history.entry(ref.id); return entry && { seq: ref.seq, entry } }))
+    const indexedThrough = this.sessionStorage.getSetting<number>('registryIndexCursor') ?? 0
+    const pending = [...this.sessionStorage.archiveAfter(cursor, 30).filter(entry => entry.seq <= indexedThrough).map(entry => ({ seq: entry.seq, entry })), ...nativeEntries.filter((entry): entry is { seq: number; entry: Entry } => !!entry)]
+      .filter((row, index, rows) => rows.findIndex(other => other.entry.id === row.entry.id) === index)
+    await this.reconcileExternalInputs()
     if (pending.length === 0) return
 
     const entries: MemorySourceEntry[] = []
     let characters = 0
     let throughRevision = cursor
+    const processed: string[] = []
     for (const { seq, entry } of pending) {
+      this.presentEntry(entry) // Validate the exact association before using private source semantics.
       const source = memorySourceEntry(entry, this.sessionStorage.keetModelPrompt(entry.id))
       const size = source?.text.length ?? 0
       if (entries.length > 0 && characters + size > MEMORY_EXTRACTION_BATCH_CHARS) break
-      throughRevision = seq
+      if (this.sessionStorage.archiveMetadata(entry.id)) throughRevision = Math.max(throughRevision, seq)
+      processed.push(entry.id)
       if (source) {
         entries.push(source)
         characters += size
@@ -915,6 +1026,7 @@ export class PiSession extends HostedAgent {
     }
     if (entries.length === 0) {
       this.sessionStorage.setSetting(MEMORY_EXTRACTION_CURSOR, throughRevision)
+      this.sessionStorage.acknowledgeReferences('memorized', processed)
       return
     }
 
@@ -928,11 +1040,12 @@ export class PiSession extends HostedAgent {
       sessionId: this.sessionStorage.getMetadataSync().id,
     })
     await registry.applyMemoryExtraction({
-      extractionId: `${this.sessionStorage.getMetadataSync().id}:${throughRevision}`,
+      extractionId: `${this.sessionStorage.getMetadataSync().id}:${throughRevision}:${processed.at(-1)}`,
       sessionId: this.sessionStorage.getMetadataSync().id,
       throughRevision,
       operations,
     })
+    this.sessionStorage.acknowledgeReferences('memorized', processed)
     const latestCursor = this.sessionStorage.getSetting<number>(MEMORY_EXTRACTION_CURSOR) ?? 0
     this.sessionStorage.setSetting(MEMORY_EXTRACTION_CURSOR, Math.max(latestCursor, throughRevision))
   }

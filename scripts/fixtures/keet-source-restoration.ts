@@ -43,14 +43,14 @@ export class PiSession extends NativeSession {
   }
   async nativeImageNote(sequence, original) {
     await this.getBranch()
-    const entry = this.sessionStorage.entriesInOrder().find(entry => this.sessionStorage.keetSource(entry.id)?.messageId.seq === sequence)
+    const entry = (await this.getBranch()).entries.find(entry => this.sessionStorage.keetSource(entry.id)?.messageId.seq === sequence)
     if (!entry) throw new Error('Missing ingress-admitted native source')
     const text = this.sessionStorage.keetSource(entry.id).text
     if (!text.startsWith(original)) throw new Error('Native original text changed')
     return text.slice(original.length).trim()
   }
   async fixtureState() {
-    return { submissions: [...this.sessionStorage.chatRecords().values()].filter(input => !input.text.startsWith('Fictional older web history')).map(input => input.text), requests: fixture.requests,
+    return { submissions: (await Promise.all([...this.sessionStorage.chatRecords().values()].map(async record => { const entry = record.entryId && await (await this.history()).entry(record.entryId); return entry?.type === 'message' && typeof entry.message.content === 'string' ? entry.message.content : record.text }))).filter(text => !text.startsWith('Fictional older web history')), requests: fixture.requests,
       branch: await this.getBranch() }
   }
   async disconnectFixture() { for (const connection of this.getConnections()) connection.close(1012, 'Owned fixture reconnect'); return { disconnected: true } }

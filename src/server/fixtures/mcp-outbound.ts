@@ -3,6 +3,10 @@ const requests = new Map<string, { method: string; authenticated: boolean }[]>()
 let forbiddenFollows = 0
 export async function mcpOutbound(request: Request): Promise<Response> {
   const url = new URL(request.url)
+  if (url.hostname === 'native-history.fixture.invalid' && url.pathname === '/counters' && request.method === 'POST') {
+    console.info('native-history test-owned counters', JSON.stringify(await request.json()))
+    return new Response(null, { status: 204 })
+  }
   if (url.hostname === 'must-not-follow.fixture.invalid') forbiddenFollows++
   if (url.hostname !== 'native-mcp.fixture.invalid') throw new Error('Unmatched test-owned outbound request')
   const scenario = url.searchParams.get('case') ?? 'healthy'

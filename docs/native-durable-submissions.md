@@ -50,7 +50,7 @@ native model image support and R2; existing domain media remains readable after
 switching models. See [provider selection](provider-model-catalog.md).
 
 Native compaction chooses and persists its range/checkpoint. Chat supplies the
-companion continuity policy and private Keet projection, including the split-turn
+companion continuity policy and native frozen external prompts, including the split-turn
 prefix. Manual `/compact` reserves no work when busy and rechecks its captured
 socket after asynchronous preparation. Automatic and manual observations use
 actual native task/checkpoint records. Summaries stay out of the timeline. Active
@@ -58,11 +58,42 @@ usage reads public native ContextView: fresh valid assistant usage plus a bounde
 host estimate of later text; it excludes pre-checkpoint usage and cumulative
 billing. Unknown/post-compaction tokens display zero while capacity is retained.
 
-Keet stores display text and private model attribution separately. Generation,
-compaction and memory project the latter by native entry association. Display,
-search, panels and recovery never expose private group context. Historical branch
-summaries stay readable; tree navigation, fork/clone and summary-generation APIs
-are removed because the product has no interface for them.
+Keet/Matrix retain immutable original public body, sender/destination, IDs,
+authored time and media in their existing source domain. Future native admission
+receives the frozen private model prompt. Exact request/operation-to-placed-entry
+association supplies public rendering, search, panels and album facts. An unknown
+admission is held for inspection; an unresolved or missing source association fails
+public reads/indexing closed rather than exposing private buffered context.
+
+## Accepted ADR #3646
+
+Stored FlickNote ADR #3646 and amended spec #3647 are the decision authority.
+Current native history reads public `Conversation.entries` with a frozen maximum
+entry ID and the opaque Pi continuation. The existing v2 `history(before)` contract
+and PAGE_SIZE 30 remain unchanged. Each read scans at most 30 native records;
+invisible-only pages keep their continuation. Multi-message records retain their
+inner position. Cursors are signed, session/conversation bound and limited to the
+existing 300-character contract. The original archive boundary is frozen too.
+
+Native entries own ordinary bodies; no new native body mirror is written.
+Metadata-only references support bounded incremental search and memory work.
+Memory candidates must be indexed before extraction; remaining observation and
+index batches continue through maintenance. Count events identify count/leaf
+progress, so exact retries deduplicate without losing later batches. Presentation
+deduplicates captured pending inputs against the captured native page by operation
+ID. Consumed recovery drafts remain stored but do not occupy query limits;
+unresolved admission inspection advances a bounded cursor and never replays input.
+Overview counts become current as those batches reconcile; refresh never starts a
+model task. Existing raw writes, original converted records, alternate paths,
+failed replies and independent imports remain intact. Converted summary/tail is
+not replayed as duplicate chat messages. Source-only originals remain pageable.
+
+Existing native models and anonymous converted tails remain unchanged. Original
+retained-tail source IDs were lost during the earlier conversion; neither text/time
+matching nor hypothetical per-message native provenance can recover them. The user
+accepted that future generation/compaction no longer reconstructs old private room
+context/framing. This adds no retrofit, migration, backfill or dependency upgrade.
+Memory keeps its existing private source semantics, with exact association checks.
 
 Wake schedules advance before model work. A minimal pending occurrence association
 bridges schedule advancement and native requestId admission. Restart reconciles

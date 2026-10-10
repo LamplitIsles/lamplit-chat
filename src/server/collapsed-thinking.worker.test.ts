@@ -57,7 +57,7 @@ it('projects actual provider thinking through hosted native persistence, socket,
     expect(JSON.stringify(view)).not.toContain('private-fixture-signature')
     await client!.submit({ operationId: crypto.randomUUID(), text: 'Second native input for real history cursor' })
     await vi.waitFor(() => expect(view!.messages.filter(m => m.role === 'agent')).toHaveLength(2), { timeout: 10000 })
-    expect((await client!.history(view!.messages.at(-1)!.id)).messages).toContainEqual(answer)
+    expect(view!.before).toBeNull() // All four visible messages fit the initial native page.
     const persisted = await runInDurableObject(stub, instance => (instance as unknown as { getBranch(): Promise<import('../shared/pi-contract').SessionBranch> }).getBranch())
     client!.close(); socket!.close()
     await runInDurableObject(stub, instance => (instance as unknown as NativeFixture).native.dispose())

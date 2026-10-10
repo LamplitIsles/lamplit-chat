@@ -67,7 +67,7 @@ export class PiSession extends NativeSession {
     if (input.action === 'finish') await this.settle(input.failed)
     if (input.action === 'disconnect') for (const connection of this.getConnections()) connection.close(1012,'Test-owned disconnect')
     if(this.chatHost) await (await this.chatHost).refresh()
-    return {...await this.chatObservation(), calls:this.calls, executions:fixture.executions, submissions:[...this.sessionStorage.chatRecords().values()], native:{entries:(await this.getBranch()).entries,requests:fixture.requests}}
+    return {...await this.chatObservation(), calls:this.calls, executions:fixture.executions, submissions:await Promise.all([...this.sessionStorage.chatRecords().values()].map(async record=>{const entry=record.entryId&&await(await this.history()).entry(record.entryId);return {...record,text:entry?.type==='message'&&typeof entry.message.content==='string'?entry.message.content:record.text}})), native:{entries:(await this.getBranch()).entries,requests:fixture.requests}}
   }
 }
 let sessionId

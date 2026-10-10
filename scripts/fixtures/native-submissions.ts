@@ -94,7 +94,9 @@ export class PiSession extends NativeSession {
     }
     const submissions = []
     for (const record of this.sessionStorage.chatRecords().values()) if (state.browserIds.has(record.operationId) && (await super.lookupChat(record.operationId))?.state === 'submitted') {
-      const { operationId, text, images, replacementSourceIds } = record
+      const { operationId, images, replacementSourceIds } = record
+      const entry = record.entryId && await (await this.history()).entry(record.entryId)
+      const text = entry?.type === 'message' && typeof entry.message.content === 'string' ? entry.message.content : record.text
       submissions.push({ operationId, text, ...(images ? { images } : {}), ...(replacementSourceIds ? { replacementSourceIds } : {}) })
     }
     return { executions: state.executions, submitCalls: state.submitCalls, lookupCalls: state.lookupCalls, submissions, recovery: await this.chatRecovery(), messages: (await this.getBranch()).entries, limits: PI_IMAGE_LIMITS, album: (await this.readPanelAlbum(null)).images, modelRequests: state.requests }

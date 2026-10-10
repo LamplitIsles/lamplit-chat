@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
-import { fauxAssistantMessage, type Message } from '@earendil-works/pi-ai'
+import { fauxAssistantMessage } from '@earendil-works/pi-ai'
 import type { Conversation } from '@earendil-works/pi-durable'
 import { nativeOptions } from './fixtures/native-harness-options'
 import { createPiHarness } from './create-pi-harness'
@@ -47,20 +47,19 @@ it('native manual summary uses companion default/custom policy, persists silentl
     expect(stored.items.filter(entry=>entry.kind==='pi.compaction')).toHaveLength(2)
   } finally {await harness.close(context);fetch.mockRestore()}
 })
-it.each(['DM','Group'])('native %s maintenance projects private Keet attribution in summary and split prefix without mutating transcript',async kind=>{
+it.each(['DM','Group'])('native %s maintenance retains frozen private Keet attribution in summary and split prefix without mutating transcript',async kind=>{
   const requests:Record<string,unknown>[]=[]
   const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{requests.push(JSON.parse(init!.body as string));return nativeReply('openrouter','Keet continuity')})
   const options=nativeOptions()
-  const project=async(messages:readonly Message[])=>messages.map(message=>message.role==='user'&&typeof message.content==='string'&&message.content.startsWith('Visible Keet')?{...message,content:`[Keet ${kind}; sender Alice; private contextual attribution] ${message.content}`}:message)
-  const harness=await createPiHarness({...options,projectKeet:project,compaction:{enabled:true,reserveTokens:1024,keepRecentTokens:4}})
+  const harness=await createPiHarness({...options,compaction:{enabled:true,reserveTokens:1024,keepRecentTokens:4}})
   try{
     const root=await harness.root(context,{agent:{model:{provider:'openrouter',modelId:'openai/gpt-4o'}}})
-    await history(root,'Visible Keet')
+    await history(root,`[Keet ${kind}; sender Alice; private contextual attribution] Visible Keet`)
     await harness.waitForTask(await root.compact(undefined,context),context);await root.waitForIdle(context)
     expect(JSON.stringify(requests[0].messages)).toContain(`Keet ${kind}`)
     expect(JSON.stringify(requests[0].messages)).toContain('private contextual attribution')
     const originals=await root.entries({},100,undefined,context)
-    expect(JSON.stringify(originals.items.filter(entry=>entry.kind==='pi.user'))).not.toContain('private contextual attribution')
+    expect(JSON.stringify(originals.items.filter(entry=>entry.kind==='pi.user'))).toContain('private contextual attribution')
   }finally{await harness.close(context);fetch.mockRestore()}
 })
 it('native failed companion summarization declines without applying another policy or replacing active context',async()=>{

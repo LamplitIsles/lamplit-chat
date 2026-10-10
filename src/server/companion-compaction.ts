@@ -5,7 +5,7 @@ import { DEFAULT_COMPANION_COMPACTION_PROMPT } from './companion-compaction-prom
 
 const serialize = (messages: readonly Message[]) => messages.map(message => `[${message.role}]\n${typeof message.content === 'string' ? message.content : JSON.stringify(message.content)}`).join('\n\n')
 // Native Pi selects the range and persists the summary. The host supplies only its companion policy.
-export function companionCompaction(models: Models, loadPrompt: () => Promise<string>, selection: ModelSelection, project: (messages: readonly Message[]) => Promise<readonly Message[]>, readEntry: (id: EntryId) => Promise<EntryRecord | undefined>) {
+export function companionCompaction(models: Models, loadPrompt: () => Promise<string>, selection: ModelSelection, readEntry: (id: EntryId) => Promise<EntryRecord | undefined>) {
   return hook(CompactionTask, { beforeCompact: async (input, _api, context) => {
     try {
       context.abortSignal?.throwIfAborted()
@@ -15,9 +15,9 @@ export function companionCompaction(models: Models, loadPrompt: () => Promise<st
       const prefixStart = input.messages.map(message => message.role).lastIndexOf('user')
       const turnPrefix = prefixStart < 0 ? input.messages : input.messages.slice(prefixStart)
       const sections = [
-        `<conversation>\n${serialize(await project(input.messages))}\n</conversation>`,
+        `<conversation>\n${serialize(input.messages)}\n</conversation>`,
         previous?.model ? `<previous-summary>\n${serialize(previous.kind === 'lamplit.converted-context' ? previous.model.slice(0, 1) : previous.model)}\n</previous-summary>` : '',
-        split ? `<split-turn-prefix>\n${serialize(await project(turnPrefix))}\n</split-turn-prefix>` : '',
+        split ? `<split-turn-prefix>\n${serialize(turnPrefix)}\n</split-turn-prefix>` : '',
         input.instructions ? `<maintenance-focus>\n${input.instructions}\n</maintenance-focus>` : '',
       ].filter(Boolean).join('\n\n')
       const response = await models.completeSimple(selectedModel(selection), {

@@ -65,7 +65,7 @@ type PiSessionInternal = {
   revokePersonalSession(tokenHash: string): Promise<void>
   initialize(metadata: InitializeMetadata): Promise<SessionOverview>
   getOverview(): Promise<SessionOverview>
-  compactionSearchEntries(): Promise<SessionIndexEvent[]>
+  compactionSearchEntries(after?: number): Promise<{ events: SessionIndexEvent[]; next: number | null }>
   readSearchRecord(entryId: string): ReturnType<SearchBackend['searchRead']>
   setSessionName(name: string): Promise<SessionOverview>
   deleteContents(): Promise<void>
@@ -389,10 +389,11 @@ export class PiRegistry extends HostedAgent {
       const sessions = this.ctx.storage.sql.exec<SessionRow>("SELECT * FROM pi_registry_sessions WHERE status = 'ready'").toArray()
       for (const row of sessions) {
         const key = `searchSummaries:${row.id}`
-        if (await this.ctx.storage.get(key)) continue
-        const events = await this.session(row.id).compactionSearchEntries()
-        await this.applyIndexEvents(row.id, events)
-        await this.ctx.storage.put(key, true)
+        const cursor = await this.ctx.storage.get<number | boolean>(key)
+        if (cursor === true) continue
+        const page = await this.session(row.id).compactionSearchEntries(typeof cursor === 'number' ? cursor : 0)
+        await this.applyIndexEvents(row.id, page.events)
+        await this.ctx.storage.put(key, page.next ?? true)
       }
     })().finally(() => { this.summaryRefresh = undefined })
   }
